@@ -1,7 +1,7 @@
 import inspect
 import textwrap
 import gc
-from collections.abc import Iterable 
+from typing import Iterable 
 
 
 class Code:
@@ -125,12 +125,46 @@ def get_implicit_iterator_in_for_loop_everywhere():
             return i    
     
         
-### como copiar, 
+### 
 #cuando serialices, guarda el codigo en texto y las variables, haz que el codigo sea una funcion con cualquier nombre
 #cuando deserialices executa el codigo con las variables guardadas.
 
 
 def my_copy(generator):
+    """this function taske the generator code and localizes the line being executed 
+    then we create a new piece of code and use exec for producing a new generator 
+    that would mimic the state of the previous one.
+
+    for instance for the generator being executed :
+    
+    def gen_test():
+        a = 1
+        b = 2
+        b +=10
+        yield a
+        while True:
+            yield b    X code is here now
+            b +=1 
+
+    t = gen_test()
+    next(t) -> 1
+    next(b) -> 11
+
+    my_copy(t) -> produces a artificial generator as TEXT:
+
+        def gen_test():
+            a,b = 1, 11 # from the variables stored
+
+            b +=1 # the rest of the while loop
+            while True:  # the while loop untouched
+                yield b    X code is here now
+                b +=1 
+    and then executes it using exec and saves variables with it.
+
+    we  may need to store locals globals as well for the pickling
+    
+    """
+
     code = Code.from_generator(generator)
     args = generator.gi_frame.f_locals.copy()
     args = ",".join(f"{k}={v}" for k,v in args.items())
@@ -156,110 +190,3 @@ def my_copy(generator):
     exec(new_code.code)
     return eval("n")
 
-def gtest1():
-    yield 10
-    yield 20
-    yield 30
-
-def test_1():
-    t1 = gtest1()
-    tc = my_copy(t1)
-    assert next(tc) == 10
-    assert next(tc) == 20
-    
-    assert next(t1) == 10
-    tc = my_copy(t1)
-    assert next(tc) == 20
-  
-def gtest2(a):
-    yield 10
-    if a:
-        yield 20
-    yield 30
-
-def test_2():
-    t1 = gtest2(1)
-    tc = my_copy(t1)
-    assert next(tc) == 10
-
-    t1 =  gtest2(2)
-    assert next(t1) == 10
-    tc = my_copy(t1)
-    assert next(tc) == 20
-    assert next(tc) == 30
-    assert next(t1) == 20
-    
-def gtest3(a):
-    yield 10
-    if a:
-        yield 20
-    else:
-        yield 40
-    yield 30
-
-def test_3():
-    t1 = gtest3(True)
-    assert next(t1) == 10
-    assert next(t1) == 20
-    tc = my_copy(t1)
-    assert next(tc) == 30 
-    
-    t1 = gtest3(False)
-    assert next(t1) == 10
-    assert next(t1) == 40
-    tc = my_copy(t1)
-    assert next(tc) == 30 
-      
-def gtest4(a):
-    b = 10
-    yield b
-    if a:
-        b+=10
-        yield b
-        b+=10
-    else:
-        b+=30
-        yield b
-        b-=10
-    yield b
-    
-def test_4():
-    t1 = gtest4(True)
-    assert next(t1) == 10
-    assert next(t1) == 20
-    tc = my_copy(t1)
-    assert next(tc) == 30 
-    
-    t1 = gtest3(False)
-    assert next(t1) == 10
-    assert next(t1) == 40
-    tc = my_copy(t1)
-    assert next(tc) == 30 
-    
-def gtest5(a):
-    a = a +2
-    yield a 
-    while True:
-        a +=1 
-        yield a 
-        a+=2
-
-def test_5(): #avg
-    t1 = gtest5(10)
-    assert next(t1) == 12
-    assert next(t1) == 13
-    tc = my_copy(t1)
-    assert next(tc) == 16 
-    assert next(t1) == 16
-    
-
-        
-def tests():
-    test_1()
-    test_2()
-    test_3()
-    test_4()
-    test_5()
-    
-print("testing")
-tests()
