@@ -2,11 +2,11 @@
 
 This file implements a class called Generator to emulate what a function generator does in cpython.
 
-Note: it's currently not finished yet; see the TODO comment on top of the Generator class
+Note: it's currently not finished yet; see the TODO comment on top of the Generator class.
 
 ## approach:
 
-To emulate a generator we essentially evaluate source code on fly (section the source code by its yield statements (shouldn't do inner functions however) using the source code as part fo the generators state. Using source code is much easier to manipulate (especially across different versions of cpython) and means all the work to get it working is mostly in adjusting the source code per iteration when it's needed.
+To emulate a generator we essentially evaluate source code on fly (section the source code by its yield statements (shouldn't do inner functions however)) using the source code as part fo the generators state. Using source code is much easier to manipulate (especially across different versions of cpython) and means all the work to get it working is mostly in adjusting the source code per iteration when it's needed.
 
 To handle Sends I've thought about using a Send class and using that to make the code explicit though I don't really like this from a user stand point even though it makes the lexing/parsing easier for me I think it'd be better if it were not needed and we find a way around it.
 
