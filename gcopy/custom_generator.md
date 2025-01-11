@@ -8,6 +8,24 @@ Note: it's currently not finished yet; see the TODO comment on top of the Genera
 
 To emulate a generator we essentially evaluate source code on fly (section the source code by its yield statements (shouldn't do inner functions however)) using the source code as part fo the generators state. Using source code is much easier to manipulate (especially across different versions of cpython) and means all the work to get it working is mostly in adjusting the source code per iteration when it's needed.
 
+So, specifically what happens is the following:
+1. inspect.getsource is called on your function generator (else it will use the string given to it if you're doing that)
+2. standardize the source code retrieved and split it by line so that it's in a usable format e.g. makes sure the idents are correct where using ";" (since they don't have to start with an indentation of 4), join up the line continuations i.e. "\ ... " will be skipped, and split on "\n" and ";"
+3. translate the source code into a usable format by the generator (Note: this step is still experimental and could change) e.g. some loops might be rewritten into a more usable form.
+4. initialize the generator with attributes (should resemble a generators attrs but some are new add ons for better accessibility):
+ - gi_code
+ - gi_frame
+ - gi_running
+ - gi_suspended
+ - gi_yieldfrom
+ - lineno
+ - state
+ - return_linenos
+ - reciever
+ - state_generator
+
+From here the generator should be usable.
+
 To handle Sends I've thought about using a Send class and using that to make the code explicit though I don't really like this from a user stand point even though it makes the lexing/parsing easier for me I think it'd be better if it were not needed and we find a way around it.
 
 ## backwards compatibility:
