@@ -26,6 +26,12 @@ So, specifically what happens is the following:
 
 From here the generator should be usable.
 
+How the ```next()``` usages work on it (e.g. the \_\_next\_\_ builtin special/magic/dunder method implementation) is to run:
+1. ```next()``` on ```state_generator``` to get the next ```state```
+2. exec a new temporary function into the current local scope that allows a frame of variables to be passed in and the use of nonlocals
+3. run this function returning the result
+4. If it ran successfully we're good otherwise the exception will be caught and it will get formatted (how it would be in regular generators; note: this step is optional e.g. it's not a priority to format it's exceptions this way only more beneficial)
+
 To handle Sends I've thought about using a Send class and using that to make the code explicit though I don't really like this from a user stand point even though it makes the lexing/parsing easier for me I think it'd be better if it were not needed and we find a way around it.
 
 ## backwards compatibility:
