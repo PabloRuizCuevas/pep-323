@@ -32,8 +32,6 @@ How the ```next()``` usages work on it (e.g. the \_\_next\_\_ builtin special/ma
 3. run this function returning the result
 4. If it ran successfully we're good otherwise the exception will be caught and it will get formatted (how it would be in regular generators; note: this step is optional e.g. it's not a priority to format it's exceptions this way only more beneficial)
 
-To handle Sends I've thought about using a Send class and using that to make the code explicit though I don't really like this from a user stand point even though it makes the lexing/parsing easier for me I think it'd be better if it were not needed and we find a way around it.
-
 ## backwards compatibility:
 
 This is mentioned in the comment I made at the top of the file. Fortuneatly this results in simply using if statements and no preprocessing thus far should be needed.
