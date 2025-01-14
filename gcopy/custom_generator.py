@@ -49,7 +49,7 @@ For python 2:
 """
 
 from types import FunctionType
-from inspect import getsource,currentframe
+from inspect import getsource,currentframe,findsource
 import ctypes
 from copy import deepcopy,copy
 from sys import version_info
@@ -57,40 +57,6 @@ from sys import version_info
 ## python 2 compatibility ##
 if version_info < (3,):
     range = xrange
-
-## this needs to be checked ##
-class Send(object):
-    """
-    Special class specifically used in combination with Generator
-    to signal where and what to send
-    
-    Note: Send should only be used after a yield statement and not
-    anywhere else. If used elsewhere or no variable has been sent 
-    it will have no effect conceptually.
-    """
-    def __init__(self,ID):
-        if not ID.isalnum():
-            raise ValueError("ID must be alpha numeric e.g. ID.isalnum() should return True")
-        self.ID=ID
-
-    def __repr__(self):
-        return "Send('%s')" % self.ID
-
-def collect_string(line):
-    """collects a string from a string"""
-    if line[0]!="'" or line[0]!='"':
-        raise ValueError("'Send' must be given exactly one arguement of type 'str'")
-    string=""
-    reference_char=line[0]
-    line=iter(line)
-    for char in line:
-        string+=char
-        if char=="\\":
-            next(line)
-            continue
-        if char==reference_char:
-            break
-    return string
 
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
@@ -137,10 +103,6 @@ def extract_iter(line):
     ## +1 for 0 based indexing, +1 for whitespace after ##
     return line[index+2:][:-1]
 
-## need to handle continue and break within loop (may need to edit or combine with Generator._loop_adjust) ##
-## continue - stop recording lines
-## break - skip this and carry on make sure
-## we need to deal with nested loop on this one
 def control_flow_adjust(lines):
     """
     removes unreachable control flow blocks that 
@@ -198,21 +160,137 @@ def temporary_loop_adjust(line):
         return [indent+"locals()['.continue']=False",indent+"break"]
     return " "*4+line
 
+def send_adjust(line):
+    flag=0
+    parts=line.split("=")
+    for index,node in enumerate(parts):
+        node=node[get_indent(node):]
+        if node.startswith("yield from "):
+            flag=1
+            break
+        if node.startswith("yield "):
+            flag=2
+            break
+        if not node.isalnum(): ## makes sure we're assigning to a variable ##
+            break
+    if flag:
+        return flag,["=".join(parts[index:]),"=".join(parts[:index])+"=locals()['.send']"]
+    return None,None
+
 class frame(object):
     """acts as the initial FrameType"""
-    f_locals={}
+    f_locals={".send":None}
     f_lineno=0
+
+def code_attrs():
+    """
+    all the attrs used by a CodeType object in 
+    order of types.CodeTypes function signature 
+    ideally and correct to the current version
+    """
+    version=version_info[:3]
+    attrs=("co_argcount",)
+    if (3,8) <= version:
+        attrs+=("co_posonlyargcount",)
+    attrs+=("co_kwonlyargcount","co_nlocals","co_stacksize","co_flags","co_code",
+            "co_consts", "co_names", "co_varnames", "co_filename", "co_name")
+    if (3,3) <= version:
+        attrs+=("co_qualname",)
+    attrs+=("co_firstlineno",)
+    if (3,10) <= version:
+        attrs+=("co_linetable",)
+    else:
+        attrs+=("co_lnotab",)
+    if (3,11) <= version:
+        attrs+=("co_exceptiontable",)
+    attrs+=("co_freevars","co_cellvars")
+    return attrs
+
+def attr_cmp(obj1,obj2,attrs):
+    for attr in attrs:
+        if getattr(obj1,attr)!=getattr(obj2,attr):
+            return False
+    return True
+
+def extract_genexpr(source_lines):
+    """
+    Goes through the source code extracting generator expressions
+    until a match is found on a code object basis
+    """
+    source,ID,is_genexpr="","",False
+    number_of_expressions,depth=0,0
+    for line in source_lines:
+        ## if it's a new_line and you're looking for a genexpr then it's not found ##
+        if number_of_expressions:
+            raise Exception("No matches to the original source code found")
+        for char in line:
+            ## skip all strings
+            # ...
+            ## detect brackets
+            if char=="(":
+                depth+=1
+            elif char==")":
+                depth-=1
+                if depth==0:
+                    if is_genexpr:
+                        yield source
+                        number_of_expressions+=1
+                        is_genexpr=False
+                    source=""
+                    ID=""
+            ## detect a for loop
+            if char==" " and depth > 0 and ID=="for":
+                is_genexpr=True
+            ## record source code ##
+            if depth:
+                source+=char
+                if char.isalnum():
+                    ID+=char
+                else:
+                    ID=""
+
+def genexpr_getsource(gen):
+    ## starting line ##
+    code_obj=gen.gi_code
+    source=findsource(code_obj)[0][gen.gi_frame.f_lineno-1:]
+    ## get the rest of the source ##
+    if (3,11) <= version_info[:3]:
+        lineno=gen.gi_frame.f_lineno
+        current_min,current_max,current_max_lineno=None,None,None
+        for pos in code_obj.co_positions():
+            if not pos[1]==pos[0]==lineno:
+                raise Exception("No matches to the original source code found")
+            if None not in pos:
+                if current_min:
+                    if pos[-2] < current_min:
+                        current_min=pos[-2]
+                    if pos[-1] > current_max:
+                        current_min=pos[-1]
+                    if pos[1] > current_max_lineno:
+                        current_max_lineno=pos[1]
+                else:
+                    current_max_lineno,current_min,current_max=pos[1:]
+        return "\n".join(source[lineno:current_max_lineno+1])[current_min:current_max]
+    ## otherwise match with generator expressions in the original source to get the source code ##
+    attrs=(attr for attr in code_attrs() if not attr in ('co_argcount','co_posonlyargcount','co_kwonlyargcount',
+                                                         'co_filename','co_linetable','co_linotab','co_exceptiontable'))
+    for source in extract_genexpr(source):
+        ## eval should be safe here assuming we have correctly extracted a generator expression ##
+        if attr_cmp(eval(source).gi_code,code_obj,attrs):
+            return source
+
+def unpack_genexpr(source):
+    """unpacks a generator expressions' for loops into a list of source lines"""
+    pass ## using a python parser would be best for this ##
 
 """
 TODO:
-1. have an option to set the reference to Generator(FUNC)
-   so that recursion is of the same function
-
-2. check whitespace, linenos, attrs, e.g. the smaller details to clean up
-3. try to handle sends with more flexibility for the user e.g. x=yield ... or x=yield from ...
-4. format errors
-5. figure out how gi_running and gi_suspended are actually supposed to be set
-6. write tests
+1. fix for running generators                                                  - __init__
+2. check whitespace, linenos, attrs, multiline strings, e.g. the smaller details to clean up      - _clean_source_lines and others involved in _create_state
+3. format errors                                                               - throw
+4. write tests
+5. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
+ - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
 """
 class Generator(object):
     """
@@ -268,12 +346,12 @@ class Generator(object):
                 self._skip_indent=number_of_indents
             else:
                 self._skip_indent=0
-                if temp_line.startswith("yield "):
-                    return [indent+"return"+temp_line[5:]] ## 5 to retain the whitespace ##
-                elif temp_line.startswith("yield from "):
+                if temp_line.startswith("yield from "):
                     return [indent+"currentframe().f_back.f_locals['.yieldfrom']="+temp_line[11:],
                             indent+"for currentframe().f_back.f_locals['.i'] in currentframe().f_back.f_locals['.yieldfrom']:",
                             indent+"    return currentframe().f_back.f_locals['.i']"]
+                elif temp_line.startswith("yield "):
+                    return [indent+"return"+temp_line[5:]] ## 5 to retain the whitespace ##
                 elif temp_line.startswith("for "):
                     self.jump_positions+=[(lineno,None)]
                     self._jump_stack+=[(number_of_indents,len(self.jump_positions)-1)]
@@ -285,9 +363,18 @@ class Generator(object):
                 elif temp_line.startswith("return "):
                     ## close the generator then return ##
                     [indent+"currentframe().f_back.f_locals['self'].close()",line]
+                ## handles the .send method ##
+                flag,adjustment=send_adjust(line)
+                if flag:
+                    if flag==1:
+                        return [indent+"return"+adjustment[0][5:]]+adjustment[1]
+                    else:
+                        return [indent+"currentframe().f_back.f_locals['.yieldfrom']="+adjustment[0][11:],
+                                indent+"for currentframe().f_back.f_locals['.i'] in currentframe().f_back.f_locals['.yieldfrom']:",
+                                indent+"    return currentframe().f_back.f_locals['.i']"]+adjustment[1]
         return [line]
 
-    def _clean_source_lines(self,source):
+    def _clean_source_lines(self):
         """
         source: str
 
@@ -299,8 +386,10 @@ class Generator(object):
         
         additionally, custom_adjustment will be called on each line formation as well
         """
+        ## for loop adjustments ##
+        self.jump_positions,self._jump_stack,self._skip_indent=[],[],0
         ## setup source as an iterator and making sure the first indentation's correct ##
-        source=enumerate(source[get_indent(source):])
+        source=enumerate(self.source[get_indent(source):])
         line,lines,backslash,instring,indented,space=" "*4,[],False,False,False,0
         ## enumerate since I want the loop to use an iterator but the 
         ## index is needed to retain it for when it's used on get_indent
@@ -349,15 +438,9 @@ class Generator(object):
             for reference_indent in range(get_indent(line),0,-4):
                 if reference_indent == self._jump_stack[-1][0]:
                     self.jump_positions[self._jump_stack.pop()[1]][1]=len(lines)+1
+        ## are not used by this generator (was only for formatting source code) ##
+        del self._jump_stack,self._skip_indent
         return lines
-
-    def _set_reciever(self,lines):
-        """sets the reciever of the generator"""
-        if self.gi_running:
-            line=lines[0]
-            # as long as it's 'Send(' and Send is Send e.g. locally or globally defined and is correct
-            if line[:5]=='Send(' and (self.gi_frame.f_locals.get("Send",None)==Send or globals().get("Send",None)==Send):
-                return collect_string(line[11:])
 
     def _loop_adjust(self,lines):
         """
@@ -393,7 +476,7 @@ class Generator(object):
                     ## we do it this way since you can get [...,...] which won't work as a list comprehension ##
                     current_code+=temporary_loop_adjust(line)
                 current_code=["while True:"]+current_code+[" "*4+"break"]
-                return current_code+loops
+                return "\n".join(current_code+loops)
         return "\n".join(control_flow_adjust(lines))
 
     def _create_state(self):
@@ -413,11 +496,11 @@ class Generator(object):
         lines=self._source_lines[self.lineno:]
         ## used on .send (shouldn't be modified by the user)
         self.reciever=self._set_reciever(lines)
-        self.state="\n".join(self._loop_adjust(lines))
+        self.state=self._loop_adjust(lines)
 
     ## try not to use variables here (otherwise it can mess with the state) ##
     init="""
-    locals().update(f_locals)
+    locals().update(currentframe().f_back.f_locals['self'].gi_frame.f_locals)
     currentframe().f_back.f_locals['self'].gi_frame=currentframe()
     ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(currentframe().f_back), ctypes.c_int(0))
 """
@@ -436,51 +519,69 @@ class Generator(object):
             except StopIteration:
                 break
 
-    def __init__(self,FUNC):
+    def __init__(self,FUNC,overwrite=False):
         """
         Takes in a function or its source code as the first arguement
 
         Otherwise it takes a dictionary of attributes as the keyword arguements
+
+        Note:
+         - gi_running: is the generator currently being executed
+         - gi_suspended: is the generator currently paused e.g. state is saved
+
         """
         if isinstance(FUNC,dict):
             for attr in ("source","gi_code","gi_frame","gi_running","gi_suspended","gi_yieldfrom",
-                         "_source_lines","lineno","reciever","state"):
+                         "_source_lines","lineno","state"):
                 setattr(self,attr,FUNC[attr])
+        elif hasattr(FUNC,"gi_code"): ## an initialized generator ##
+            if FUNC.gi_code.co_name=="<genexpr>":
+                self.source=genexpr_getsource(FUNC)
+                ## cleaning the expression ##
+                self._source_lines=unpack_genexpr(self.source)
+                ## figuring out what state it's in ##
+                pass
+                ## applying its state ##
+                pass
+            else:
+                self.source=getsource(FUNC.gi_code)
+                self._source_lines=self._clean_source_lines()
+            self.gi_code=FUNC.gi_code
+            self.gi_frame=FUNC.gi_frame
+            ## gi_yieldfrom was introduced in python version 3.5 ##
+            if hasattr(FUNC,"gi_yieldfrom"):
+                self.gi_yieldfrom=FUNC.gi_yieldfrom
+            else:
+                self.gi_yieldfrom=None
+            self.gi_suspended=True
         else:
             ## getsource does work for expressions but it's got no col_offset which is not useful ##
             ## but it may still work with some adjustments (maybe) ##
             if isinstance(FUNC,str): ## from source code ##
                 self.source=FUNC
                 self.gi_code=compile(FUNC,"","eval")
-                self.gi_frame=frame()
             elif isinstance(FUNC,FunctionType): ## a generator function ##
                 self.source=getsource(FUNC)
                 self.gi_code=FUNC.__code__
-                self.gi_frame=frame()
-            else: ## an initialized generator ##
-                self.source=getsource(FUNC.gi_code)
-                self.gi_code=FUNC.gi_code
-                self.gi_frame=FUNC.gi_frame
-            ## for loop adjustments ##
-            self.jump_positions=[]
-            self._jump_stack=[]
-            self._skip_indent=0
             ## make sure the source code is standardized and usable by this generator ##
             self._source_lines=self._clean_source_lines()
-            ## are not used by this generator (was only for formatting source code) ##
-            del self._jump_stack,self._skip_indent
             ## create the states ##
-            ## define the state related variables in __init__ to allow the state generator ##
-            ## to be independent i.e. when initializing via **attrs ##
-            self.gi_running=False
+            self.gi_frame=frame()
             self.gi_suspended=False
-            ## indicates what iterable is being yield from when the yield is a yield from (introduced in python version 3.3) ##
+            ## indicates what iterable is being yield from ##
+            ## when the yield is a yield from (introduced in python version 3.3) ##
             self.gi_yieldfrom=None
             ############################################################
             self.lineno=0 ## the current line number relative to self._source_lines ##
             self.gi_frame.f_lineno=self.init_len # is this necessary??
             ############################################################
+        self.gi_running=False
         self.state_generator=self.init_states()
+        if overwrite:
+            if hasattr(FUNC,"__code__"):
+                currentframe().f_back.f_locals[FUNC.__code__.co_name]=self
+            else:
+                currentframe().f_back.f_locals[FUNC.gi_code.co_name]=self
 
     def __len__(self):
         """
@@ -517,41 +618,37 @@ class Generator(object):
         """
         # set the next state and setup the function
         next(self.state_generator) ## it will raise a StopIteration for us
-        # if not set already
-        if not self.gi_running:
-            self.gi_running=True ## apparently i.e. yield from range(...) changes this to False ##
-            self.gi_suspended=True
         ## update with the new state and get the frame ##
-        exec("def next_state(f_locals):"+self.init+self.state,globals(),locals())
+        exec("def next_state():"+self.init+self.state,globals(),locals())
         try: # get the locals dict, update the line position, and return the result
-            return locals()["next_state"](self.gi_frame.f_locals)
+            self.gi_running=True
+            result=locals()["next_state"]()
+            self.gi_running=False
+            return result
         except Exception as e: ## we should format the exception as it normally would be formmated ideally
-            self._format_exception(e)
+            self.throw(e)
 
     def send(self,arg):
         """
         Send takes exactly one arguement 'arg' that 
         is sent to the functions yield variable
         """
+        if self.gi_yieldfrom:
+            return self.gi_yieldfrom.send(arg)
         if not self.gi_running:
             raise TypeError("can't send non-None value to a just-started generator")
         if self.reciever:
-            self.gi_frame.f_locals()[self.reciever]=arg
+            self.gi_frame.f_locals()[".send"]=arg
         return next(self)
 
     def close(self):
         """Creates a simple empty generator"""
-        self.state_generator=(None for i in ())
+        self.state_generator=iter(())
         self.gi_frame=None
         self.gi_running=False
         self.gi_suspended=False
 
     def throw(self,exception):
-        """Throws an error at the current line of execution in the function"""
-        # get the current position (should be recorded and updated after every execution)
-        self._format_exception(exception)
-
-    def _format_exception(self,exception):
         """Raises an exception from the last line in the current state e.g. only from what has been"""
         raise exception
 
@@ -583,20 +680,22 @@ class Generator(object):
         Generator(state)
 
 ## add the type annotations if the version is 3.5 or higher ##
-if (3,5) <= version_info[:3]:
+if (3,5) <= version_info:
     from typing import Callable,Any,NoReturn,Iterable
     import types
-    ## Send
-    Send.__init__.__annotations__={"ID":str,"return":None}
-    Send.__repr__.__annotations__={"return":str}
     ## utility functions
-    collect_string.__annotations__={"line":str,"return":str}
     get_indent.__annotations__={"line":str,"return":int}
     skip.__annotations__={"iter_val":Iterable,"n":int,"return":None}
     is_alternative_statement.__annotations__={"line":str,"return":bool}
     extract_iter.__annotations__={"line":str,"return":str}
     control_flow_adjust.__annotations__={"lines":list[str],"return":list[str]}
     temporary_loop_adjust.__annotations__={"line":str,"return":list[str]}
+    send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
+    code_attrs.__annotations__={"return":tuple[str,...]}
+    attr_cmp.__annotations__={"obj1":object,"obj2":object,"attr":tuple[str,...],"return":bool}
+    extract_genexpr.__annotations__={"source_lines":list[str],"return":types.Generator[str]}
+    genexpr_getsource.__annotations__={"gen":types.Generator,"return":str}
+    unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## Generator
     Generator._custom_adjustment.__annotations__={"line":str,"lineno":int,"return":list[str]}
     Generator._clean_source_lines.__annotations__={"source":str,"return":list[str]}
@@ -610,9 +709,12 @@ if (3,5) <= version_info[:3]:
     Generator.__next__.__annotations__={"return":Any}
     Generator.send.__annotations__={"arg":Any,"return":Any}
     Generator.close.__annotations__={"return":None}
-    Generator.throw.__annotations__={"exception":Exception,"return":None}
-    Generator._format_exception.__annotations__={"exception":Exception,"return":NoReturn}
+    Generator.throw.__annotations__={"exception":Exception,"return":NoReturn}
     Generator._copier.__annotations__={"FUNC":Callable,"return":Generator}
+    Generator.__copy__.__annotations__={"return":Generator}
+    Generator.__deepcopy__.__annotations__={"memo":dict,"return":Generator}
+    Generator.__getstate__.__annotations__={"return":dict}
+    Generator.__setstate__.__annotations__={"state":dict,"return":None}
     Generator.__copy__.__annotations__={"return":Generator}
     Generator.__deepcopy__.__annotations__={"memo":dict,"return":Generator}
     Generator.__getstate__.__annotations__={"return":dict}
