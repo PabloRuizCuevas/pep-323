@@ -58,6 +58,34 @@ from sys import version_info
 if version_info < (3,):
     range = xrange
 
+def track_iter(obj):
+    """
+    Tracks an iterator in the local scope initiated by a for loop
+    
+    This function has a specific use case where the initialization
+    of an iterator via a for loop implictely does not allow for 
+    reliable extraction from the garbage collector and thus manually
+    assigning the iterator for tracking is used
+    """
+    obj=iter(obj)
+    f_locals=currentframe().f_back.f_locals
+    if not isinstance(f_locals.get(".count",None),int):
+        f_locals[".count"]=0
+    key=".%s" % f_locals[".count"]
+    while key in f_locals:
+        f_locals[".count"]+=1
+        key=".%s" % f_locals[".count"]
+    f_locals[key]=obj
+    return obj
+
+# if needed (generator expressions won't need this functions or other things in __main__ may)
+def untrack_iters():
+    """removes all currently tracked iterators on the current frame"""
+    f_locals=currentframe().f_back.f_locals
+    for i in range(f_locals[".count"]):
+        del f_locals[i]
+    del f_locals[".count"]
+
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
     count=0
@@ -181,6 +209,13 @@ class frame(object):
     """acts as the initial FrameType"""
     f_locals={".send":None}
     f_lineno=0
+    
+    def __init__(self,frame=None):
+        if frame:
+            for attr in dir(frame):
+                if not attr.startswith("_"):
+                    setattr(self,attr,getattr(frame,attr))
+
 
 def code_attrs():
     """
@@ -188,35 +223,32 @@ def code_attrs():
     order of types.CodeTypes function signature 
     ideally and correct to the current version
     """
-    version=version_info[:3]
     attrs=("co_argcount",)
-    if (3,8) <= version:
+    if (3,8) <= version_info:
         attrs+=("co_posonlyargcount",)
     attrs+=("co_kwonlyargcount","co_nlocals","co_stacksize","co_flags","co_code",
             "co_consts", "co_names", "co_varnames", "co_filename", "co_name")
-    if (3,3) <= version:
+    if (3,3) <= version_info:
         attrs+=("co_qualname",)
     attrs+=("co_firstlineno",)
-    if (3,10) <= version:
+    if (3,10) <= version_info:
         attrs+=("co_linetable",)
     else:
         attrs+=("co_lnotab",)
-    if (3,11) <= version:
+    if (3,11) <= version_info:
         attrs+=("co_exceptiontable",)
     attrs+=("co_freevars","co_cellvars")
     return attrs
 
 def attr_cmp(obj1,obj2,attrs):
+    """Compares two objects by a collection of their attrs"""
     for attr in attrs:
         if getattr(obj1,attr)!=getattr(obj2,attr):
             return False
     return True
 
 def extract_genexpr(source_lines):
-    """
-    Goes through the source code extracting generator expressions
-    until a match is found on a code object basis
-    """
+    """Extracts each generator expression from the source code"""
     source,ID,is_genexpr="","",False
     number_of_expressions,depth=0,0
     for line in source_lines:
@@ -250,12 +282,17 @@ def extract_genexpr(source_lines):
                     ID=""
 
 def genexpr_getsource(gen):
+    """
+    Uses co_positions or otherwise goes through the source code 
+    extracting generator expressions until a match is found on 
+    a code object basis to get the source
+    """
     ## starting line ##
     code_obj=gen.gi_code
     source=findsource(code_obj)[0][gen.gi_frame.f_lineno-1:]
     ## get the rest of the source ##
-    if (3,11) <= version_info[:3]:
-        lineno=gen.gi_frame.f_lineno
+    if (3,11) <= version_info:
+        lineno=gen.gi_frame.f_lineno-1
         current_min,current_max,current_max_lineno=None,None,None
         for pos in code_obj.co_positions():
             if not pos[1]==pos[0]==lineno:
@@ -273,7 +310,7 @@ def genexpr_getsource(gen):
         return "\n".join(source[lineno:current_max_lineno+1])[current_min:current_max]
     ## otherwise match with generator expressions in the original source to get the source code ##
     attrs=(attr for attr in code_attrs() if not attr in ('co_argcount','co_posonlyargcount','co_kwonlyargcount',
-                                                         'co_filename','co_linetable','co_linotab','co_exceptiontable'))
+                                                         'co_filename','co_linetable','co_lnotab','co_exceptiontable'))
     for source in extract_genexpr(source):
         ## eval should be safe here assuming we have correctly extracted a generator expression ##
         if attr_cmp(eval(source).gi_code,code_obj,attrs):
@@ -281,11 +318,28 @@ def genexpr_getsource(gen):
 
 def unpack_genexpr(source):
     """unpacks a generator expressions' for loops into a list of source lines"""
-    pass ## using a python parser would be best for this ##
+    code_blocks,line,ID,has_end_if=[],"","",None
+    for index,char in enumerate(source[1:-1]):
+        if ID=="for":
+            code_blocks+=[line[:-4]]
+        elif ID=="if" and len(code_blocks) > 2:
+            code_blocks+=[line[:-3],line[-3:]+source[index:-1]]
+            has_end_if=-1 ## for later to ensure for loops iters are extracted ##
+            break
+        ## skip strings,brackets,linecontinuations,and newline
+        # 1. stop until you hit a for
+        line+=char
+    ## get the iters ##
+    for index,iter_used in enumerate(extract_iter(code_block) for code_block in code_blocks[1:has_end_if]):
+        code_blocks=code_blocks[:index+1+index]+[iter_used]+code_blocks[index+1+index:]
+    source_lines,indent=" "," "*4
+    for index,part in enumerate(code_blocks[1:]):
+        source_lines+=[indent*index+part]
+    return source_lines+[indent*index+"return "+code_blocks[0]]
 
 """
 TODO:
-1. fix for running generators                                                  - __init__
+1. fix for running generators e.g. get their full state + unpack generator expressions
 2. check whitespace, linenos, attrs, multiline strings, e.g. the smaller details to clean up      - _clean_source_lines and others involved in _create_state
 3. format errors                                                               - throw
 4. write tests
@@ -393,9 +447,29 @@ class Generator(object):
         line,lines,backslash,instring,indented,space=" "*4,[],False,False,False,0
         ## enumerate since I want the loop to use an iterator but the 
         ## index is needed to retain it for when it's used on get_indent
+        multi_line=False
+        prev=(0,"")
         for index,char in source:
             ## skip strings ##
             if char=="'" or char=='"' and not backslash:
+
+                ###################################################
+                ## skip multiline strings as well (needs fixing) ##
+                ###################################################
+                if char==prev[1]:
+                    if prev:
+                        if len(prev)==2:
+                            if index-1==prev[0] and index-2==prev[1]:
+                                multi_line=True
+                            prev=tuple()
+                        elif index-1==prev[0]:
+                            prev+=(index,)
+                    else:
+                        prev[0]=index
+                prev=(index,char)
+
+                ##########################################
+                
                 instring=(instring + 1) % 2
                 line+=char
             elif instring:
@@ -539,15 +613,20 @@ class Generator(object):
                 self.source=genexpr_getsource(FUNC)
                 ## cleaning the expression ##
                 self._source_lines=unpack_genexpr(self.source)
-                ## figuring out what state it's in ##
-                pass
-                ## applying its state ##
-                pass
             else:
+                """
+                TODO: 
+                running function generators will need something in 
+                place for compound statements since only version
+                3.11 and higher has co_positions and there's no 
+                other way that I currently know how to get the 
+                col_offset
+                """
                 self.source=getsource(FUNC.gi_code)
                 self._source_lines=self._clean_source_lines()
             self.gi_code=FUNC.gi_code
-            self.gi_frame=FUNC.gi_frame
+            ## figuring out what it's full state is ##
+            #self.gi_frame=get_state(FUNC)
             ## gi_yieldfrom was introduced in python version 3.5 ##
             if hasattr(FUNC,"gi_yieldfrom"):
                 self.gi_yieldfrom=FUNC.gi_yieldfrom
@@ -684,6 +763,8 @@ if (3,5) <= version_info:
     from typing import Callable,Any,NoReturn,Iterable
     import types
     ## utility functions
+    track_iter.__annotations__={"obj":object,"return":object}
+    untrack_iters.__annotations__={"return":None}
     get_indent.__annotations__={"line":str,"return":int}
     skip.__annotations__={"iter_val":Iterable,"n":int,"return":None}
     is_alternative_statement.__annotations__={"line":str,"return":bool}
@@ -711,10 +792,6 @@ if (3,5) <= version_info:
     Generator.close.__annotations__={"return":None}
     Generator.throw.__annotations__={"exception":Exception,"return":NoReturn}
     Generator._copier.__annotations__={"FUNC":Callable,"return":Generator}
-    Generator.__copy__.__annotations__={"return":Generator}
-    Generator.__deepcopy__.__annotations__={"memo":dict,"return":Generator}
-    Generator.__getstate__.__annotations__={"return":dict}
-    Generator.__setstate__.__annotations__={"state":dict,"return":None}
     Generator.__copy__.__annotations__={"return":Generator}
     Generator.__deepcopy__.__annotations__={"memo":dict,"return":Generator}
     Generator.__getstate__.__annotations__={"return":dict}
