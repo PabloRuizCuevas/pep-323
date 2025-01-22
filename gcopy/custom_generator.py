@@ -898,10 +898,9 @@ class Generator(object):
         ## dict ##
         if isinstance(FUNC,dict):
             ## will adjust attrs later. Still have to see what's going to be used first ##
-            for attr in ("source","gi_code","gi_frame","gi_running","gi_suspended","gi_yieldfrom",
-                         "_source_lines","lineno","state"):
+            for attr in ('_source_lines','gi_code','gi_frame','gi_running','gi_suspended',
+                         'gi_yieldfrom','jump_positions','lineno','source'):
                 setattr(self,attr,FUNC[attr])
-            return
         ## running generator ##
         elif hasattr(FUNC,"gi_code"):
             if FUNC.gi_code.co_name=="<genexpr>": ## co_name is readonly e.g. can't be changed by user ##
@@ -1035,9 +1034,8 @@ class Generator(object):
         attrs=dict(
             zip(
                 ((attr,FUNC(getattr(self,attr))) for attr in \
-                        ("source","_source_lines","gi_code","gi_frame","gi_running",
-                         "gi_suspended","gi_yieldfrom","state","state_index","lineno",
-                         "end_lineno","reciever","state_generator"))
+                        ('_source_lines','gi_code','gi_frame','gi_running','gi_suspended',
+                         'gi_yieldfrom','jump_positions','lineno','source'))
                 )
             )
         return Generator(attrs)
@@ -1049,13 +1047,14 @@ class Generator(object):
     ## for pickling ##
     def __getstate__(self):
         """Serializing pickle (what object you want serialized)"""
-        _attrs=("source","pos","_states","gi_code","gi_frame","gi_running",
-                "gi_suspended","gi_yieldfrom","state_generator","state","reciever")
+        _attrs=('_source_lines','gi_code','gi_frame','gi_running',
+                'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
         return dict(zip(_attrs,(getattr(self,attr) for attr in _attrs)))
 
     def __setstate__(self,state):
         """Deserializing pickle (returns an instance of the object with state)"""
-        Generator(state)
+        for key,value in state.items():
+            setattr(self,key,value)
 
     ## type checking for later ##
 
