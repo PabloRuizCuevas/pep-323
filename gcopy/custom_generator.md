@@ -20,8 +20,7 @@ So, specifically what happens is the following:
  - gi_yieldfrom
  - lineno
  - state
- - return_linenos
- - reciever
+ - jump_positions
  - state_generator
 
 From here the generator should be usable.
