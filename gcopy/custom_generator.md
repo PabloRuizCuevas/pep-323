@@ -155,9 +155,9 @@ There are 2 adjustments that are be made on creation of its states to ensure the
     ```python
     while True:
         print(1)
-        break
+        break # continue adjustment
+        break # break adjustment
         locals()[".continue"]=False
-        break
         break # this break is here by default since the while loop is to help with control flow
     ## next section ##
     if locals()[".continue"]:
