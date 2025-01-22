@@ -1031,14 +1031,10 @@ class Generator(object):
 
     def _copier(self,FUNC):
         """copying will create a new generator object but the copier will determine it's depth"""
-        attrs=dict(
-            zip(
-                ((attr,FUNC(getattr(self,attr))) for attr in \
+        items=((attr,FUNC(getattr(self,attr))) for attr in \
                         ('_source_lines','gi_code','gi_frame','gi_running','gi_suspended',
                          'gi_yieldfrom','jump_positions','lineno','source'))
-                )
-            )
-        return Generator(attrs)
+        return Generator(dict(items))
     ## for copying ##
     def __copy__(self):
         return self._copier(copy)
