@@ -55,7 +55,9 @@ from inspect import getsource,currentframe,findsource
 import ctypes
 from copy import deepcopy,copy
 from sys import version_info
-
+#########################
+### utility functions ###
+#########################
 ## python 2 compatibility ##
 if version_info < (3,):
     range = xrange
@@ -75,6 +77,58 @@ if version_info < (2,6):
                 return args[0]
         return iter_val.next()
 
+class frame(object):
+    """acts as the initial FrameType"""
+    f_locals={".send":None}
+    f_lineno=0
+
+    def __init__(self,frame=None):
+        if frame:
+            for attr in dir(frame):
+                if not attr.startswith("_"):
+                    setattr(self,attr,getattr(frame,attr))
+################
+### tracking ###
+################
+def track_iter(obj):
+    """
+    Tracks an iterator in the local scope initiated by a for loop
+    
+    This function has a specific use case where the initialization
+    of an iterator via a for loop implictely does not allow for 
+    reliable extraction from the garbage collector and thus manually
+    assigning the iterator for tracking is used
+    """
+    obj=iter(obj)
+    f_locals=currentframe().f_back.f_locals
+    if not isinstance(f_locals.get(".count",None),int):
+        f_locals[".count"]=0
+    key=".%s" % f_locals[".count"]
+    while key in f_locals:
+        f_locals[".count"]+=1
+        key=".%s" % f_locals[".count"]
+    f_locals[key]=obj
+    return obj
+
+# if needed (generator expressions won't need this functions or other things in __main__ may)
+def untrack_iters():
+    """removes all currently tracked iterators on the current frame"""
+    f_locals=currentframe().f_back.f_locals
+    for i in range(f_locals[".count"]):
+        del f_locals[".%s" % i]
+    del f_locals[".count"]
+
+def decref(key):
+    """decrease the tracking count and delete the current key"""
+    f_locals=currentframe().f_back.f_locals
+    del f_locals[".%s" % key]
+    if f_locals[".count"]==0:
+        del f_locals[".count"]
+    else:
+        f_locals[".count"]-=1
+############################
+### cleaning source code ###
+############################
 def collect_string(iter_val,reference):
     """
     Skips strings in an iterable assuming correct python 
@@ -116,43 +170,6 @@ def collect_multiline_string(iter_val,reference):
             else:
                 return index,line
 
-def track_iter(obj):
-    """
-    Tracks an iterator in the local scope initiated by a for loop
-    
-    This function has a specific use case where the initialization
-    of an iterator via a for loop implictely does not allow for 
-    reliable extraction from the garbage collector and thus manually
-    assigning the iterator for tracking is used
-    """
-    obj=iter(obj)
-    f_locals=currentframe().f_back.f_locals
-    if not isinstance(f_locals.get(".count",None),int):
-        f_locals[".count"]=0
-    key=".%s" % f_locals[".count"]
-    while key in f_locals:
-        f_locals[".count"]+=1
-        key=".%s" % f_locals[".count"]
-    f_locals[key]=obj
-    return obj
-
-# if needed (generator expressions won't need this functions or other things in __main__ may)
-def untrack_iters():
-    """removes all currently tracked iterators on the current frame"""
-    f_locals=currentframe().f_back.f_locals
-    for i in range(f_locals[".count"]):
-        del f_locals[".%s" % i]
-    del f_locals[".count"]
-
-def decref(key):
-    """decrease the tracking count and delete the current key"""
-    f_locals=currentframe().f_back.f_locals
-    del f_locals[".%s" % key]
-    if f_locals[".count"]==0:
-        del f_locals[".count"]
-    else:
-        f_locals[".count"]-=1
-    
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
     count=0
@@ -176,8 +193,19 @@ else:
     def is_alternative_statement(line):
         return line.startswith("elif") or line.startswith("else") or line.startswith("case") or line.startswith("default")
 is_alternative_statement.__doc__="Checks if a line is an alternative statement"
+########################
+### code adjustments ###
+########################
+def skip_alternative_statements(line_iter):
+    """Skips all alternative statements for the control flow adjustment"""
+    for index,line in line_iter:
+        temp_indent=get_indent(line)
+        temp_line=line[temp_indent:]
+        if not is_alternative_statement(temp_line):
+            break
+    return index,line,temp_indent
 
-def control_flow_adjust(lines,reference_indent=4):
+def control_flow_adjust(lines,indexes,reference_indent=4):
     """
     removes unreachable control flow blocks that 
     will get in the way of the generators state
@@ -189,46 +217,30 @@ def control_flow_adjust(lines,reference_indent=4):
     It will also add 'try:' when there's an
     'except' line on the next minimum indent
     """
-    flag,current_min,alternative=False,get_indent(lines[0]),is_alternative_statement(lines[0][4:])
-    if current_min == reference_indent:
-        flag=True
-        if not is_alternative_statement(lines[0][reference_indent:]):
-            return flag,lines
-    new_lines=[]
-    for index,line in enumerate(lines): ## is having no lines possible? This should raise an error ##
-        temp=get_indent(line)
+    new_lines,flag,current_min=[],False,get_indent(lines[0])
+    line_iter=enumerate(lines)
+    for index,line in line_iter:
+        temp_indent=get_indent(line)
+        temp_line=line[temp_indent:]
         ## skip over all alternative statements until it's not an alternative statement ##
-        if alternative and temp > current_min:
-            continue
-        elif temp == current_min:
-            ## this needs to be checked in case we need to remove an except statement if it shows up
-            ##  on the first instance 
-            ## I'm thinking that it shouldn't happen since the line should go into the except
-            ## block rather than the statement
-            # if temp_line.startswith("except"):
-            #     continue
-            alternative=is_alternative_statement(line[temp:])
-        elif temp < current_min:
-            current_min=temp
+        if is_alternative_statement(temp_line):
+            end_index,line,temp_indent=skip_alternative_statements(line_iter)
+            del indexes[index:end_index]
+            index=end_index
+        if temp_indent < current_min:
+            current_min=temp_indent
             if current_min == reference_indent:
                 flag=True
-            ## check for changes ##
-            temp_line=line[temp:]
             if temp_line.startswith("except"):
-                if current_min != reference_indent:
-                    new_lines=[" "*4+"try:"]+new_lines+[" "*4+line]
-                else:
-                    return flag,[" "*4+"try:"]+new_lines+[" "*4+line]+lines[index:]
-                continue
-            alternative=is_alternative_statement(temp_line)
-        if alternative:
-            continue
+                new_lines=[" "*4+"try:"]+indent_lines(new_lines)+[line[current_min-4:]]
+                indexes=[indexes[0]]+indexes
         ## add the line (adjust if indentation is not reference_indent) ##
         if current_min != reference_indent:
-            new_lines+=[line[current_min-reference_indent-4:]] ## -reference_indent-4 adjusts the initial block to an indentation of reference_indent ##
+            ## adjust using the current_min until it's the same as reference_indent ##
+            new_lines+=[line[current_min-4:]]
         else:
-            return flag,new_lines+lines[current_min-4:][index:]
-    return flag,new_lines
+            return flag,new_lines+indent_lines(lines[index:],4-reference_indent),indexes
+    return flag,new_lines,indexes
 
 def indent_lines(lines,indent=4):
     """indents a list of strings acting as lines"""
@@ -238,7 +250,7 @@ def indent_lines(lines,indent=4):
         return [line[get_indent(line)+indent:] for line in lines]
     return lines
 
-def temporary_loop_adjust(lines,outer_loop):
+def temporary_loop_adjust(lines,indexes,outer_loop,*pos):
     """
     Formats the current code block 
     being executed such that all the
@@ -251,7 +263,7 @@ def temporary_loop_adjust(lines,outer_loop):
     """
     ## skip over for/while and definition blocks ##
     new_lines,flag,lines=[],False,iter(lines)
-    for line in lines:
+    for index,line in enumerate(lines):
         indent=get_indent(line)
         temp_line=line[indent:]
         ## skip loop and definition blocks ##
@@ -269,11 +281,13 @@ def temporary_loop_adjust(lines,outer_loop):
         elif temp_line.startswith("break"):
             flag=True
             new_lines+=["locals()['.continue']=False","break"]
+            indexes=indexes[index:]+indexes[index]+indexes[:index]
         else:
             new_lines+=[line]
     if flag: ## we can't adjust the indent during since it's determined only once it hits a line that requires adjusting ##
-        return True,["while True:"]+indent_lines(new_lines)+["if locals()['.continue']:"]+indent_lines(outer_loop)
-    return False,new_lines+outer_loop
+        # for indexes, we can't have any internal code counted towards the linetable which means mapping to the relevant line number ##
+        return ["while True:"]+indent_lines(new_lines)+["if locals()['.continue']:"]+indent_lines(outer_loop),[0]+indexes+[len(indexes)+1]+list(range(*pos))
+    return new_lines+outer_loop,indexes+list(range(*pos))
 
 def has_node(line,node):
     """Checks if a node has starting IDs that match"""
@@ -306,21 +320,33 @@ def send_adjust(line):
             flag=2
             break
     if flag:
+        reciever="="
+        if flag == 2:
+            reciever+="locals()['.send']"
         ## indicator       yield statement            assignments
-        return flag,["=".join(parts[index:]),"=".join(parts[:index])+"=locals()['.send']"]
+        return flag,["=".join(parts[index:]),"=".join(parts[:index])+reciever]
     return None,None
 
-class frame(object):
-    """acts as the initial FrameType"""
-    f_locals={".send":None}
-    f_lineno=0
-
-    def __init__(self,frame=None):
-        if frame:
-            for attr in dir(frame):
-                if not attr.startswith("_"):
-                    setattr(self,attr,getattr(frame,attr))
-
+def get_loops(lineno,jump_positions):
+    """
+    returns a list of tuples (start_lineno,end_lineno) for the loop 
+    positions in the source code that encapsulate the current lineno
+    """
+    ## get the outer loops that contian the current lineno ##
+    loops=[]
+    ## jump_positions are in the form (start_lineno,end_lineno) ##
+    for pos in jump_positions: ## importantly we go from start to finish to capture nesting loops ##
+        ## make sure the lineno is contained within the position for a ##
+        ## loop adjustment and because the jump positions are ordered we ##
+        ## can also break when the start lineno is beyond the current lineno ##
+        if lineno < pos[0]:
+            break
+        if lineno < pos[1]:
+            loops+=[pos]
+    return loops
+######################
+### expr_getsource ###
+######################
 def code_attrs():
     """
     all the attrs used by a CodeType object in 
@@ -417,7 +443,9 @@ def expr_getsource(FUNC):
         except:
             pass
     raise Exception("No matches to the original source code found")
-
+###############
+### genexpr ###
+###############
 def extract_genexpr(source_lines):
     """Extracts each generator expression from a list of the source code lines"""
     source,ID,is_genexpr,number_of_expressions,depth,prev="","",False,0,0,(0,"")
@@ -509,7 +537,9 @@ def unpack_genexpr(source):
            [indent*(index)+line for index,line in enumerate(if_blocks,start=len(lines)+1)]+\
            [indent*(index)+'decref(".%s")' % (index-1) for index in range(len(lines),1,-1)]
            ## we don't need to do '.0' here since it will be the end of the function e.g. it'll get garbage collected
-
+##############
+### lambda ###
+##############
 def extract_lambda(source_code):
     """Extracts each lambda expression from the source code string"""
     source,ID,is_lambda,lambda_depth,prev="","",False,0,(0,"")
@@ -552,35 +582,31 @@ def extract_lambda(source_code):
     ## in case of a current match ending ##
     if is_lambda:
         yield source
-
+#################
+### Generator ###
+#################
 """
 TODO:
 
-1. finish the following:
+1. format errors - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
+                 - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
+                   (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
 
+2. consider named expressions e.g. (a:=...) in how it might effect i.e. extract_lambda/extract_genexpr among others potentially
+   also consider how brackets could mess with extract_genexpr and extract_lambda
+
+3. write tests
 control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
-_custom_adjustment  - check if 'yield from' send adjustment is correct and if you should do locals()['.i'] or f_locals
-control_flow_adjust - indentation needs fixing so that it all ends in an indentation of 4
-_loop_adjust        - needs checking
-
-2. create a linetable or include an enumerated list in the adjusters so that we can easily map the current line of the state to the lineno of the source
+4. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
+ - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
+ - use getcode and getframe for more generalizability
+   also consider coroutines e.g. cr_code, cr_frame, etc.
 
 ---------
 - other -
 ---------
- - use getcode and getframe for more generalizability
  - use ctypes.pythonapi.PyLocals_to_Fast on the frame if needed
- - check the linenos
- - consider named expressions e.g. (a:=...) in how it might effect i.e. extract_lambda/extract_genexpr among others potentially
- - fix the type annotations and docstrings since things might have changed
-
-3. format errors                                                               - throw
-4. add type checking and other methods that could be useful to users reasonable for generator functions
-5. write tests
-6. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
- - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
-   
-   also consider coroutines e.g. cr_code, cr_frame, etc.
+ - add type checking and other methods that could be useful to users reasonable for generator functions
 """
 class Generator(object):
     """
@@ -637,7 +663,6 @@ class Generator(object):
                 self._skip_indent=0
                 indent=" "*number_of_indents
                 if temp_line.startswith("yield from "):
-                    ## will locals()['.i'] suffice? or does it have to be f_locals??? ##
                     return [indent+"currentframe().f_back.f_locals['.yieldfrom']="+temp_line[11:],
                             indent+"for currentframe().f_back.f_locals['.i'] in currentframe().f_back.f_locals['.yieldfrom']:",
                             indent+"    return currentframe().f_back.f_locals['.i']"]
@@ -652,14 +677,16 @@ class Generator(object):
                 ## handles the .send method ##
                 flag,adjustment=send_adjust(line)
                 if flag:
-                    if flag==1:
+                    if flag==2:
                         ## 5: to get past the 'yield'
-                        return [indent+"return"+adjustment[0][5:]]+adjustment[1]
+                        return [indent+"return"+adjustment[0][5:],
+                                indent+adjustment[1]]
                     else:
                         ## 11: to get past the 'yield from'
                         return [indent+"currentframe().f_back.f_locals['.yieldfrom']="+adjustment[0][11:],
                                 indent+"for currentframe().f_back.f_locals['.i'] in currentframe().f_back.f_locals['.yieldfrom']:",
-                                indent+"    return currentframe().f_back.f_locals['.i']"]+adjustment[1]
+                                indent+"    return currentframe().f_back.f_locals['.i']",
+                                indent+"    %scurrentframe().f_back.f_locals['.yieldfrom'].send(currentframe().f_back.f_locals['.send'])" % adjustment[1]]
         return [line]
 
     def _clean_source_lines(self):
@@ -682,7 +709,7 @@ class Generator(object):
         _skip_indent: the indent level of a definition being defined (definitions shouldn't be adjusted)
         """
         ## for loop adjustments ##
-        self.jump_positions,self._jump_stack,self._skip_indent=[],[],0
+        self.jump_positions,self._jump_stack,self._skip_indent,lineno=[],[],0,0
         ## setup source as an iterator and making sure the first indentation's correct ##
         source=enumerate(self.source[get_indent(source):])
         line,lines,indented,space,prev=" "*4,[],False,0,(0,"")
@@ -721,7 +748,8 @@ class Generator(object):
                         reference_indent=get_indent(line)
                         while self._jump_stack and reference_indent <= self._jump_stack[-1][0]: # -1: top of stack, 0: start lineno
                             self.jump_positions[self._jump_stack.pop()[1]][1]=len(lines)+1 ## +1 assuming exclusion slicing on the stop index ##
-                    lines+=self._custom_adjustment(line)
+                    lineno+=1
+                    lines+=self._custom_adjustment(line,lineno)
                 ## start a new line ##
                 if char in ":;":
                     indented=True # just in case
@@ -742,24 +770,6 @@ class Generator(object):
         ## recording the jump positions needed in the for loop adjustments) ##
         del self._jump_stack,self._skip_indent
         return lines
-
-    def _get_loops(self):
-        """
-        returns a list of tuples (start_lineno,end_lineno) for the loop 
-        positions in the source code that encapsulate the current lineno
-        """
-        ## get the outer loops that contian the current lineno ##
-        loops,temp_lineno=[],self.lineno
-        ## jump_positions are in the form (start_lineno,end_lineno) ##
-        for pos in self.jump_positions: ## importantly we go from start to finish to capture nesting loops ##
-            ## make sure the lineno is contained within the position for a ##
-            ## loop adjustment and because the jump positions are ordered we ##
-            ## can also break when the start lineno is beyond the current lineno ##
-            if temp_lineno < pos[0]:
-                break
-            if temp_lineno < pos[1]:
-                loops+=[pos]
-        return loops
 
     def _create_state(self):
         """
@@ -782,34 +792,38 @@ class Generator(object):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
-        loops=self._get_loops()
+        loops=get_loops(self.lineno,self.jump_positions)
         if loops:
             blocks=""
             while loops:
                 start_pos,end_pos=loops.pop()
                 reference_indent=get_indent(self._source_lines[start_pos])
+                temp_block=self._source_lines[temp_lineno:end_pos]
+                indexes=list(range(temp_lineno,end_pos))
                 if get_indent(self._source_lines[temp_lineno]) - reference_indent > 4:
-                    flag,temp_block=control_flow_adjust(self._source_lines[temp_lineno:end_pos],reference_indent) ## do we pass in a reference indent?
+                    flag,temp_block,indexes=control_flow_adjust(temp_block,indexes,reference_indent)
                     if flag: ## indicates if any of the lines were equal to the reference indent ##
-                        flag,temp_block=temporary_loop_adjust(temp_block)
+                        temp_block,indexes=temporary_loop_adjust(temp_block,indexes,self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
                 else: ## we shouldn't get an empty line otherwise this would be an error ##
-                    flag,temp_block=temporary_loop_adjust(temp_block)
-                if flag:
-                    temp_block=["while True:"]+temp_block+[" "*4+"break","if locals()['.continue']:"]
-                else:
-                    temp_block+=self._source_lines[start_pos:end_pos]
+                    temp_block,indexes=temporary_loop_adjust(temp_block,indexes,self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
+                ## add the new source lines and corresponding indexes and move the lineno forwards ##
                 blocks+=temp_block
+                linetable+=indexes
                 temp_lineno=end_pos
-            self.state="\n".join(blocks+self._source_lines[end_pos:])
+            self.state="\n".join(blocks+self._source_lines[end_pos:]) ## end_pos: is not in the loop so we have to add it
+            self.linetable=linetable
             return
-        self.state="\n".join(control_flow_adjust(self._source_lines[temp_lineno:])[1])
+        ## doesn't need a reference indent since no loops therefore it'll be set to 4 automatically ##
+        indexes=list(range(temp_lineno,len(self._source_lines)))
+        flag,block,indexes=control_flow_adjust(self._source_lines[temp_lineno:],indexes)
+        self.state="\n".join(block)
+        self.linetable=indexes
 
     ## try not to use variables here (otherwise it can mess with the state) ##
     init="""def next_state():
     locals().update(currentframe().f_back.f_locals['self'].gi_frame.f_locals)
     currentframe().f_back.f_locals['self'].gi_frame=currentframe()
-    ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(currentframe().f_back), ctypes.c_int(0))
-"""
+    ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(currentframe().f_back), ctypes.c_int(0))"""
     init_len=init.count("\n")+1
 
     def init_states(self):
@@ -851,6 +865,8 @@ class Generator(object):
                 ## cleaning the expression ##
                 self._source_lines=unpack_genexpr(self.source)
             else:
+                self.source=getsource(FUNC.gi_code)
+                self._source_lines=self._clean_source_lines()
                 """
                 TODO: 
                 running function generators will need something in 
@@ -862,8 +878,7 @@ class Generator(object):
                 Therefore, already running generators can skip
                 the ';' when cleaning source lines potentially
                 """
-                self.source=getsource(FUNC.gi_code)
-                self._source_lines=self._clean_source_lines()
+                self.lineno=FUNC.gi_frame.f_lineno ## is incorrect but needs figuring out ##
             self.gi_code=FUNC.gi_code
             ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
             if hasattr(FUNC,"gi_yieldfrom"):
@@ -892,7 +907,7 @@ class Generator(object):
             self.gi_frame=frame()
             self.gi_suspended=False
             self.gi_yieldfrom=None
-        self.lineno=0
+            self.lineno=0 ## modified every time __next__ is called ##
         self.gi_running=False
         self.state=None
         self.state_generator=self.init_states()
@@ -936,24 +951,19 @@ class Generator(object):
         next(self.state_generator) ## it will raise a StopIteration for us
         ## update with the new state and get the frame ##
         exec(self.init+self.state,globals(),locals())
-        try: # get the locals dict, update the line position, and return the result
-            self.gi_running=True
-            result=locals()["next_state"]()
-            self.gi_running=False
-            ## update the line position ##
-            self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len]
-            return result
-        except Exception as e: ## we should format the exception as it normally would be formatted ideally
-            self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len] ## wouldn't have been reached ##
-            self.throw(e)
+        self.gi_running=True
+        ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
+        result=locals()["next_state"]()
+        self.gi_running=False
+        ## update the line position ##
+        self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len]
+        return result
 
     def send(self,arg):
         """
         Send takes exactly one arguement 'arg' that 
         is sent to the functions yield variable
         """
-        if self.gi_yieldfrom:
-            return self.gi_yieldfrom.send(arg)
         if not self.gi_running:
             raise TypeError("can't send non-None value to a just-started generator")
         if self.reciever:
@@ -968,7 +978,10 @@ class Generator(object):
         self.gi_suspended=False
 
     def throw(self,exception):
-        """Raises an exception from the last line in the current state e.g. only from what has been"""
+        """
+        Raises an exception from the last line in the 
+        current state e.g. only from what has been
+        """
         raise exception
 
     def _copier(self,FUNC):
@@ -1011,27 +1024,32 @@ if (3,5) <= version_info:
     from typing import Callable,Any,NoReturn,Iterable,Generator as builtin_Generator,AsyncGenerator,Coroutine
     from types import CodeType,FrameType
     ### utility functions ###
-    collect_string.__annotations__={"iter_val":Iterable,"reference":str,"return":str}
-    collect_multiline_string.__annotations__={"iter_val":Iterable,"reference":str,"return":str}
+    next.__annotations__={"iter_val":Iterable,"args":tuple[Any],"return":Any}
+    frame.__init__.__annotations__={"frame":FrameType|None,"return":None}
     ## tracking ##
-    track_iter.__annotations__={"obj":object,"return":object}
+    track_iter.__annotations__={"obj":object,"return":Iterable}
     untrack_iters.__annotations__={"return":None}
+    decref.__annotations__={"key":str,"return":None}
     ## cleaning source code ##
+    collect_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
+    collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
     get_indent.__annotations__={"line":str,"return":int}
     skip.__annotations__={"iter_val":Iterable,"n":int,"return":None}
     is_alternative_statement.__annotations__={"line":str,"return":bool}
     ## code adjustments ##
-    control_flow_adjust.__annotations__={"lines":list[str],"return":list[str]}
+    skip_alternative_statements.__annotations__={"line_iter":enumerate,"return":tuple[int,str,int]}
+    control_flow_adjust.__annotations__={"lines":list[str],"indexes":list[int],"return":tuple[bool,list[str],list[int]]}
     indent_lines.__annotations__={"lines":list[str],"indent":int,"return":list[str]}
-    temporary_loop_adjust.__annotations__={"line":str,"return":list[str]}
+    temporary_loop_adjust.__annotations__={"lines":list[str],"indexes":list[int],"outer_loop":list[str],"pos":tuple[int,int],"return":tuple[list[str],list[int]]}
     has_node.__annotations__={"line":str,"node":str,"return":bool}
     send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
+    get_loops.__annotations__={"lineno":int,"jump_positions":list[tuple[int,int]],"return":list[tuple[int,int]]}
     ## expr_getsource ##
     code_attrs.__annotations__={"return":tuple[str,...]}
     attr_cmp.__annotations__={"obj1":object,"obj2":object,"attr":tuple[str,...],"return":bool}
-    expr_getsource.__annotations__={"FUNC":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":str}
     getcode.__annotations__={"obj":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":CodeType}
     getframe.__annotations__={"obj":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":FrameType}
+    expr_getsource.__annotations__={"FUNC":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":str}
     ## genexpr ##
     extract_genexpr.__annotations__={"source_lines":list[str],"return":builtin_Generator}
     unpack_genexpr.__annotations__={"source":str,"return":list[str]}
@@ -1039,8 +1057,7 @@ if (3,5) <= version_info:
     extract_lambda.__annotations__={"source_code":str,"return":builtin_Generator}
     ### Generator ###
     Generator._custom_adjustment.__annotations__={"line":str,"lineno":int,"return":list[str]}
-    Generator._clean_source_lines.__annotations__={"source":str,"return":list[str]}
-    Generator._get_loops.__annotations__={"return":list[tuple[int,int]]}
+    Generator._clean_source_lines.__annotations__={"return":list[str]}
     Generator._create_state.__annotations__={"return":None}
     Generator.init_states.__annotations__={"return":Iterable}
     Generator.__init__.__annotations__={"FUNC":Callable|str|builtin_Generator|dict,"return":None}
