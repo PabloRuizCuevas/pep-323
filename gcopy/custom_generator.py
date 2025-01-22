@@ -129,6 +129,34 @@ def decref(key):
 ############################
 ### cleaning source code ###
 ############################
+
+def skip_source_definition(source):
+    """Skips the function definition and decorators in the source code"""
+    ID,source_iter="",enumerate(source)
+    for index,char in source_iter:
+        ## decorators are ignored ##
+        while char=="@":
+            while char!="\n":
+                index,char=next(source_iter)
+            index,char=next(source_iter)
+        if char.isalnum():
+            ID+=char
+            if ID=="def" and next(source_iter)[1]==" ":
+                while char!="(":
+                    index,char=next(source_iter)
+                break
+        else:
+            ID=""
+    depth=1
+    for index,char in source_iter:
+        if char==":" and depth==0:
+            return source[index+1:]
+        if char in "([{":
+            depth+=1
+        elif char in ")]}":
+            depth-=1
+    raise SyntaxError("Unexpected format encountered")
+
 def collect_string(iter_val,reference):
     """
     Skips strings in an iterable assuming correct python 
@@ -136,11 +164,11 @@ def collect_string(iter_val,reference):
     
     Note: make sure iter_val is an enumerated type
     """
-    index,char=next(iter_val)
-    backslash=False
-    line=""
-    while char!=reference and not backslash:
-        index,char=next(iter_val)
+    line,backslash=reference,False
+    for index,char in iter_val:
+        if char==reference and not backslash:
+            line+=char
+            break
         line+=char
         backslash=False
         if char=="\\":
@@ -154,21 +182,26 @@ def collect_multiline_string(iter_val,reference):
     qoutation mark
     
     Note: make sure iter_val is an enumerated type
+    
+    if a string starts with 3 qoutations
+    then it's classed as a multistring
     """
-    indexes=[]
-    line=""
-    while True:
-        # skip strings
-        index,temp_line=collect_string(iter_val,reference)
-        line+=temp_line
-        indexes+=[index]
-        if len(indexes) == 3:
-            if indexes[2]-indexes[1] != 1:
-                indexes=[indexes[2]]
-            elif indexes[1]-indexes[0] != 1:
-                indexes=indexes[1:]
+    line,backslash,end_reference,prev,count=reference,False,reference*3,-2,0
+    for index,char in iter_val:
+        if char==reference and not backslash:
+            if index-prev==1:
+                count+=1
             else:
-                return index,line
+                count=0
+            prev=index
+            if count==2:
+                line+=char
+                break
+        line+=char
+        backslash=False
+        if char=="\\":
+            backslash=True
+    return index,line
 
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
@@ -291,7 +324,7 @@ def temporary_loop_adjust(lines,indexes,outer_loop,*pos):
 
 def has_node(line,node):
     """Checks if a node has starting IDs that match"""
-    nodes,checks=[],node.split()
+    ID,nodes,checks="",[],node.split()
     for char in line:
         ## no strings allowed ##
         if char=="'" or char=='"':
@@ -588,6 +621,8 @@ def extract_lambda(source_code):
 """
 TODO:
 
+general testing to make sure everything works before any more changes are made
+
 1. format errors - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
                  - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
                    (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
@@ -714,19 +749,20 @@ class Generator(object):
         ## for loop adjustments ##
         self.jump_positions,self._jump_stack,self._skip_indent,lineno=[],[],0,0
         ## setup source as an iterator and making sure the first indentation's correct ##
-        source=enumerate(self.source[get_indent(source):])
-        line,lines,indented,space,indentation,prev=" "*4,[],False,0,4,(0,"")
+        source=skip_source_definition(self.source)
+        source=enumerate(source[get_indent(source):])
+        line,lines,indented,space,indentation,prev=" "*4,[],False,0,4,(0,0,"")
         ## enumerate since I want the loop to use an iterator but the 
         ## index is needed to retain it for when it's used on get_indent
         for index,char in source:
             ## collect strings ##
             if char=="'" or char=='"':
-                if prev[0]-1==index and char==prev[1]:
+                if prev[0]+2==prev[1]+1==index and prev[2]==char:
                     string_collector=collect_multiline_string
                 else:
                     string_collector=collect_string
-                index,temp_line=string_collector(source,char)
-                prev=(index,char)
+                temp_index,temp_line=string_collector(source,char)
+                prev=(index,temp_index,char)
                 line+=temp_line
             ## makes the line singly spaced while retaining the indentation ##
             elif char==" ":
@@ -759,6 +795,7 @@ class Generator(object):
                     indented=True # just in case
                     line=" "*indentation
                 else:
+                    space=index
                     indented=False
                     line=""
                 if char in ":;":
@@ -797,7 +834,8 @@ class Generator(object):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
-        loops=get_loops(self.lineno,self.jump_positions)
+        temp_lineno=self.lineno
+        loops=get_loops(temp_lineno,self.jump_positions)
         if loops:
             blocks=""
             while loops:
@@ -869,6 +907,7 @@ class Generator(object):
                 self.source=expr_getsource(FUNC)
                 ## cleaning the expression ##
                 self._source_lines=unpack_genexpr(self.source)
+                self.lineno=len(self._source_lines)
             else:
                 self.source=getsource(FUNC.gi_code)
                 self._source_lines=self._clean_source_lines()
@@ -891,6 +930,7 @@ class Generator(object):
             else:
                 self.gi_yieldfrom=None
             self.gi_suspended=True
+            self.gi_frame=FUNC.gi_frame
         ## uninitialized generator ##
         else:
             ## source code string ##
@@ -1029,13 +1069,13 @@ if (3,5) <= version_info:
     from typing import Callable,Any,NoReturn,Iterable,Generator as builtin_Generator,AsyncGenerator,Coroutine
     from types import CodeType,FrameType
     ### utility functions ###
-    next.__annotations__={"iter_val":Iterable,"args":tuple[Any],"return":Any}
     frame.__init__.__annotations__={"frame":FrameType|None,"return":None}
     ## tracking ##
     track_iter.__annotations__={"obj":object,"return":Iterable}
     untrack_iters.__annotations__={"return":None}
     decref.__annotations__={"key":str,"return":None}
     ## cleaning source code ##
+    skip_source_definition.__annotations__={"source":str,"return":str}
     collect_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
     collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
     get_indent.__annotations__={"line":str,"return":int}
