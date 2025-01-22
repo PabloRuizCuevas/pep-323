@@ -713,7 +713,7 @@ class Generator(object):
                     ## close the generator then return ##
                     [indent+"currentframe().f_back.f_locals['self'].close()",line]
                 ## handles the .send method ##
-                flag,adjustment=send_adjust(line)
+                flag,adjustment=send_adjust(temp_line)
                 if flag:
                     if flag==2:
                         ## 5: to get past the 'yield'
@@ -866,8 +866,9 @@ class Generator(object):
     init="""def next_state():
     locals().update(currentframe().f_back.f_locals['self'].gi_frame.f_locals)
     currentframe().f_back.f_locals['self'].gi_frame=currentframe()
-    ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(currentframe().f_back), ctypes.c_int(0))"""
-    init_len=init.count("\n")+1
+    ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(currentframe().f_back), ctypes.c_int(0))
+"""
+    init_len=init.count("\n")
 
     def init_states(self):
         """
