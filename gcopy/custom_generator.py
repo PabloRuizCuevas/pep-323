@@ -816,18 +816,19 @@ class Generator(Pickler):
         self.jump_positions,self._jump_stack,self._skip_indent,lineno=[],[],0,0
         ## setup source as an iterator and making sure the first indentation's correct ##
         source=skip_source_definition(self.source)
-        source=enumerate(source[get_indent(source):])
+        source=source[get_indent(source):] ## we need to make sure the source is saved for skipping for line continuations ##
+        source_iter=enumerate(source)
         line,lines,indented,space,indentation,prev=" "*4,[],False,0,4,(0,0,"")
         ## enumerate since I want the loop to use an iterator but the 
         ## index is needed to retain it for when it's used on get_indent
-        for index,char in source:
+        for index,char in source_iter:
             ## collect strings ##
             if char=="'" or char=='"':
                 if prev[0]+2==prev[1]+1==index and prev[2]==char:
                     string_collector=collect_multiline_string
                 else:
                     string_collector=collect_string
-                temp_index,temp_line=string_collector(source,char)
+                temp_index,temp_line=string_collector(source_iter,char)
                 prev=(index,temp_index,char)
                 line+=temp_line
             ## makes the line singly spaced while retaining the indentation ##
@@ -842,7 +843,7 @@ class Generator(Pickler):
                 space=index
             ## join everything after the line continuation until the next \n or ; ##
             elif char=="\\":
-                skip(source,get_indent(self.source[index+1:])) ## +1 since 'index:' is inclusive ##
+                skip(source_iter,get_indent(source[index+1:])) ## +1 since 'index:' is inclusive ##
             ## create new line ##
             elif char in "\n;:":
                 ## make sure to include it ##
@@ -870,7 +871,7 @@ class Generator(Pickler):
         ## then you just pop them all off as being the same end_lineno ##
         end_lineno=len(lines)+1
         while self._jump_stack:
-            self.jump_positions[self._jump_stack.pop()[1]][1]=end_lineno            
+            self.jump_positions[self._jump_stack.pop()[1]][1]=end_lineno
         ## are not used by this generator (was only for formatting source code and 
         ## recording the jump positions needed in the for loop adjustments) ##
         del self._jump_stack,self._skip_indent
@@ -960,7 +961,6 @@ class Generator(Pickler):
         """
         ## dict ##
         if isinstance(FUNC,dict):
-            ## will adjust attrs later. Still have to see what's going to be used first ##
             for attr in self._attrs:
                 setattr(self,attr,FUNC[attr])
         ## running generator ##
@@ -1068,7 +1068,6 @@ class Generator(Pickler):
             self.gi_frame.f_locals[".send"]=None
             self.gi_frame=frame(self.gi_frame)
             if len(self.linetable) > 1:
-                print(self.linetable)
                 self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len]
 
     def send(self,arg):
