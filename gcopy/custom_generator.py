@@ -938,31 +938,28 @@ class Generator(Pickler):
         also contains the rest of the source lines as well
         """
         if loops:
-            temp_lineno=self.gi_frame.f_lineno ## for 0 based indexing ##
-            linetable=[]
-            blocks=[]
-            while loops:
-                start_pos,end_pos=loops.pop()
-                reference_indent=get_indent(self._source_lines[start_pos])
-                temp_block=self._source_lines[temp_lineno:end_pos]
-                indexes=list(range(temp_lineno,end_pos))
+            blocks,linetable,temp_lineno=[],[],self.gi_frame.f_lineno ## for 0 based indexing ##
+            start_pos,end_pos=loops.pop()
+            temp_block,reference_indent,indexes=self._source_lines[temp_lineno:end_pos],get_indent(self._source_lines[start_pos]),list(range(temp_lineno,end_pos))
+            ## adjustment ##
+            temp_block,indexes=loop_adjust(*control_flow_adjust(temp_block,indexes,reference_indent),self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
+            ## update ##
+            blocks+=temp_block;linetable+=indexes;temp_lineno=end_pos
+            for start_pos,end_pos in loops:
+                temp_block,reference_indent,indexes=self._source_lines[temp_lineno:end_pos],get_indent(self._source_lines[start_pos]),list(range(temp_lineno,end_pos))
                 ## adjustments ##
-                temp_block,indexes=loop_adjust(*control_flow_adjust(temp_block,indexes,reference_indent),self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
-                ## add the new source lines and corresponding indexes and move the lineno forwards ##
-                blocks+=temp_block
-                linetable+=indexes
-                temp_lineno=end_pos
+                temp_block,indexes=loop_adjust(temp_block,indexes,self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
+                ## update ##
+                blocks+=temp_block;linetable+=indexes;temp_lineno=end_pos
                 print(f"{temp_lineno,start_pos,end_pos,indexes=}")
                 print(f"{blocks,linetable=}")
-            self.state="\n".join(blocks+self._source_lines[end_pos:]) ## end_pos: is not in the loop so we have to add it
+            self.state="\n".join(blocks+self._source_lines[temp_lineno:])
             self.linetable=linetable
             return
         temp_lineno=self.lineno-1 ## for 0 based indexing ##
-        ## doesn't need a reference indent since no loops therefore it'll be set to 4 automatically ##
         indexes=list(range(temp_lineno,len(self._source_lines)))
-        block,indexes=control_flow_adjust(self._source_lines[temp_lineno:],indexes)
+        block,self.linetable=control_flow_adjust(self._source_lines[temp_lineno:],indexes)
         self.state="\n".join(block)
-        self.linetable=indexes
 
     ## try not to use variables here (otherwise it can mess with the state) ##
     init="""def next_state():
