@@ -875,7 +875,12 @@ class Generator(Pickler):
             elif char=="\\":
                 skip(source_iter,get_indent(source[index+1:])) ## +1 since 'index:' is inclusive ##
             ## create new line ##
-            elif char in "\n;:":
+            elif char in "#\n;:":
+                ## skip comments ##
+                if char=="#":
+                    for index,char in source_iter:
+                        if char == "\n":
+                            break
                 ## make sure to include it ##
                 if char==":":
                     indentation=get_indent(line)+4 # in case of ';'
@@ -978,7 +983,7 @@ class Generator(Pickler):
         """
         ## since self.state starts as 'None' ##
         yield self._create_state()
-        while self.state and len(self.linetable) > 1:
+        while self.state and len(self.linetable) > self.gi_frame.f_lineno:
             yield self._create_state()
 
     _attrs=('_source_lines','gi_code','gi_frame','gi_running',
@@ -1100,10 +1105,22 @@ class Generator(Pickler):
         finally:
             ## update the line position and frame ##
             self.gi_running=False
-            self.gi_frame.f_locals[".send"]=None
-            self.gi_frame=frame(self.gi_frame)
-            if len(self.linetable) > 1:
-                self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len]+1 ## +1 to get the next lineno after returning ##
+            if self.gi_frame:
+                self.gi_frame.f_locals[".send"]=None
+                self.gi_frame=frame(self.gi_frame)
+                self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init_len
+                ## check if the lineno is in a loop and if so adjust the state ##
+                ## e.g. if the line is in a loop then regardless of if it has ##
+                ## been through or not it will still work if we adjust it ##
+                self.lineno=self.linetable[self.gi_frame.f_lineno]
+                # loops=get_loops(self.state[self.lineno-1],self.jump_positions)
+                # if loops:
+                #     pass
+                if len(self.linetable) > self.gi_frame.f_lineno:
+                    self.lineno+=1 ## +1 to get the next lineno after returning ##
+                else:
+                    ## EOF ##
+                    self.lineno=len(self._source_lines)+1
 
     def send(self,arg):
         """
