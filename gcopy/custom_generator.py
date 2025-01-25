@@ -176,7 +176,7 @@ def collect_multiline_string(iter_val,reference):
     if a string starts with 3 qoutations
     then it's classed as a multistring
     """
-    line,backslash,end_reference,prev,count=reference,False,reference*3,-2,0
+    line,backslash,prev,count=reference,False,-2,0
     for index,char in iter_val:
         if char==reference and not backslash:
             if index-prev==1:
@@ -192,6 +192,34 @@ def collect_multiline_string(iter_val,reference):
         if char=="\\":
             backslash=True
     return index,line
+
+def collect_definition(line,lines,lineno,source,source_iter,reference_indent,prev):
+    """Collects definitions from source"""
+    indent=reference_indent+1
+    while reference_indent < indent:
+        ## we're not specific about formatting the definitions ##
+        ## we just need to make sure to include them ##
+        for index,char in source_iter:
+            ## collect strings ##
+            if char=="'" or char=='"':
+                if prev[0]+2==prev[1]+1==index and prev[2]==char:
+                    string_collector=collect_multiline_string
+                else:
+                    string_collector=collect_string
+                temp_index,temp_line=string_collector(source_iter,char)
+                prev=(index,temp_index,char)
+                line+=temp_line
+            ## newline ##
+            elif char == "\n":
+                break
+            else:
+                line+=char
+        ## add the line and get the indentation to check if continuing ##
+        lineno+=1
+        lines+=[line]
+        line,indent="",get_indent(source[index+1:])
+    ## make sure to return the index and char for the indentation ##
+    return index,char,lineno,lines
 
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
@@ -774,8 +802,8 @@ class Generator(Pickler):
         if temp_line.startswith("yield "):
             return [indent+"return"+temp_line[5:]] ## 5 to retain the whitespace ##
         if temp_line.startswith("for ") or temp_line.startswith("while "):
-            self.jump_positions+=[(lineno,None)]
-            self._jump_stack+=[(number_of_indents,len(self.jump_positions)-1)]
+            self.jump_positions+=[[lineno,None]] ## has to be a list since we're assigning ##
+            self._jump_stack+=[(number_of_indents,len(self.jump_positions)-1)] ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
             return [line]
         if temp_line.startswith("return "):
             ## close the generator then return ##
@@ -855,43 +883,21 @@ class Generator(Pickler):
                 if not line.isspace(): ## empty lines are possible ##
                     reference_indent=get_indent(line)
                     if self._jump_stack:
+                        end_lineno=len(lines)+1
                         while self._jump_stack and reference_indent <= self._jump_stack[-1][0]: # -1: top of stack, 0: start lineno
-                            self.jump_positions[self._jump_stack.pop()[1]][1]=len(lines)+1 ## +1 assuming exclusion slicing on the stop index ##
+                            self.jump_positions[self._jump_stack.pop()[1]][1]=end_lineno ## +1 assuming exclusion slicing on the stop index ##
                     ## skip the definitions ##
                     if is_definition(line[reference_indent:]):
-                        indent=reference_indent+1
-                        while reference_indent < indent:
-                            ## we're not specific about formatting the definitions ##
-                            ## we just need to make sure to include them ##
-                            for index,char in source_iter:
-                                ## collect strings ##
-                                if char=="'" or char=='"':
-                                    if prev[0]+2==prev[1]+1==index and prev[2]==char:
-                                        string_collector=collect_multiline_string
-                                    else:
-                                        string_collector=collect_string
-                                    temp_index,temp_line=string_collector(source_iter,char)
-                                    prev=(index,temp_index,char)
-                                    line+=temp_line
-                                ## newline ##
-                                elif char == "\n":
-                                    break
-                                else:
-                                    line+=char
-                            ## add the line and get the indentation to check if continuing ##
-                            lineno+=1
-                            lines+=[line]
-                            line,indent="",get_indent(source[index+1:])
+                        index,char,lineno,lines=collect_definition(line,lines,lineno,source,source_iter,reference_indent,prev)
                     else:
                         lineno+=1
                         lines+=self._custom_adjustment(line,lineno)
                 ## start a new line ##
                 if char in ":;":
-                    indented=True # just in case
-                    line=" "*indentation
+                    # just in case
+                    indented,line=True," "*indentation
                 else:
-                    indented=False
-                    line=""
+                    indented,line=False,""
                 space=index ## this is important (otherwise we get more indents than necessary) ##
             else:
                 line+=char
@@ -926,7 +932,7 @@ class Generator(Pickler):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
-        temp_lineno=self.lineno
+        temp_lineno=self.lineno-1 ## for 0 based indexing ##
         loops=get_loops(temp_lineno,self.jump_positions)
         if loops:
             linetable=[]
@@ -1043,7 +1049,7 @@ class Generator(Pickler):
             self.gi_frame=frame()
             self.gi_suspended=False
             self.gi_yieldfrom=None
-            self.lineno=0 ## modified every time __next__ is called ##
+            self.lineno=1 ## modified every time __next__ is called; always start at line 1 ##
         self.gi_running=False
         self.state=None
         self.state_generator=self.init_states()
@@ -1097,7 +1103,7 @@ class Generator(Pickler):
             self.gi_frame.f_locals[".send"]=None
             self.gi_frame=frame(self.gi_frame)
             if len(self.linetable) > 1:
-                self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len]
+                self.lineno=self.linetable[self.gi_frame.f_lineno-self.init_len]+1 ## +1 to get the next lineno after returning ##
 
     def send(self,arg):
         """
