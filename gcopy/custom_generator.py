@@ -131,10 +131,12 @@ def skip_source_definition(source):
             index,char=next(source_iter)
         if char.isalnum():
             ID+=char
-            if ID=="def" and next(source_iter)[1]==" ":
-                while char!="(":
-                    index,char=next(source_iter)
-                break
+            if len(ID)==3:
+                if ID=="def" and next(source_iter)[1]==" ":
+                    while char!="(":
+                        index,char=next(source_iter)
+                    break
+                return source
         else:
             ID=""
     depth=1
@@ -675,9 +677,9 @@ class frame(Pickler):
     """
     _attrs=('f_back','f_code','f_lasti','f_lineno','f_locals',
             'f_trace','f_trace_lines','f_trace_opcodes')
-    _not_allowed=("f_globals")
-    f_locals={".send":None}
-    f_lineno=0
+    _not_allowed=("f_globals",)
+    f_locals={}
+    f_lineno=1
     f_globals=globals()
     f_builtins=__builtins__
 
@@ -713,7 +715,7 @@ class code(Pickler):
                 setattr(self,attr,getattr(code_obj,attr))
 
     def __bool__(self):
-        """Used on i.e. if frame:"""
+        """Used on i.e. if code_obj:"""
         for attr in self._attrs:
             if not hasattr(self,attr):
                 return False
@@ -916,7 +918,7 @@ class Generator(Pickler):
         del self._jump_stack
         return lines
 
-    def _create_state(self):
+    def _create_state(self,loops):
         """
         creates a section of modified source code to be used in a 
         function to act as a generators state
@@ -937,11 +939,10 @@ class Generator(Pickler):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
-        temp_lineno=self.lineno-1 ## for 0 based indexing ##
-        loops=get_loops(temp_lineno,self.jump_positions)
         if loops:
+            temp_lineno=self.gi_frame.f_lineno ## for 0 based indexing ##
             linetable=[]
-            blocks=""
+            blocks=[]
             while loops:
                 start_pos,end_pos=loops.pop()
                 reference_indent=get_indent(self._source_lines[start_pos])
@@ -960,6 +961,7 @@ class Generator(Pickler):
             self.state="\n".join(blocks+self._source_lines[end_pos:]) ## end_pos: is not in the loop so we have to add it
             self.linetable=linetable
             return
+        temp_lineno=self.lineno-1 ## for 0 based indexing ##
         ## doesn't need a reference indent since no loops therefore it'll be set to 4 automatically ##
         indexes=list(range(temp_lineno,len(self._source_lines)))
         flag,block,indexes=control_flow_adjust(self._source_lines[temp_lineno:],indexes)
@@ -982,9 +984,11 @@ class Generator(Pickler):
         lines that have the yield statements
         """
         ## since self.state starts as 'None' ##
-        yield self._create_state()
-        while self.state and len(self.linetable) > self.gi_frame.f_lineno:
-            yield self._create_state()
+        yield self._create_state(get_loops(self.gi_frame.f_lineno,self.jump_positions))
+        loops=get_loops(self.gi_frame.f_lineno,self.jump_positions)
+        while (self.state and len(self.linetable) > self.gi_frame.f_lineno) or loops:
+            yield self._create_state(loops)
+            loops=get_loops(self.gi_frame.f_lineno,self.jump_positions)
 
     _attrs=('_source_lines','gi_code','gi_frame','gi_running',
             'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
@@ -1109,15 +1113,8 @@ class Generator(Pickler):
                 self.gi_frame.f_locals[".send"]=None
                 self.gi_frame=frame(self.gi_frame)
                 self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init_len
-                ## check if the lineno is in a loop and if so adjust the state ##
-                ## e.g. if the line is in a loop then regardless of if it has ##
-                ## been through or not it will still work if we adjust it ##
-                self.lineno=self.linetable[self.gi_frame.f_lineno]
-                # loops=get_loops(self.state[self.lineno-1],self.jump_positions)
-                # if loops:
-                #     pass
                 if len(self.linetable) > self.gi_frame.f_lineno:
-                    self.lineno+=1 ## +1 to get the next lineno after returning ##
+                    self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
                 else:
                     ## EOF ##
                     self.lineno=len(self._source_lines)+1
