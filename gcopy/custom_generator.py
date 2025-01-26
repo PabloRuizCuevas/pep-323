@@ -52,7 +52,6 @@ For python 2:
 
 from types import FunctionType
 from inspect import getsource,currentframe,findsource
-import ctypes
 from copy import deepcopy,copy
 from sys import version_info
 #########################
@@ -404,6 +403,34 @@ def get_loops(lineno,jump_positions):
         if lineno < pos[1]:
             loops+=[pos]
     return loops
+
+def extract_iter(line):
+    """
+    Extracts the iterator from a for loop
+    
+    e.g. we extract the second ... in:
+    for ... in ...:
+    """
+    #  get the length of the ids on the left hand side of the "in" keyword
+    ID=""
+    line_iter=enumerate(line)
+    for index,char in line_iter:
+        if char.isalphnum():
+            ID+=char
+            if ID=="in":
+                if next(line_iter)[1]==" ":
+                    break
+                ID=""
+        else:
+            ID=""
+    # collect everything on the right hand side of the "in" keyword
+    ## +2 to get past 'n ', -1 to remove the end colon ##
+    ## (the end colon indicates a new line and therefore will be the last character) ##
+    iterator=line[index+2:-1]
+    ## remove the leading and trailing whitespace and then it should be a variable name ##
+    if not iterator.strip().isalnum():
+        return iterator
+
 ######################
 ### expr_getsource ###
 ######################
@@ -728,22 +755,30 @@ class code(Pickler):
 """
 TODO:
 
-general testing to make sure everything works before any more changes are made
+1. general testing and fixing to make sure everything works before any more changes are made
 
-0. fix for closure variables and the linenos, also consider storing the lineno as the gi_frame.f_lineno
+    Needs fixing:
+    - finish fixing loop_adjut and the indexes
+    - fix the first variable in the source code for generator expressions since these get changed to '.0'
+    e.g. in unpack_genexpr
 
-1. format errors - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
-                 - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
-                   (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
+    Needs checking:
+    - check _custom_adjustment on the reliance on locals to see if this will be okay
+    - think about if locals needs to be monkey patched since no gurantees on how it works across versions
 
-2. consider named expressions e.g. (a:=...) in how it might effect i.e. extract_lambda/extract_genexpr among others potentially
-   also consider how brackets could mess with extract_genexpr and extract_lambda
+    - consider named expressions e.g. (a:=...) in how it might effect i.e. extract_lambda/extract_genexpr among others potentially
+    also consider how brackets could mess with extract_genexpr and extract_lambda
 
-3. write tests
+    format errors
+    - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
+    - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
+    (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
+
+2. write tests
 control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
 need to test what happens when there are no lines e.g. empty lines or no state / EOF
 
-4. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
+3. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
  - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
  - use getcode and getframe for more generalizability
    also consider coroutines e.g. cr_code, cr_frame, etc.
@@ -807,6 +842,11 @@ class Generator(Pickler):
         if temp_line.startswith("for ") or temp_line.startswith("while "):
             self.jump_positions+=[[lineno,None]] ## has to be a list since we're assigning ##
             self._jump_stack+=[(number_of_indents,len(self.jump_positions)-1)] ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
+            if temp_line.startswith("for "):
+                iterator,index=extract_iter(temp_line[4:]) # 4: to skip 'for '
+                if iterator:
+                    return [indent+"locals[%s]=%s" % (indent,iterator), ## we need to setup an iterator cache ##
+                            indent+temp_line[index:]+"locals()[%s]:"]
             return [line]
         if temp_line.startswith("return "):
             ## close the generator then return ##
