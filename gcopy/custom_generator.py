@@ -305,7 +305,8 @@ def indent_lines(lines,indent=4):
     if indent > 0:
         return [" "*indent+line for line in lines]
     if indent < 0:
-        return [line[get_indent(line)+indent:] for line in lines]
+        indent=-indent
+        return [line[indent:] for line in lines]
     return lines
 
 def loop_adjust(lines,indexes,outer_loop,*pos):
@@ -343,8 +344,10 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
         else:
             new_lines+=[line]
     if flag:
-        return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+indent_lines(outer_loop,8),indexes[0]+indexes+[pos[0]]+list(range(*pos))
-    return lines+outer_loop,indexes+list(range(*pos))
+        return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+indent_lines(outer_loop,8-get_indent(outer_loop[0])),
+    [indexes[0]]+indexes+[pos[0]]+list(range(*pos))
+    
+    return lines+indent_lines(outer_loop,4-get_indent(outer_loop[0])),indexes+list(range(*pos))
 
 def has_node(line,node):
     """Checks if a node has starting IDs that match"""
@@ -938,15 +941,24 @@ class Generator(Pickler):
         also contains the rest of the source lines as well
         """
         if loops:
-            temp_lineno=self.gi_frame.f_lineno-1 ## for 0 based indexing ##
+            temp_lineno=self.gi_frame.f_lineno
             start_pos,end_pos=loops.pop()
             ## adjustment ##
-            blocks,indexes=control_flow_adjust(self._source_lines[temp_lineno:end_pos],list(range(temp_lineno,end_pos)),get_indent(self._source_lines[start_pos]))
-            blocks,indexes=loop_adjust(blocks,indexes,self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
+            blocks,indexes=control_flow_adjust(
+                self._source_lines[temp_lineno:end_pos],
+                list(range(temp_lineno,end_pos)),
+                get_indent(self._source_lines[start_pos])
+            )
+            blocks,indexes=loop_adjust(
+                blocks,indexes,
+                self._source_lines[start_pos-1:end_pos],
+                *(start_pos,end_pos)
+            )
             self.linetable+=indexes
             ## add all the outer loops ##
             for start_pos,end_pos in reversed(loops):
-                blocks+=self._source_lines[start_pos:end_pos]
+                block=self._source_lines[start_pos-1:end_pos]
+                blocks+=indent_lines(block,4-get_indent(block[0]))
                 self.linetable+=list(range(start_pos,end_pos))
             self.state="\n".join(blocks+self._source_lines[end_pos:])
             return
