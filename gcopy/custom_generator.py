@@ -981,7 +981,7 @@ class Generator(Pickler):
         """
         init="""def next_state():
     locals=currentframe().f_back.f_locals['self']._locals
-    currentframe().f_back.f_locals['self'].gi_frame=currentframe()
+    currentframe().f_back.f_locals['.frame']=currentframe()
 """
         assign=[" "*4+key+"=locals()['"+key+"']" for key in self.gi_frame.f_locals \
                 if key.isalnum() and key!="locals"]
@@ -1127,6 +1127,7 @@ class Generator(Pickler):
         finally:
             ## update the line position and frame ##
             self.gi_running=False
+            self.gi_frame=locals()[".frame"]
             if self.gi_frame:
                 self.gi_frame.f_locals[".send"]=None
                 self.gi_frame=frame(self.gi_frame)
