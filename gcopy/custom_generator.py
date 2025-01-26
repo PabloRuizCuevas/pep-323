@@ -968,12 +968,28 @@ class Generator(Pickler):
         self.state="\n".join(block)
 
     ## try not to use variables here (otherwise it can mess with the state) ##
-    init="""def next_state():
-    locals().update(currentframe().f_back.f_locals['self'].gi_frame.f_locals)
+    def _locals(self):
+        """
+        proxy to replace locals within 'next_state' within __next__
+        while still retaining the same functionality
+        """
+        return self.gi_frame.f_locals
+    
+    def _init(self):
+        """
+        initializes the frame
+        """
+        init="""def next_state():
+    locals=currentframe().f_back.f_locals['self']._locals
     currentframe().f_back.f_locals['self'].gi_frame=currentframe()
-    ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(currentframe().f_back), ctypes.c_int(0))
 """
-    init_len=init.count("\n")
+        assign=[" "*4+key+"=locals()['"+key+"']" for key in self.gi_frame.f_locals \
+                if key.isalnum() and key!="locals"]
+        if assign:
+            assign="\n".join(assign)+"\n"
+        else:
+            assign=""
+        return init+assign
 
     def init_states(self):
         """
@@ -1100,10 +1116,13 @@ class Generator(Pickler):
         # set the next state and setup the function
         next(self.state_generator) ## it will raise a StopIteration for us
         ## update with the new state and get the frame ##
+        self.init=self._init()
         exec(self.init+self.state,globals(),locals())
         self.gi_running=True
         ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
         try:
+            print(self.init)
+            print("self.init.count: ",self.init.count("\n"))
             return locals()["next_state"]()
         finally:
             ## update the line position and frame ##
@@ -1111,7 +1130,7 @@ class Generator(Pickler):
             if self.gi_frame:
                 self.gi_frame.f_locals[".send"]=None
                 self.gi_frame=frame(self.gi_frame)
-                self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init_len
+                self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init.count("\n")
                 if len(self.linetable) > self.gi_frame.f_lineno:
                     self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
                 else:
