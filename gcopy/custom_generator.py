@@ -938,34 +938,21 @@ class Generator(Pickler):
         also contains the rest of the source lines as well
         """
         if loops:
-            blocks,linetable,temp_lineno=[],[],self.gi_frame.f_lineno ## for 0 based indexing ##
+            temp_lineno=self.gi_frame.f_lineno-1 ## for 0 based indexing ##
             start_pos,end_pos=loops.pop()
             ## adjustment ##
-            temp_block,indexes=loop_adjust(
-                *control_flow_adjust(
-                    self._source_lines[temp_lineno:end_pos],  # temp_block
-                    list(range(temp_lineno,end_pos)),         # indexes
-                    get_indent(self._source_lines[start_pos]) # reference_indent
-                ),
-                self._source_lines[start_pos:end_pos],        # outer_loop
-                *(start_pos,end_pos)                          # pos
-            )
+            blocks,indexes=control_flow_adjust(self._source_lines[temp_lineno:end_pos],list(range(temp_lineno,end_pos)),get_indent(self._source_lines[start_pos]))
+            blocks,indexes=loop_adjust(blocks,indexes)
+            if blocks:
+                blocks=["for _ in ():",blocks,"    if locals()['.continue']:"]+indent_lines(self._source_lines[start_pos:end_pos])
+            else:
+                blocks=self._source_lines[start_pos:end_pos]
+            self.linetable+=indexes[0]+indexes+indexes[-1]+list(range(start_pos,end_pos))
             ## update ##
-            blocks+=temp_block;linetable+=indexes;temp_lineno=end_pos
             for start_pos,end_pos in reversed(loops):
-                ## adjustments ##
-                temp_block,indexes=loop_adjust(
-                    self._source_lines[temp_lineno:end_pos],
-                    list(range(temp_lineno,end_pos)),
-                    self._source_lines[start_pos:end_pos],
-                    *(start_pos,end_pos)
-                )
-                ## update ##
-                blocks+=temp_block;linetable+=indexes;temp_lineno=end_pos
-                print(f"{temp_lineno,start_pos,end_pos,indexes=}")
-                print(f"{blocks,linetable=}")
-            self.state="\n".join(blocks+self._source_lines[temp_lineno:])
-            self.linetable=linetable
+                blocks+=self._source_lines[start_pos:end_pos]
+                self.linetable+=list(range(start_pos,end_pos))
+            self.state="\n".join(blocks+self._source_lines[end_pos:])
             return
         temp_lineno=self.lineno-1 ## for 0 based indexing ##
         indexes=list(range(temp_lineno,len(self._source_lines)))
