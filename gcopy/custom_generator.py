@@ -319,17 +319,18 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
     flow statements by implementing a
     simple while loop and if statement
     """
-    new_lines,flag,lines=[],False,iter(lines)
-    for index,line in enumerate(lines):
+    new_lines,flag,line_iter=[],False,enumerate(lines)
+    for index,line in line_iter:
         indent=get_indent(line)
         temp_line=line[indent:]
         ## skip over for/while and definition blocks ##
         while temp_line.startswith("for ") or temp_line.startswith("while ") or is_definition(temp_line):
-            for line in lines:
+            for index,line in line_iter:
                 temp_indent=get_indent(line)
                 if temp_indent <= indent:
                     break
                 new_lines+=[line]
+            ## continue back ##
             indent=temp_indent
             temp_line=line[indent:]
         if temp_line.startswith("continue"):
@@ -341,10 +342,18 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
             indexes=indexes[index:]+indexes[index]+indexes[:index]
         else:
             new_lines+=[line]
-    if flag: ## we can't adjust the indent during since it's determined only once it hits a line that requires adjusting ##
-        # for indexes, we can't have any internal code counted towards the linetable which means mapping to the relevant line number ##
-        return ["while True:"]+indent_lines(new_lines)+["if locals()['.continue']:"]+indent_lines(outer_loop),[0]+indexes+[len(indexes)+1]+list(range(*pos))
-    return new_lines+outer_loop,indexes+list(range(*pos))
+    if flag:
+        return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+indent_lines(outer_loop,8),indexes[0]+indexes+[pos[0]]+list(range(*pos))
+    return lines+outer_loop,indexes+list(range(*pos))
+
+
+def h(self,start_pos,end_pos,blocks):
+    
+    if blocks:
+        blocks=["for _ in ():",blocks,"    if locals()['.continue']:"]+indent_lines(self._source_lines[start_pos:end_pos])
+    else:
+        blocks=self._source_lines[start_pos:end_pos]
+
 
 def has_node(line,node):
     """Checks if a node has starting IDs that match"""
@@ -942,13 +951,9 @@ class Generator(Pickler):
             start_pos,end_pos=loops.pop()
             ## adjustment ##
             blocks,indexes=control_flow_adjust(self._source_lines[temp_lineno:end_pos],list(range(temp_lineno,end_pos)),get_indent(self._source_lines[start_pos]))
-            blocks,indexes=loop_adjust(blocks,indexes)
-            if blocks:
-                blocks=["for _ in ():",blocks,"    if locals()['.continue']:"]+indent_lines(self._source_lines[start_pos:end_pos])
-            else:
-                blocks=self._source_lines[start_pos:end_pos]
-            self.linetable+=indexes[0]+indexes+indexes[-1]+list(range(start_pos,end_pos))
-            ## update ##
+            blocks,indexes=loop_adjust(blocks,indexes,self._source_lines[start_pos:end_pos],*(start_pos,end_pos))
+            self.linetable+=indexes
+            ## add all the outer loops ##
             for start_pos,end_pos in reversed(loops):
                 blocks+=self._source_lines[start_pos:end_pos]
                 self.linetable+=list(range(start_pos,end_pos))
