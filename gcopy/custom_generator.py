@@ -346,15 +346,6 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
         return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+indent_lines(outer_loop,8),indexes[0]+indexes+[pos[0]]+list(range(*pos))
     return lines+outer_loop,indexes+list(range(*pos))
 
-
-def h(self,start_pos,end_pos,blocks):
-    
-    if blocks:
-        blocks=["for _ in ():",blocks,"    if locals()['.continue']:"]+indent_lines(self._source_lines[start_pos:end_pos])
-    else:
-        blocks=self._source_lines[start_pos:end_pos]
-
-
 def has_node(line,node):
     """Checks if a node has starting IDs that match"""
     ID,nodes,checks="",[],node.split()
