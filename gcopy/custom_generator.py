@@ -415,7 +415,7 @@ def extract_iter(line):
     ID=""
     line_iter=enumerate(line)
     for index,char in line_iter:
-        if char.isalphnum():
+        if char.isalnum():
             ID+=char
             if ID=="in":
                 if next(line_iter)[1]==" ":
@@ -426,10 +426,12 @@ def extract_iter(line):
     # collect everything on the right hand side of the "in" keyword
     ## +2 to get past 'n ', -1 to remove the end colon ##
     ## (the end colon indicates a new line and therefore will be the last character) ##
-    iterator=line[index+2:-1]
+    index+=2
+    iterator=line[index:-1]
     ## remove the leading and trailing whitespace and then it should be a variable name ##
     if not iterator.strip().isalnum():
-        return iterator
+        return iterator,index
+    return None,None
 
 ######################
 ### expr_getsource ###
@@ -845,8 +847,8 @@ class Generator(Pickler):
             if temp_line.startswith("for "):
                 iterator,index=extract_iter(temp_line[4:]) # 4: to skip 'for '
                 if iterator:
-                    return [indent+"locals[%s]=%s" % (indent,iterator), ## we need to setup an iterator cache ##
-                            indent+temp_line[index:]+"locals()[%s]:"]
+                    return [indent+"locals()[%s]=%s" % (number_of_indents,iterator), ## we need to setup an iterator cache ##
+                            indent+temp_line[:index+4]+"locals()[%s]:" % number_of_indents] ## +4 since we pre-sliced the line by 4
             return [line]
         if temp_line.startswith("return "):
             ## close the generator then return ##
@@ -1022,9 +1024,10 @@ class Generator(Pickler):
         init="""def next_state():
     locals=currentframe().f_back.f_locals['self']._locals
     currentframe().f_back.f_locals['.frame']=currentframe()
+    locals()[3]=3
 """
         assign=[" "*4+key+"=locals()['"+key+"']" for key in self.gi_frame.f_locals \
-                if key.isalnum() and key!="locals"]
+                if isinstance(key,str) and key.isalnum() and key!="locals"]
         if assign:
             assign="\n".join(assign)+"\n"
         else:
@@ -1167,10 +1170,16 @@ class Generator(Pickler):
         finally:
             ## update the line position and frame ##
             self.gi_running=False
+            ## update the frame ##
+            f_back=self.gi_frame
             self.gi_frame=locals()[".frame"]
             if self.gi_frame:
-                self.gi_frame.f_locals[".send"]=None
                 self.gi_frame=frame(self.gi_frame)
+                self.gi_frame.f_back=f_back
+                ## update f_locals ##
+                f_back.f_locals.update(self.gi_frame.f_locals)
+                self.gi_frame.f_locals=f_back.f_locals
+                self.gi_frame.f_locals[".send"]=None
                 self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init.count("\n")
                 if len(self.linetable) > self.gi_frame.f_lineno:
                     self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
