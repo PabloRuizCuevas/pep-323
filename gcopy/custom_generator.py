@@ -1,31 +1,5 @@
 # -*- coding: utf-8 -*- 
 """
-License:
-
-MIT License
-
-Copyright (c) 2025 Benj1bear
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-------------------------------------------------------------------------------------
-
 In order to make this module as backwards compatible as possible 
 some of the functions used will be written out manually and a 
 preprocessor or otherwise condition statemnt will go over what 
@@ -51,9 +25,11 @@ For python 2:
 """
 
 from types import FunctionType
-from inspect import getsource,currentframe,findsource
+from inspect import getsource,currentframe,findsource,getframeinfo
 from copy import deepcopy,copy
 from sys import version_info
+from readline import get_history_item
+
 #########################
 ### utility functions ###
 #########################
@@ -76,6 +52,22 @@ if version_info < (2,6):
                 return args[0]
         return iter_val.next()
 
+def is_cli():
+    try:
+        get_history_item(0)
+        return True
+    except IndexError:
+        return False
+
+def get_indent(line):
+    """Gets the number of spaces used in an indentation"""
+    count=0
+    for char in line:
+        if char!=" ":
+            break
+        count+=1
+    return count
+
 ################
 ### tracking ###
 ################
@@ -87,34 +79,25 @@ def track_iter(obj):
     of an iterator via a for loop implictely does not allow for 
     reliable extraction from the garbage collector and thus manually
     assigning the iterator for tracking is used
+
+    Note: variables are signified as '.%s' % number_of_indents
+    i.e.
+        for i in range(3) is 4 indents and thus is assigned '.4'
+    
+    This way makes it more effective to retrieve the iterator
+    rather than appending iterators. This means only numbers
+    that are divisble by 4 should not be used in general usage
+    by users.
     """
     obj=iter(obj)
-    f_locals=currentframe().f_back.f_locals
-    if not isinstance(f_locals.get(".count",None),int):
-        f_locals[".count"]=0
-    key=".%s" % f_locals[".count"]
-    while key in f_locals:
-        f_locals[".count"]+=1
-        key=".%s" % f_locals[".count"]
-    f_locals[key]=obj
+    frame=currentframe().f_back
+    if is_cli():
+        code_context=get_history_item(-frame.f_lineno)
+    else:
+        code_context=getframeinfo(frame).code_context[0]
+    frame.f_locals[".%s" % get_indent(code_context)]=obj
     return obj
 
-# if needed (generator expressions won't need this functions or other things in __main__ may)
-def untrack_iters():
-    """removes all currently tracked iterators on the current frame"""
-    f_locals=currentframe().f_back.f_locals
-    for i in range(f_locals[".count"]):
-        del f_locals[".%s" % i]
-    del f_locals[".count"]
-
-def decref(key):
-    """decrease the tracking count and delete the current key"""
-    f_locals=currentframe().f_back.f_locals
-    del f_locals[".%s" % key]
-    if f_locals[".count"]==0:
-        del f_locals[".count"]
-    else:
-        f_locals[".count"]-=1
 ############################
 ### cleaning source code ###
 ############################
@@ -222,15 +205,6 @@ def collect_definition(line,lines,lineno,source,source_iter,reference_indent,pre
     ## make sure to return the index and char for the indentation ##
     return index,char,lineno,lines
 
-def get_indent(line):
-    """Gets the number of spaces used in an indentation"""
-    count=0
-    for char in line:
-        if char!=" ":
-            break
-        count+=1
-    return count
-
 def skip(iter_val,n):
     """Skips the next n iterations in a for loop"""
     for _ in range(n):
@@ -308,6 +282,44 @@ def indent_lines(lines,indent=4):
         return [line[indent:] for line in lines]
     return lines
 
+def extract_iter(line,number_of_indents):
+    """
+    Extracts the iterator from a for loop
+    
+    e.g. we extract the second ... in:
+    for ... in ...:
+    """
+    #  get the length of the ids on the left hand side of the "in" keyword
+    ID=""
+    line_iter=enumerate(line)
+    for index,char in line_iter:
+        if char.isalnum():
+            ID+=char
+            if ID=="in":
+                if next(line_iter)[1]==" ":
+                    break
+                ID=""
+        else:
+            ID=""
+    # collect everything on the right hand side of the "in" keyword
+    ## +2 to get past 'n ', -1 to remove the end colon ##
+    ## (the end colon indicates a new line and therefore will be the last character) ##
+    index+=2
+    iterator=line[index:-1]
+    ## remove the leading and trailing whitespace and then it should be a variable name ##
+    if iterator.strip().isalnum():
+        return line
+    return line[:index]+"locals()[.%s]:" % number_of_indents
+
+def iter_adjust(outer_loop):
+    """adjust an outer loop with its tracked iterator if it uses one"""
+    flag,line=False,outer_loop[0]
+    number_of_indents=get_indent(line)
+    if line[number_of_indents:].startswith("for "):
+        outer_loop[0]=extract_iter(line,number_of_indents)
+        flag=True
+    return flag,outer_loop
+
 def loop_adjust(lines,indexes,outer_loop,*pos):
     """
     Formats the current code block 
@@ -342,10 +354,11 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
             indexes=indexes[index:]+indexes[index]+indexes[:index]
         else:
             new_lines+=[line]
+    ## adjust it in case it's an iterator ##
+    flag,outer_loop=iter_adjust(outer_loop)
     if flag:
-        return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+indent_lines(outer_loop,8-get_indent(outer_loop[0])),
-    [indexes[0]]+indexes+[pos[0]]+list(range(*pos))
-    
+        return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+\
+               indent_lines(outer_loop,8-get_indent(outer_loop[0])),[indexes[0]]+indexes+[pos[0]]+list(range(*pos))
     return lines+indent_lines(outer_loop,4-get_indent(outer_loop[0])),indexes+list(range(*pos))
 
 def has_node(line,node):
@@ -403,35 +416,6 @@ def get_loops(lineno,jump_positions):
         if lineno < pos[1]:
             loops+=[pos]
     return loops
-
-def extract_iter(line):
-    """
-    Extracts the iterator from a for loop
-    
-    e.g. we extract the second ... in:
-    for ... in ...:
-    """
-    #  get the length of the ids on the left hand side of the "in" keyword
-    ID=""
-    line_iter=enumerate(line)
-    for index,char in line_iter:
-        if char.isalnum():
-            ID+=char
-            if ID=="in":
-                if next(line_iter)[1]==" ":
-                    break
-                ID=""
-        else:
-            ID=""
-    # collect everything on the right hand side of the "in" keyword
-    ## +2 to get past 'n ', -1 to remove the end colon ##
-    ## (the end colon indicates a new line and therefore will be the last character) ##
-    index+=2
-    iterator=line[index:-1]
-    ## remove the leading and trailing whitespace and then it should be a variable name ##
-    if not iterator.strip().isalnum():
-        return iterator,index
-    return None,None
 
 ######################
 ### expr_getsource ###
@@ -750,7 +734,7 @@ class code(Pickler):
             if not hasattr(self,attr):
                 return False
         return True
-                
+
 #################
 ### Generator ###
 #################
@@ -760,9 +744,13 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Needs fixing:
-    - finish fixing loop_adjut and the indexes
-    - fix the first variable in the source code for generator expressions since these get changed to '.0'
-    e.g. in unpack_genexpr
+    - finish fixing loop_adjust and the indexes
+    
+    - fix unpack_genexpr:
+       - with the new track_iter and iter_adjust
+       - make sure the first variable in the source 
+         code for generator expressions since these 
+         get changed to '.0'
 
     Needs checking:
     - check _custom_adjustment on the reliance on locals to see if this will be okay
@@ -844,11 +832,6 @@ class Generator(Pickler):
         if temp_line.startswith("for ") or temp_line.startswith("while "):
             self.jump_positions+=[[lineno,None]] ## has to be a list since we're assigning ##
             self._jump_stack+=[(number_of_indents,len(self.jump_positions)-1)] ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
-            if temp_line.startswith("for "):
-                iterator,index=extract_iter(temp_line[4:]) # 4: to skip 'for '
-                if iterator:
-                    return [indent+"locals()[%s]=%s" % (number_of_indents,iterator), ## we need to setup an iterator cache ##
-                            indent+temp_line[:index+4]+"locals()[%s]:" % number_of_indents] ## +4 since we pre-sliced the line by 4
             return [line]
         if temp_line.startswith("return "):
             ## close the generator then return ##
@@ -999,8 +982,10 @@ class Generator(Pickler):
             self.linetable+=indexes
             ## add all the outer loops ##
             for start_pos,end_pos in reversed(loops):
-                block=self._source_lines[start_pos-1:end_pos]
+                flag,block=iter_adjust(self._source_lines[start_pos-1:end_pos])
                 blocks+=indent_lines(block,4-get_indent(block[0]))
+                if flag:
+                    self.linetable+=[start_pos]
                 self.linetable+=list(range(start_pos,end_pos))
             self.state="\n".join(blocks+self._source_lines[end_pos:])
             return
@@ -1021,18 +1006,18 @@ class Generator(Pickler):
         """
         initializes the frame
         """
-        init="""def next_state():
-    locals=currentframe().f_back.f_locals['self']._locals
-    currentframe().f_back.f_locals['.frame']=currentframe()
-    locals()[3]=3
-"""
         assign=[" "*4+key+"=locals()['"+key+"']" for key in self.gi_frame.f_locals \
                 if isinstance(key,str) and key.isalnum() and key!="locals"]
         if assign:
-            assign="\n".join(assign)+"\n"
+            assign="\n"+"\n".join(assign)
         else:
             assign=""
-        return init+assign
+        test="""def next_state():
+    locals=currentframe().f_back.f_locals['self']._locals%s
+    currentframe().f_back.f_locals['.frame']=currentframe()
+""" % assign
+        print(test)
+        return test
 
     def init_states(self):
         """
@@ -1177,8 +1162,9 @@ class Generator(Pickler):
                 self.gi_frame=frame(self.gi_frame)
                 self.gi_frame.f_back=f_back
                 ## update f_locals ##
-                f_back.f_locals.update(self.gi_frame.f_locals)
-                self.gi_frame.f_locals=f_back.f_locals
+                if f_back:
+                    f_back.f_locals.update(self.gi_frame.f_locals)
+                    self.gi_frame.f_locals=f_back.f_locals
                 self.gi_frame.f_locals[".send"]=None
                 self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init.count("\n")
                 if len(self.linetable) > self.gi_frame.f_lineno:
@@ -1229,8 +1215,6 @@ if (3,5) <= version_info:
     from types import CodeType,FrameType
     ## tracking ##
     track_iter.__annotations__={"obj":object,"return":Iterable}
-    untrack_iters.__annotations__={"return":None}
-    decref.__annotations__={"key":str,"return":None}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
     collect_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
