@@ -619,9 +619,9 @@ def unpack_genexpr(source):
         else:
             ID=""
         if depth==0:
-            if ID == "for":
+            if ID == "for" and next(source_iter)[1] == " ":
                 lines+=[line[:-3]]
-            elif ID == "if" and len(lines) >= 1:
+            elif ID == "if" and next(source_iter)[1] == " " and len(lines) >= 1:
                 lines+=[line[:-2],"if"+source[index:-1]] ## -1 to remove the end bracket
                 has_end_if=True ## for later to ensure for loops iters are extracted ##
                 break
@@ -771,13 +771,14 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Needs fixing:
-    - fix the positions and indexes in _create_state
     
     - fix unpack_genexpr:
        - with the new track_iter and iter_adjust
        - make sure the first variable in the source 
          code for generator expressions since these 
          get changed to '.0'
+
+    - add lineno for running generators in Generator.__init__
 
     Needs checking:
     - check _custom_adjustment on the reliance on locals to see if this will be okay
@@ -992,34 +993,39 @@ class Generator(Pickler):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
+        temp_lineno=self.lineno-1 ## for 0 based indexing ##
         if loops:
-            temp_lineno=self.gi_frame.f_lineno
             start_pos,end_pos=loops.pop()
+            ## for 0 based indexing since they're linenos ##
+            start_pos-=1
+            end_pos-=1
             ## adjustment ##
             blocks,indexes=control_flow_adjust(
-                self._source_lines[temp_lineno:end_pos+1],
-                list(range(temp_lineno,end_pos+1)),
-                get_indent(self._source_lines[start_pos-1])
+                self._source_lines[temp_lineno:end_pos],
+                list(range(temp_lineno,end_pos)),
+                get_indent(self._source_lines[start_pos])
             )
             blocks,indexes=loop_adjust(
                 blocks,indexes,
-                self._source_lines[start_pos-1:end_pos+1],
-                *(start_pos-1,end_pos+1)
+                self._source_lines[start_pos:end_pos],
+                *(start_pos,end_pos)
             )
             self.linetable=indexes
             ## add all the outer loops ##
             for start_pos,end_pos in reversed(loops):
-                flag,block=iter_adjust(self._source_lines[start_pos-1:end_pos])
+                start_pos-=1
+                end_pos-=1
+                flag,block=iter_adjust(self._source_lines[start_pos:end_pos])
                 blocks+=indent_lines(block,4-get_indent(block[0]))
                 if flag:
                     self.linetable+=[start_pos]
                 self.linetable+=list(range(start_pos,end_pos))
             self.state="\n".join(blocks+self._source_lines[end_pos:])
-            print(self.state)
             return
-        temp_lineno=self.lineno-1 ## for 0 based indexing ##
-        indexes=list(range(temp_lineno,len(self._source_lines)))
-        block,self.linetable=control_flow_adjust(self._source_lines[temp_lineno:],indexes)
+        block,self.linetable=control_flow_adjust(
+            self._source_lines[temp_lineno:],
+            list(range(temp_lineno,len(self._source_lines)))
+        )
         self.state="\n".join(block)
 
     ## try not to use variables here (otherwise it can mess with the state) ##
@@ -1055,11 +1061,11 @@ class Generator(Pickler):
         lines that have the yield statements
         """
         ## since self.state starts as 'None' ##
-        yield self._create_state(get_loops(self.gi_frame.f_lineno,self.jump_positions))
-        loops=get_loops(self.gi_frame.f_lineno,self.jump_positions)
+        yield self._create_state(get_loops(self.lineno,self.jump_positions))
+        loops=get_loops(self.lineno,self.jump_positions)
         while (self.state and len(self.linetable) > self.gi_frame.f_lineno) or loops:
             yield self._create_state(loops)
-            loops=get_loops(self.gi_frame.f_lineno,self.jump_positions)
+            loops=get_loops(self.lineno,self.jump_positions)
 
     _attrs=('_source_lines','gi_code','gi_frame','gi_running',
             'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
