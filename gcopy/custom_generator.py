@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*- 
 """
 License:
+
 MIT License
+
 Copyright (c) 2025 Benj1bear
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software, and to permit persons to whom the Software is
 furnished to do so, subject to the following conditions:
+
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -18,6 +23,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
 ------------------------------------------------------------------------------------
 
 In order to make this module as backwards compatible as possible 
@@ -329,7 +335,7 @@ def extract_iter(line,number_of_indents):
     ## remove the leading and trailing whitespace and then it should be a variable name ##
     if iterator.strip().isalnum():
         return line
-    return line[:index]+"locals()[.%s]:" % number_of_indents
+    return line[:index]+"locals()['.%s']:" % number_of_indents
 
 def iter_adjust(outer_loop):
     """adjust an outer loop with its tracked iterator if it uses one"""
@@ -377,9 +383,10 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
     ## adjust it in case it's an iterator ##
     flag,outer_loop=iter_adjust(outer_loop)
     if flag:
-        return ["    for _ in ():"]+indent_lines(new_lines,8)+["    if locals()['.continue']:"]+\
-               indent_lines(outer_loop,8-get_indent(outer_loop[0])),[indexes[0]]+indexes+[pos[0]]+list(range(*pos))
-    return lines+indent_lines(outer_loop,4-get_indent(outer_loop[0])),indexes+list(range(*pos))
+        return ["    locals()['.continue']=True","    for _ in ():"]+indent_lines(new_lines,8-get_indent(new_lines[0]))+\
+               ["    if locals()['.continue']:"]+indent_lines(outer_loop,8-get_indent(outer_loop[0])),\
+               [indexes[0],indexes[0]]+indexes+[pos[0]]+list(range(*pos))
+    return indent_lines(lines,4-get_indent(lines[0]))+indent_lines(outer_loop,4-get_indent(outer_loop[0])),indexes+list(range(*pos))
 
 def has_node(line,node):
     """Checks if a node has starting IDs that match"""
@@ -764,7 +771,7 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Needs fixing:
-    - finish fixing loop_adjust and the indexes
+    - fix the positions and indexes in _create_state
     
     - fix unpack_genexpr:
        - with the new track_iter and iter_adjust
@@ -990,16 +997,16 @@ class Generator(Pickler):
             start_pos,end_pos=loops.pop()
             ## adjustment ##
             blocks,indexes=control_flow_adjust(
-                self._source_lines[temp_lineno:end_pos],
-                list(range(temp_lineno,end_pos)),
-                get_indent(self._source_lines[start_pos])
+                self._source_lines[temp_lineno:end_pos+1],
+                list(range(temp_lineno,end_pos+1)),
+                get_indent(self._source_lines[start_pos-1])
             )
             blocks,indexes=loop_adjust(
                 blocks,indexes,
-                self._source_lines[start_pos-1:end_pos],
-                *(start_pos,end_pos)
+                self._source_lines[start_pos-1:end_pos+1],
+                *(start_pos-1,end_pos+1)
             )
-            self.linetable+=indexes
+            self.linetable=indexes
             ## add all the outer loops ##
             for start_pos,end_pos in reversed(loops):
                 flag,block=iter_adjust(self._source_lines[start_pos-1:end_pos])
@@ -1008,6 +1015,7 @@ class Generator(Pickler):
                     self.linetable+=[start_pos]
                 self.linetable+=list(range(start_pos,end_pos))
             self.state="\n".join(blocks+self._source_lines[end_pos:])
+            print(self.state)
             return
         temp_lineno=self.lineno-1 ## for 0 based indexing ##
         indexes=list(range(temp_lineno,len(self._source_lines)))
