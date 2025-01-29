@@ -79,13 +79,6 @@ if version_info < (2,6):
                 return args[0]
         return iter_val.next()
 
-def is_cli():
-    try:
-        get_history_item(0)
-        return True
-    except IndexError:
-        return False
-
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
     count=0
@@ -111,9 +104,12 @@ def lineno_adjust(FUNC):
             index+=1
     raise ValueError("Could not find line number or the last instruction")
 
-    
-
-
+def is_cli():
+    try:
+        get_history_item(0)
+        return True
+    except IndexError:
+        return False
 
 ################
 ### tracking ###
@@ -138,11 +134,15 @@ def track_iter(obj):
     """
     obj=iter(obj)
     frame=currentframe().f_back
-    if is_cli():
-        code_context=get_history_item(-frame.f_lineno)
+    if frame.f_code.co_name=="<genexpr>":
+        key=getframeinfo(frame).positions.col_offset
     else:
-        code_context=getframeinfo(frame).code_context[0]
-    frame.f_locals[".%s" % get_indent(code_context)]=obj
+        if is_cli():
+            code_context=get_history_item(-frame.f_lineno)
+        else:
+            code_context=getframeinfo(frame).code_context[0]
+        key=get_indent(code_context)
+    frame.f_locals[".%s" % key]=obj
     return obj
 
 ############################
@@ -329,34 +329,56 @@ def indent_lines(lines,indent=4):
         return [line[indent:] for line in lines]
     return lines
 
-def extract_iter(line,number_of_indents):
+def get_iter_offset(line_iter,check,adjustment):
     """
-    Extracts the iterator from a for loop
-    
-    e.g. we extract the second ... in:
-    for ... in ...:
+    Returns the offset of the iterator in a for loop
+    based on a condition function and adjustment
     """
-    #  get the length of the ids on the left hand side of the "in" keyword
-    ID=""
-    line_iter=enumerate(line)
+    depth,ID=0,""
     for index,char in line_iter:
-        if char.isalnum():
+        if char=="(":
+            depth+=1
+        elif char==")":
+            depth-=1
+        if char.isalnum() and depth==0:
             ID+=char
-            if ID=="in":
+            if check(ID):
                 if next(line_iter)[1]==" ":
                     break
                 ID=""
         else:
             ID=""
-    # collect everything on the right hand side of the "in" keyword
-    ## +2 to get past 'n ', -1 to remove the end colon ##
-    ## (the end colon indicates a new line and therefore will be the last character) ##
-    index+=2
-    iterator=line[index:-1]
-    ## remove the leading and trailing whitespace and then it should be a variable name ##
-    if iterator.strip().isalnum():
-        return line
-    return line[:index]+"locals()['.%s']:" % number_of_indents
+    return index+adjustment
+
+def extract_iter(line,number_of_indents=None):
+    """
+    Extracts the iterator from a for loop
+    
+    e.g. we extract the second ... in:
+    for ... in ...:
+    
+    Note: if number_of_indents is None
+    it's assumed to be a generator and
+    the col_offset is taken instead of 
+    the number of indents as the key value
+    """
+    line_iter,start=enumerate(line),(lambda ID: ID=="in",2)
+    if number_of_indents:
+        index=get_iter_offset(line_iter,*start)
+        iterator=line[index:-1]
+        ## remove the leading and trailing whitespace and then it should be a variable name ##
+        if iterator.strip().isalnum():
+            return line
+        return line[:index]+"locals()['.%s']:" % number_of_indents
+    end=(lambda ID: ID=="for" or ID=="if",-3)
+    while line_iter:
+        offset=get_iter_offset(line_iter,*start)
+        end_offset=get_iter_offset(line_iter,*end)
+        iterator=line[offset:end_offset]
+        ## remove the leading and trailing whitespace and then it should be a variable name ##
+        if not iterator.strip().isalnum():
+            line=line[:offset] + "locals()['.%s']:" % offset + line[end_offset:]
+    return line
 
 def iter_adjust(outer_loop):
     """adjust an outer loop with its tracked iterator if it uses one"""
@@ -611,53 +633,6 @@ def extract_genexpr(source_lines):
                 else:
                     ID=""
 
-def unpack_genexpr(source):
-    """unpacks a generator expressions' for loops into a list of source lines"""
-    lines,line,ID,depth,has_end_if,prev=[],"","",0,False,(0,"")
-    source_iter=enumerate(source[1:-1])
-    for index,char in source_iter:
-        if char in "\\\n":
-            continue
-        ## collect strings
-        if char=="'" or char=='"':
-            if prev[0]-1==index and char==prev[1]:
-                string_collector=collect_multiline_string
-            else:
-                string_collector=collect_string
-            index,temp_line=string_collector(source_iter,char)
-            prev=(index,char)
-            line+=temp_line
-            continue
-        if char=="(":
-            depth+=1
-        elif char==")":
-            depth-=1
-        ## accumulate the current line
-        line+=char
-        ## collect IDs
-        if char.isalnum():
-            ID+=char
-        else:
-            ID=""
-        if depth==0:
-            if ID == "for" and next(source_iter)[1] == " ":
-                lines+=[line[:-3]]
-            elif ID == "if" and next(source_iter)[1] == " " and len(lines) >= 1:
-                lines+=[line[:-2],"if"+source[index:-1]] ## -1 to remove the end bracket
-                has_end_if=True ## for later to ensure for loops iters are extracted ##
-                break
-    if_blocks=[lines[0]]
-    if has_end_if:
-        if_blocks=[lines[-1]]+if_blocks
-        lines=lines[1:-1]
-    else: ## no end if
-        lines=lines[1:]+[line]
-    ## arrange into lines making sure to decref the created track_iters
-    indent=" "*4
-    return [indent*(index)+line for index,line in enumerate(lines,start=1)]+\
-           [indent*(index)+line for index,line in enumerate(if_blocks,start=len(lines)+1)]+\
-           [indent*(index)+'decref(".%s")' % (index-1) for index in range(len(lines),1,-1)]
-           ## we don't need to do '.0' here since it will be the end of the function e.g. it'll get garbage collected
 ##############
 ### lambda ###
 ##############
@@ -794,10 +769,13 @@ TODO:
     Needs fixing:
     
     - fix unpack_genexpr:
-       - with the new track_iter and iter_adjust
-       - make sure the first variable in the source 
-         code for generator expressions since these 
-         get changed to '.0'
+       
+       - maybe instead of unpacking it we can just 
+         leave it and update the iterators should 
+         be easier and faster probably
+
+    - fix extract_iter to enable it to retrieve the offset 
+      correctly in relation to track_iter
 
     Needs checking:
 
@@ -1112,7 +1090,7 @@ class Generator(Pickler):
                 self.lineno=len(self._source_lines)
             else:
                 self.source=getsource(FUNC.gi_code)
-                self._source_lines=self._clean_source_lines()
+                self._source_lines=self._clean_source_lines(True)
                 self.lineno=self.linetable[FUNC.gi_frame.f_lineno-1]+lineno_adjust(FUNC)
             self.gi_code=code(FUNC.gi_code)
             ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
