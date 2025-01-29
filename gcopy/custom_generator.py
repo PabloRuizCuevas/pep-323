@@ -55,6 +55,7 @@ from inspect import getsource,currentframe,findsource,getframeinfo
 from copy import deepcopy,copy
 from sys import version_info
 from readline import get_history_item
+from dis import get_instructions
 
 #########################
 ### utility functions ###
@@ -93,6 +94,26 @@ def get_indent(line):
             break
         count+=1
     return count
+
+def lineno_adjust(FUNC):
+    """
+    returns the amount of adjustment needed in terms
+    of how much to add to the current lineno to match
+    the actual starting line for compound statements
+    had these been formatted correctly
+    """
+    code,lasti = getcode(FUNC),getframe(FUNC).f_lasti
+    index,lineno=0,code.co_firstlineno
+    for instruction in get_instructions(code):
+        if instruction.positions.lineno == lineno:
+            if instruction.offset == lasti:
+                return index
+            index+=1
+    raise ValueError("Could not find line number or the last instruction")
+
+    
+
+
 
 ################
 ### tracking ###
@@ -778,11 +799,7 @@ TODO:
          code for generator expressions since these 
          get changed to '.0'
 
-    - add lineno for running generators in Generator.__init__
-
     Needs checking:
-    - check _custom_adjustment on the reliance on locals to see if this will be okay
-    - think about if locals needs to be monkey patched since no gurantees on how it works across versions
 
     - consider named expressions e.g. (a:=...) in how it might effect i.e. extract_lambda/extract_genexpr among others potentially
     also consider how brackets could mess with extract_genexpr and extract_lambda
@@ -879,7 +896,7 @@ class Generator(Pickler):
                         indent+"    %scurrentframe().f_back.f_locals['.yieldfrom'].send(currentframe().f_back.f_locals['.send'])" % adjustment[1]]
         return [line]
 
-    def _clean_source_lines(self):
+    def _clean_source_lines(self,running=False):
         """
         source: str
 
@@ -953,6 +970,9 @@ class Generator(Pickler):
                     else:
                         lineno+=1
                         lines+=self._custom_adjustment(line,lineno)
+                        ## make a linetable if using a running generator ##
+                        if running and char=="\n":
+                            self.linetable+=[lineno]
                 ## start a new line ##
                 if char in ":;":
                     # just in case
@@ -1028,7 +1048,6 @@ class Generator(Pickler):
         )
         self.state="\n".join(block)
 
-    ## try not to use variables here (otherwise it can mess with the state) ##
     def _locals(self):
         """
         proxy to replace locals within 'next_state' within __next__
@@ -1046,12 +1065,11 @@ class Generator(Pickler):
             assign="\n"+"\n".join(assign)
         else:
             assign=""
-        test="""def next_state():
+        ## try not to use variables here (otherwise it can mess with the state) ##
+        return """def next_state():
     locals=currentframe().f_back.f_locals['self']._locals%s
     currentframe().f_back.f_locals['.frame']=currentframe()
 """ % assign
-        print(test)
-        return test
 
     def init_states(self):
         """
@@ -1086,6 +1104,7 @@ class Generator(Pickler):
                 setattr(self,attr,FUNC[attr])
         ## running generator ##
         elif hasattr(FUNC,"gi_code"):
+            self.linetable=[]
             if FUNC.gi_code.co_name=="<genexpr>": ## co_name is readonly e.g. can't be changed by user ##
                 self.source=expr_getsource(FUNC)
                 ## cleaning the expression ##
@@ -1094,18 +1113,7 @@ class Generator(Pickler):
             else:
                 self.source=getsource(FUNC.gi_code)
                 self._source_lines=self._clean_source_lines()
-                """
-                TODO:
-                running function generators will need something in 
-                place for compound statements since only version
-                3.11 and higher has co_positions and there's no 
-                other way that I currently know how to get the 
-                col_offset
-                
-                Therefore, already running generators can skip
-                the ';' when cleaning source lines potentially
-                """
-                self.lineno=FUNC.gi_frame.f_lineno ## is incorrect but needs figuring out ##
+                self.lineno=self.linetable[FUNC.gi_frame.f_lineno-1]+lineno_adjust(FUNC)
             self.gi_code=code(FUNC.gi_code)
             ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
             if hasattr(FUNC,"gi_yieldfrom"):
@@ -1183,8 +1191,6 @@ class Generator(Pickler):
         self.gi_running=True
         ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
         try:
-            print(self.init)
-            print("self.init.count: ",self.init.count("\n"))
             return locals()["next_state"]()
         finally:
             ## update the line position and frame ##
