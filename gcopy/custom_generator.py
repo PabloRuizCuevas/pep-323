@@ -50,7 +50,7 @@ For python 2:
  - builtin function 'next' was introduced in 2.6
 """
 
-from types import FunctionType
+from types import FunctionType,GeneratorType
 from inspect import getsource,currentframe,findsource,getframeinfo
 from copy import deepcopy,copy
 from sys import version_info
@@ -105,11 +105,63 @@ def lineno_adjust(FUNC):
     raise ValueError("Could not find line number or the last instruction")
 
 def is_cli():
+    """Determines if using get_history_item is possible e.g. for CLIs"""
     try:
         get_history_item(0)
         return True
     except IndexError:
         return False
+
+def unpack_genexpr(source):
+    """unpacks a generator expressions' for loops into a list of source lines"""
+    lines,line,ID,depth,has_end_if,prev,has_for,has_end_if=[],"","",0,False,(0,""),False,False
+    source_iter=enumerate(source[1:-1])
+    for index,char in source_iter:
+        if char in "\\\n":
+            continue
+        ## collect strings
+        if char=="'" or char=='"':
+            if prev[0]-1==index and char==prev[1]:
+                string_collector=collect_multiline_string
+            else:
+                string_collector=collect_string
+            index,temp_line=string_collector(source_iter,char)
+            prev=(index,char)
+            line+=temp_line
+            continue
+        if char=="(":
+            depth+=1
+        elif char==")":
+            depth-=1
+        ## accumulate the current line
+        line+=char
+        ## collect IDs
+        if char.isalnum():
+            ID+=char
+        else:
+            ID=""
+        if depth==0:
+            if ID == "for" or ID=="if" and next(source_iter)[1] == " ":
+                if ID =="for":
+                    lines+=[line[:-3]]
+                    line=line[-3:]#+" "
+                    if not has_for:
+                        has_for=len(lines)
+                elif has_for:
+                    lines+=[line[:-2],source[index:-1]] ## -1 to remove the end bracket
+                    has_end_if=True
+                    break
+                else:
+                    lines+=[line[:-2]]
+                    line=line[-2:]+" "
+                ID=""
+    if has_end_if:
+        lines=lines[has_for:-1]+list(reversed(lines[:has_for]+[lines[-1]]))
+    else:
+        lines=lines[has_for:]+list(reversed(lines[:has_for]))
+    ## arrange into lines making sure to decref the created track_iters
+    indent=" "*4
+    return [indent*index+line for index,line in enumerate(lines,start=1)]
 
 ################
 ### tracking ###
@@ -131,6 +183,8 @@ def track_iter(obj):
     rather than appending iterators. This means only numbers
     that are divisble by 4 should not be used in general usage
     by users.
+
+    Using in generator expressions uses the col_offset instead
     """
     obj=iter(obj)
     frame=currentframe().f_back
@@ -284,6 +338,21 @@ def skip_alternative_statements(line_iter,current_min):
             break
     return index,line,temp_indent
 
+def offset_adjust(f_locals):
+    """
+    Adjusts the track_iter created variables
+    used in generator expressions from offset
+    based to indentation based
+    """
+    ## the first offset will probably get in the way ##
+    lineno=0 ## every line will increase the indentation by 4 ##
+    for key,value in f_locals.items():
+        if isinstance(key,str) and key[0]=="." and key[1:].isdigit():
+            del f_locals[key]
+            lineno+=1
+            f_locals[4*lineno]=value
+    return f_locals
+
 def control_flow_adjust(lines,indexes,reference_indent=4):
     """
     removes unreachable control flow blocks that 
@@ -374,10 +443,12 @@ def extract_iter(line,number_of_indents=None):
     while line_iter:
         offset=get_iter_offset(line_iter,*start)
         end_offset=get_iter_offset(line_iter,*end)
+        if line[end_offset]!=" ": ## make sure it's a whitespace ##
+            end_offset-=1
         iterator=line[offset:end_offset]
         ## remove the leading and trailing whitespace and then it should be a variable name ##
         if not iterator.strip().isalnum():
-            line=line[:offset] + "locals()['.%s']:" % offset + line[end_offset:]
+            line[offset:end_offset]="locals()['.%s']" % offset
     return line
 
 def iter_adjust(outer_loop):
@@ -697,8 +768,10 @@ class Pickler(object):
     ## for pickling ##
     def __getstate__(self):
         """Serializing pickle (what object you want serialized)"""
-        return dict((attr,getattr(self,attr)) for attr in self._attrs 
-                    if hasattr(self,attr) and not attr in self._not_allowed)
+        return dict(
+                    (attr,getattr(self,attr)) for attr in self._attrs 
+                    if hasattr(self,attr) and not attr in self._not_allowed
+                )
 
     def __setstate__(self,state):
         """Deserializing pickle (returns an instance of the object with state)"""
@@ -766,35 +839,27 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
-    Needs fixing:
-    
-    - fix unpack_genexpr:
-       
-       - maybe instead of unpacking it we can just 
-         leave it and update the iterators should 
-         be easier and faster probably
-
-    - fix extract_iter to enable it to retrieve the offset 
-      correctly in relation to track_iter
-
     Needs checking:
 
-    - consider named expressions e.g. (a:=...) in how it might effect i.e. extract_lambda/extract_genexpr among others potentially
-    also consider how brackets could mess with extract_genexpr and extract_lambda
+    - extract_lambda and extract_genexpr need to handle excessive bracketing i.e. 
+      (( i for i in range(3) )) but not (( i for i in range(3) )+1)
+
+    - check .send on generator expressions and in general for those that don't use it
 
     format errors
     - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
     - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
     (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
 
-2. write tests
-control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
-need to test what happens when there are no lines e.g. empty lines or no state / EOF
-
-3. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
+2. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
  - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
  - use getcode and getframe for more generalizability
    also consider coroutines e.g. cr_code, cr_frame, etc.
+    
+3. write tests
+
+control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
+need to test what happens when there are no lines e.g. empty lines or no state / EOF
 
 """
 class Generator(Pickler):
@@ -1028,8 +1093,8 @@ class Generator(Pickler):
 
     def _locals(self):
         """
-        proxy to replace locals within 'next_state' within __next__
-        while still retaining the same functionality
+        proxy to replace locals within 'next_state' within 
+        __next__ while still retaining the same functionality
         """
         return self.gi_frame.f_locals
     
@@ -1053,8 +1118,13 @@ class Generator(Pickler):
         """
         Initializes the state generation
 
+        For function generators:
         It goes line by line to find the 
         lines that have the yield statements
+
+        For generator expresssions:
+        it keeps the iteration going 
+        until the frame is empty
         """
         ## since self.state starts as 'None' ##
         yield self._create_state(get_loops(self.lineno,self.jump_positions))
@@ -1083,11 +1153,12 @@ class Generator(Pickler):
         ## running generator ##
         elif hasattr(FUNC,"gi_code"):
             self.linetable=[]
+            self.gi_frame=frame(FUNC.gi_frame)
             if FUNC.gi_code.co_name=="<genexpr>": ## co_name is readonly e.g. can't be changed by user ##
                 self.source=expr_getsource(FUNC)
-                ## cleaning the expression ##
                 self._source_lines=unpack_genexpr(self.source)
-                self.lineno=len(self._source_lines)
+                ## change the offsets into indents ##
+                self.gi_frame.f_locals=offset_adjust(self.gi_frame.f_locals)
             else:
                 self.source=getsource(FUNC.gi_code)
                 self._source_lines=self._clean_source_lines(True)
@@ -1099,7 +1170,6 @@ class Generator(Pickler):
             else:
                 self.gi_yieldfrom=None
             self.gi_suspended=True
-            self.gi_frame=frame(FUNC.gi_frame)
         ## uninitialized generator ##
         else:
             ## source code string ##
@@ -1126,10 +1196,7 @@ class Generator(Pickler):
         self.state=None
         self.state_generator=self.init_states()
         if overwrite:
-            if hasattr(FUNC,"__code__"):
-                currentframe().f_back.f_locals[FUNC.__code__.co_name]=self
-            else:
-                currentframe().f_back.f_locals[FUNC.gi_code.co_name]=self
+            currentframe().f_back.f_locals[getcode(FUNC).co_name]=self
 
     def __len__(self):
         """
@@ -1185,11 +1252,12 @@ class Generator(Pickler):
                     self.gi_frame.f_locals=f_back.f_locals
                 self.gi_frame.f_locals[".send"]=None
                 self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init.count("\n")
-                if len(self.linetable) > self.gi_frame.f_lineno:
-                    self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
-                else:
-                    ## EOF ##
-                    self.lineno=len(self._source_lines)+1
+                if not self.gi_code.co_name=="<genexpr>":
+                    if len(self.linetable) > self.gi_frame.f_lineno:
+                        self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
+                    else:
+                        ## EOF ##
+                        self.lineno=len(self._source_lines)+1
 
     def send(self,arg):
         """
@@ -1198,6 +1266,9 @@ class Generator(Pickler):
         """
         if not self.gi_running:
             raise TypeError("can't send non-None value to a just-started generator")
+        # if self.gi_yieldfrom:
+        #     self.gi_yieldfrom.send(arg)
+        #     return
         self.gi_frame.f_locals()[".send"]=arg
         return next(self)
 
@@ -1207,6 +1278,7 @@ class Generator(Pickler):
         self.gi_frame=None
         self.gi_running=False
         self.gi_suspended=False
+        self.gi_yieldfrom=None
 
     def throw(self,exception):
         """
@@ -1219,31 +1291,39 @@ class Generator(Pickler):
         super().__setstate__(state)
         self.state_generator=self.init_states()
 
-    ## type checking for later ##
+    def __instancecheck__(self, instance):
+        return isinstance(instance,GeneratorType)
 
-    # def __instancecheck__(self, instance):
-    #     pass
-
-    # def __subclasscheck__(self, subclass):
-    #     if subclass==
+    def __subclasscheck__(self, subclass):
+        return issubclass(subclass,GeneratorType) or issubclass(subclass,type(self))
 
 ## add the type annotations if the version is 3.5 or higher ##
 if (3,5) <= version_info:
     from typing import Callable,Any,NoReturn,Iterable,Generator as builtin_Generator,AsyncGenerator,Coroutine
     from types import CodeType,FrameType
+    AnyGenerator=FunctionType|builtin_Generator|AsyncGenerator|Coroutine
+    ## utility functions ##
+    lineno_adjust.__annotations__={"FUNC":AnyGenerator,"return":int}
+    is_cli.__annotations__={"return":bool}
+    unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## tracking ##
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
     collect_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
     collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
+    collect_definition.__annotations__ = {"line": str,"lines": list[str],"lineno": int,"source": str,"source_iter": enumerate,"reference_indent": int,"prev": tuple[int, str],"return": tuple[int, str, int,list[str]]}
     get_indent.__annotations__={"line":str,"return":int}
     skip.__annotations__={"iter_val":Iterable,"n":int,"return":None}
     is_alternative_statement.__annotations__={"line":str,"return":bool}
     ## code adjustments ##
     skip_alternative_statements.__annotations__={"line_iter":enumerate,"return":tuple[int,str,int]}
+    offset_adjust.__annotations__={"f_locals":dict,"return":dict}
     control_flow_adjust.__annotations__={"lines":list[str],"indexes":list[int],"return":tuple[bool,list[str],list[int]]}
     indent_lines.__annotations__={"lines":list[str],"indent":int,"return":list[str]}
+    get_iter_offset.__annotations__={"line_iter":enumerate,"check":Callable[[str],bool],"adjustment":int,"return":int}
+    extract_iter.__annotations__={"line":str,"number_of_indents":int|None,"return":str}
+    iter_adjust.__annotations__={"outer_loop":list[str],"return":tuple[bool,list[str]]}
     loop_adjust.__annotations__={"lines":list[str],"indexes":list[int],"outer_loop":list[str],"pos":tuple[int,int],"return":tuple[list[str],list[int]]}
     has_node.__annotations__={"line":str,"node":str,"return":bool}
     send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
@@ -1251,15 +1331,14 @@ if (3,5) <= version_info:
     ## expr_getsource ##
     code_attrs.__annotations__={"return":tuple[str,...]}
     attr_cmp.__annotations__={"obj1":object,"obj2":object,"attr":tuple[str,...],"return":bool}
-    getcode.__annotations__={"obj":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":CodeType}
-    getframe.__annotations__={"obj":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":FrameType}
-    expr_getsource.__annotations__={"FUNC":FunctionType|builtin_Generator|AsyncGenerator|Coroutine,"return":str}
+    getcode.__annotations__={"obj":AnyGenerator,"return":CodeType}
+    getframe.__annotations__={"obj":AnyGenerator,"return":FrameType}
+    expr_getsource.__annotations__={"FUNC":AnyGenerator,"return":str}
     ## genexpr ##
     extract_genexpr.__annotations__={"source_lines":list[str],"return":builtin_Generator}
-    unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## lambda ##
     extract_lambda.__annotations__={"source_code":str,"return":builtin_Generator}
-    ### utility functions ###
+    ### copying/pickling ###
     Pickler.__copy__.__annotations__={"return":Pickler}
     Pickler.__deepcopy__.__annotations__={"memo":dict,"return":Pickler}
     Pickler.__getstate__.__annotations__={"return":dict}
