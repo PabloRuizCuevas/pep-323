@@ -741,12 +741,19 @@ def extract_lambda(source_code):
 ### pickling/copying ###
 ########################
 class Pickler(object):
-    """class for allowing general copying and pickling of some otherwise uncopyable or unpicklable objects"""
+    """
+    class for allowing general copying and pickling of 
+    some otherwise uncopyable or unpicklable objects
+    """
     _not_allowed=tuple()
+
     def _copier(self,FUNC):
         """copying will create a new generator object but the copier will determine it's depth"""
         items=((attr,FUNC(getattr(self,attr))) for attr in self._attrs if hasattr(self,attr))
-        return type(self)(dict(items))
+        obj=type(self)()
+        obj.__setstate__(dict(items))
+        return obj
+
     ## for copying ##
     def __copy__(self):
         return self._copier(copy)
@@ -1120,7 +1127,7 @@ class Generator(Pickler):
     _attrs=('_source_lines','gi_code','gi_frame','gi_running',
             'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
 
-    def __init__(self,FUNC,overwrite=False):
+    def __init__(self,FUNC=None,overwrite=False):
         """
         Takes in a function or its source code as the first arguement
 
@@ -1130,57 +1137,55 @@ class Generator(Pickler):
          - gi_running: is the generator currently being executed
          - gi_suspended: is the generator currently paused e.g. state is saved
         """
-        ## dict ##
-        if isinstance(FUNC,dict):
-            for attr in self._attrs:
-                setattr(self,attr,FUNC[attr])
-        ## running generator ##
-        elif hasattr(FUNC,"gi_code"):
-            self.linetable=[]
-            self.gi_frame=frame(FUNC.gi_frame)
-            if FUNC.gi_code.co_name=="<genexpr>": ## co_name is readonly e.g. can't be changed by user ##
-                self.source=expr_getsource(FUNC)
-                self._source_lines=unpack_genexpr(self.source)
-                ## change the offsets into indents ##
-                self.gi_frame.f_locals=offset_adjust(self.gi_frame.f_locals)
-            else:
-                self.source=getsource(FUNC.gi_code)
-                self._source_lines=self._clean_source_lines(True)
-                self.lineno=self.linetable[FUNC.gi_frame.f_lineno-1]+lineno_adjust(FUNC)
-            self.gi_code=code(FUNC.gi_code)
-            ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
-            if hasattr(FUNC,"gi_yieldfrom"):
-                self.gi_yieldfrom=FUNC.gi_yieldfrom
-            else:
-                self.gi_yieldfrom=None
-            self.gi_suspended=True
-        ## uninitialized generator ##
-        else:
-            ## source code string ##
-            if isinstance(FUNC,str):
-                self.source=FUNC
-                self.gi_code=code(compile(FUNC,"","eval"))
-            ## generator function ##
-            elif isinstance(FUNC,FunctionType):
-                if FUNC.__code__.co_name=="<lambda>":
+        ## __setstate__ from Pickler._copier ##
+        if not FUNC is None:
+            ## running generator ##
+            if hasattr(FUNC,"gi_code"):
+                self.linetable=[]
+                self.gi_frame=frame(FUNC.gi_frame)
+                if FUNC.gi_code.co_name=="<genexpr>": ## co_name is readonly e.g. can't be changed by user ##
                     self.source=expr_getsource(FUNC)
+                    self._source_lines=unpack_genexpr(self.source)
+                    ## change the offsets into indents ##
+                    self.gi_frame.f_locals=offset_adjust(self.gi_frame.f_locals)
                 else:
-                    self.source=getsource(FUNC)
-                self.gi_code=code(FUNC.__code__)
+                    self.source=getsource(FUNC.gi_code)
+                    self._source_lines=self._clean_source_lines(True)
+                    self.lineno=self.linetable[FUNC.gi_frame.f_lineno-1]+lineno_adjust(FUNC)
+                self.gi_code=code(FUNC.gi_code)
+                ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
+                if hasattr(FUNC,"gi_yieldfrom"):
+                    self.gi_yieldfrom=FUNC.gi_yieldfrom
+                else:
+                    self.gi_yieldfrom=None
+                self.gi_suspended=True
+            ## uninitialized generator ##
             else:
-                raise TypeError("type '%s' is an invalid initializer for a Generator" % type(FUNC))
-            ## make sure the source code is standardized and usable by this generator ##
-            self._source_lines=self._clean_source_lines()
-            ## create the states ##
-            self.gi_frame=frame()
-            self.gi_suspended=False
-            self.gi_yieldfrom=None
-            self.lineno=1 ## modified every time __next__ is called; always start at line 1 ##
-        self.gi_running=False
-        self.state=None
-        self.state_generator=self.init_states()
-        if overwrite:
-            currentframe().f_back.f_locals[getcode(FUNC).co_name]=self
+                ## source code string ##
+                if isinstance(FUNC,str):
+                    self.source=FUNC
+                    self.gi_code=code(compile(FUNC,"","eval"))
+                ## generator function ##
+                elif isinstance(FUNC,FunctionType):
+                    if FUNC.__code__.co_name=="<lambda>":
+                        self.source=expr_getsource(FUNC)
+                    else:
+                        self.source=getsource(FUNC)
+                    self.gi_code=code(FUNC.__code__)
+                else:
+                    raise TypeError("type '%s' is an invalid initializer for a Generator" % type(FUNC))
+                ## make sure the source code is standardized and usable by this generator ##
+                self._source_lines=self._clean_source_lines()
+                ## create the states ##
+                self.gi_frame=frame()
+                self.gi_suspended=False
+                self.gi_yieldfrom=None
+                self.lineno=1 ## modified every time __next__ is called; always start at line 1 ##
+            self.gi_running=False
+            self.state=None
+            self.state_generator=self.init_states()
+            if overwrite:
+                currentframe().f_back.f_locals[getcode(FUNC).co_name]=self
 
     def __len__(self):
         """
@@ -1229,6 +1234,8 @@ class Generator(Pickler):
             self.gi_frame=locals()[".frame"]
             if self.gi_frame:
                 self.gi_frame=frame(self.gi_frame)
+                ## remove locals from memory since it interferes with pickling ##
+                del self.gi_frame.f_locals["locals"]
                 self.gi_frame.f_back=f_back
                 ## update f_locals ##
                 if f_back:
