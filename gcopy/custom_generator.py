@@ -432,24 +432,12 @@ def extract_iter(line,number_of_indents=None):
     the number of indents as the key value
     """
     line_iter,start=enumerate(line),(lambda ID: ID=="in",2)
-    if number_of_indents:
-        index=get_iter_offset(line_iter,*start)
-        iterator=line[index:-1]
-        ## remove the leading and trailing whitespace and then it should be a variable name ##
-        if iterator.strip().isalnum():
-            return line
-        return line[:index]+"locals()['.%s']:" % number_of_indents
-    end=(lambda ID: ID=="for" or ID=="if",-3)
-    while line_iter:
-        offset=get_iter_offset(line_iter,*start)
-        end_offset=get_iter_offset(line_iter,*end)
-        if line[end_offset]!=" ": ## make sure it's a whitespace ##
-            end_offset-=1
-        iterator=line[offset:end_offset]
-        ## remove the leading and trailing whitespace and then it should be a variable name ##
-        if not iterator.strip().isalnum():
-            line[offset:end_offset]="locals()['.%s']" % offset
-    return line
+    index=get_iter_offset(line_iter,*start)
+    iterator=line[index:-1]
+    ## remove the leading and trailing whitespace and then it should be a variable name ##
+    if iterator.strip().isalnum():
+        return line
+    return line[:index]+"locals()['.%s']:" % number_of_indents
 
 def iter_adjust(outer_loop):
     """adjust an outer loop with its tracked iterator if it uses one"""
@@ -1121,10 +1109,6 @@ class Generator(Pickler):
         For function generators:
         It goes line by line to find the 
         lines that have the yield statements
-
-        For generator expresssions:
-        it keeps the iteration going 
-        until the frame is empty
         """
         ## since self.state starts as 'None' ##
         yield self._create_state(get_loops(self.lineno,self.jump_positions))
@@ -1252,12 +1236,11 @@ class Generator(Pickler):
                     self.gi_frame.f_locals=f_back.f_locals
                 self.gi_frame.f_locals[".send"]=None
                 self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init.count("\n")
-                if not self.gi_code.co_name=="<genexpr>":
-                    if len(self.linetable) > self.gi_frame.f_lineno:
-                        self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
-                    else:
-                        ## EOF ##
-                        self.lineno=len(self._source_lines)+1
+                if len(self.linetable) > self.gi_frame.f_lineno:
+                    self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
+                else:
+                    ## EOF ##
+                    self.lineno=len(self._source_lines)+1
 
     def send(self,arg):
         """
