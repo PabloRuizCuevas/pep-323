@@ -90,19 +90,34 @@ def get_indent(line):
 
 def lineno_adjust(FUNC):
     """
-    returns the amount of adjustment needed in terms
-    of how much to add to the current lineno to match
-    the actual starting line for compound statements
-    had these been formatted correctly
+    determines which line of the f_lineno compound statement the current f_lasti is in
     """
-    code,lasti = getcode(FUNC),getframe(FUNC).f_lasti
-    index,lineno=0,code.co_firstlineno
-    for instruction in get_instructions(code):
-        if instruction.positions.lineno == lineno:
-            if instruction.offset == lasti:
+    line,current_lineno,instructions=[],getframe(FUNC).f_lineno,get_instructions(FUNC)
+    ## get the instructions ##
+    for instruction in instructions:
+        lineno,obj=instruction.positions.lineno,(list(instruction.positions[2:]),instruction.offset)
+        if not None in obj[0] and lineno==current_lineno:
+            ## get the lines ##
+            line=[obj]
+            for instruction in instructions:
+                lineno,obj=instruction.positions.lineno,(list(instruction.positions[2:]),instruction.offset)
+                if lineno!=current_lineno:
+                    break
+                line+=[obj]
+            break
+    ## add the lines
+    index=0
+    if line:
+        current,lasti=[0,0],getframe(FUNC).f_lasti
+        for pos,offset in sorted(line):
+            if offset==lasti:
                 return index
-            index+=1
-    raise ValueError("Could not find line number or the last instruction")
+            if pos[0] > current[1]:
+                current=pos
+                index+=1
+            elif pos[1] > current[1]:
+                current[1]=pos[1]
+    raise ValueError("f_lasti not encountered")
 
 def is_cli():
     """Determines if using get_history_item is possible e.g. for CLIs"""
