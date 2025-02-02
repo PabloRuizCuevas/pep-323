@@ -48,6 +48,8 @@ For python 2:
  - f-strings were introduced in python 3.6 (use i.e. "%s" % ... instead)
  
  - builtin function 'next' was introduced in 2.6
+
+ - dedent from textwrap module was introduced in 2.5
 """
 
 from types import FunctionType,GeneratorType
@@ -60,6 +62,17 @@ from dis import get_instructions
 #########################
 ### utility functions ###
 #########################
+## minium version supported ##
+if version_info < (2,2):
+    raise ImportError("""Python version 2.2 or above is required.
+
+Note: 
+
+Python version 2.2 is when PEP 255 and 234 were implemented ('Simple Generators' and 'iterators') to the extent they
+were implemented allowing for function generators with the 'yield' keyword and iterators. Version 2.4 introduced 
+Generator expressions. Therefore, this python module/library is only useful for python versions 2.2 and above.
+""")
+
 ## python 2 compatibility ##
 if version_info < (3,):
     range = xrange
@@ -79,6 +92,47 @@ if version_info < (2,6):
                 return args[0]
         return iter_val.next()
 
+def dedent(text):
+    """
+    simplified version of dedent from textwrap that 
+    removes purely whitespace indentation from a string
+    to the minimum indentation
+
+    If you have python version 2.3 or higher you can use
+    textwrap.dedent but I've decided to make an implementation
+    specific version for python 2.2 and it should ideally be 
+    faster for its specific use case
+    """
+    ## because I'm only using this for functions source code ##
+    ## we can use the indent from the first line as the ##
+    ## minimum indent and remove unnecessary whitespace ##
+    text_iter,indent,line,dedented=enumerate(text),get_indent(text),-1,False
+    text=""
+    for index,char in text_iter:
+        ## dedent the current line ##
+        if not dedented:
+            while char==" ":
+                if not index-prev_split <= indent:
+                    line=""
+                    break
+                line+=char
+                index,char=next(text_iter)
+            dedented=True
+        ## collect the current line ##
+        if char=="\n":
+            prev_split,dedented=index,False
+            if line.isspace(): ## remove unnecessary whitespace ##
+                line=""
+            text+=line+"\n"
+            line=""
+        ## gather the chars ##
+        else:
+            line+=char
+    ## add the last line if it exists ##
+    if line:
+        text+=line
+    return text
+
 def get_indent(line):
     """Gets the number of spaces used in an indentation"""
     count=0
@@ -90,7 +144,9 @@ def get_indent(line):
 
 def lineno_adjust(FUNC):
     """
-    determines which line of the f_lineno compound statement the current f_lasti is in
+    unpacks a line of compound statements
+    into lines up to the last instruction 
+    that determines the adjustment required
     """
     line,current_lineno,instructions=[],getframe(FUNC).f_lineno,get_instructions(FUNC)
     ## get the instructions ##
@@ -106,9 +162,8 @@ def lineno_adjust(FUNC):
                 line+=[obj]
             break
     ## add the lines
-    index=0
     if line:
-        current,lasti=[0,0],getframe(FUNC).f_lasti
+        index,current,lasti=0,[0,0],getframe(FUNC).f_lasti
         for pos,offset in sorted(line):
             if offset==lasti:
                 return index
@@ -129,7 +184,7 @@ def is_cli():
 
 def unpack_genexpr(source):
     """unpacks a generator expressions' for loops into a list of source lines"""
-    lines,line,ID,depth,has_end_if,prev,has_for,has_end_if=[],"","",0,False,(0,""),False,False
+    lines,line,ID,depth,prev,has_for,has_end_if=[],"","",0,(0,""),False,False
     source_iter=enumerate(source[1:-1])
     for index,char in source_iter:
         if char in "\\\n":
@@ -156,31 +211,43 @@ def unpack_genexpr(source):
         else:
             ID=""
         if depth==0:
-            if ID == "for" or ID=="if" and next(source_iter)[1] == " ":
+            if ID == "for" or ID == "if" and next(source_iter)[1] == " ":
                 if ID =="for":
                     lines+=[line[:-3]]
                     line=line[-3:]#+" "
                     if not has_for:
-                        has_for=len(lines)
+                        has_for=len(lines) ## should be 1 anyway
                 elif has_for:
-                    lines+=[line[:-2],source[index:-1]] ## -1 to remove the end bracket
+                    lines+=[line[:-2],source[index:-1]] ## -1 to remove the end bracket - is this necessary?
                     has_end_if=True
                     break
                 else:
                     lines+=[line[:-2]]
                     line=line[-2:]+" "
-                ID=""
+                # ID="" ## isn't necessary because you don't get i.e. 'for for' or 'if if' in python syntax
     if has_end_if:
         lines=lines[has_for:-1]+list(reversed(lines[:has_for]+[lines[-1]]))
     else:
         lines=lines[has_for:]+list(reversed(lines[:has_for]))
-    ## arrange into lines making sure to decref the created track_iters
+    ## arrange into lines
     indent=" "*4
     return [indent*index+line for index,line in enumerate(lines,start=1)]
 
 ################
 ### tracking ###
 ################
+
+
+"""
+Needs the col_offset in versions less than 
+that of those without co_positions or 
+FrameInfo.positions or get_instructions
+"""
+def isin_block(source,frame):
+    """Checks if a frame with its source is in a block statement"""
+    get_col_offset(frame)
+    return False
+
 def track_iter(obj):
     """
     Tracks an iterator in the local scope initiated by a for loop
@@ -211,6 +278,11 @@ def track_iter(obj):
         else:
             code_context=getframeinfo(frame).code_context[0]
         key=get_indent(code_context)
+        ## won't work for compound statements that are in block statements ##
+        ## therefore, we check for a block statement and add 4 if so ##
+        temp=code_context[key:]
+        if not isin_block(temp,frame) and (temp.startswith("if ") or temp.startswith("for ") or temp.startswith("while ") or is_definition(temp)):
+            key+=4
     frame.f_locals[".%s" % key]=obj
     return obj
 
@@ -249,8 +321,8 @@ def skip_source_definition(source):
 
 def collect_string(iter_val,reference):
     """
-    Skips strings in an iterable assuming correct python 
-    syntax and the char before is a qoutation mark
+    Collects strings in an iterable assuming correct 
+    python syntax and the char before is a qoutation mark
     
     Note: make sure iter_val is an enumerated type
     """
@@ -267,7 +339,7 @@ def collect_string(iter_val,reference):
 
 def collect_multiline_string(iter_val,reference):
     """
-    Skips multiline strings in an iterable assuming 
+    Collects multiline strings in an iterable assuming 
     correct python syntax and the char before is a 
     qoutation mark
     
@@ -294,7 +366,10 @@ def collect_multiline_string(iter_val,reference):
     return index,line
 
 def collect_definition(line,lines,lineno,source,source_iter,reference_indent,prev):
-    """Collects definitions from source"""
+    """
+    Collects a block of code from source, specifically a 
+    definition block in the case of this modules use case
+    """
     indent=reference_indent+1
     while reference_indent < indent:
         ## we're not specific about formatting the definitions ##
@@ -358,6 +433,14 @@ def offset_adjust(f_locals):
     Adjusts the track_iter created variables
     used in generator expressions from offset
     based to indentation based
+
+    We have to do this because generator expressions
+    can only have offset based trackers whereas
+    when we format the source lines it requires
+    indentation based
+
+    Note: only needed on the current variables
+    in the frame that use offset based trackers
     """
     ## the first offset will probably get in the way ##
     lineno=0 ## every line will increase the indentation by 4 ##
@@ -375,7 +458,7 @@ def control_flow_adjust(lines,indexes,reference_indent=4):
 
     Note: it assumes that the line is cleaned,
     in particular, that it starts with an 
-    indentation of 4
+    indentation of 4 (4 because we're in a function)
 
     It will also add 'try:' when there's an
     'except' line on the next minimum indent
@@ -413,12 +496,14 @@ def indent_lines(lines,indent=4):
         return [line[indent:] for line in lines]
     return lines
 
-def get_iter_offset(line_iter,check,adjustment):
+def extract_iter(line,number_of_indents):
     """
-    Returns the offset of the iterator in a for loop
-    based on a condition function and adjustment
+    Extracts the iterator from a for loop
+    
+    e.g. we extract the second ... in:
+    for ... in ...:
     """
-    depth,ID=0,""
+    depth,ID,line_iter=0,"",enumerate(line)
     for index,char in line_iter:
         if char=="(":
             depth+=1
@@ -426,29 +511,14 @@ def get_iter_offset(line_iter,check,adjustment):
             depth-=1
         if char.isalnum() and depth==0:
             ID+=char
-            if check(ID):
+            if ID=="in":
                 if next(line_iter)[1]==" ":
                     break
                 ID=""
         else:
             ID=""
-    return index+adjustment
-
-def extract_iter(line,number_of_indents=None):
-    """
-    Extracts the iterator from a for loop
-    
-    e.g. we extract the second ... in:
-    for ... in ...:
-    
-    Note: if number_of_indents is None
-    it's assumed to be a generator and
-    the col_offset is taken instead of 
-    the number of indents as the key value
-    """
-    line_iter,start=enumerate(line),(lambda ID: ID=="in",2)
-    index=get_iter_offset(line_iter,*start)
-    iterator=line[index:-1]
+    index+=2 ## adjust by 2 to skip the 'n' and ' ' in 'in ' that would've been deduced ##
+    iterator=line[index:-1] ## -1 to remove the end colon ##
     ## remove the leading and trailing whitespace and then it should be a variable name ##
     if iterator.strip().isalnum():
         return line
@@ -472,7 +542,8 @@ def loop_adjust(lines,indexes,outer_loop,*pos):
 
     This allows us to use the control
     flow statements by implementing a
-    simple while loop and if statement
+    simple for loop and if statement
+    to finish the current loop
     """
     new_lines,flag,line_iter=[],False,enumerate(lines)
     for index,line in line_iter:
@@ -849,7 +920,11 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
+    - fix track_iter via isin_block for compound statements where the iterator is used in the block statement
+
     Needs checking:
+
+    - check the backwards compatibility with the libraries and syntax used
 
     - extract_lambda and extract_genexpr need to handle excessive bracketing i.e. 
       (( i for i in range(3) )) but not (( i for i in range(3) )+1)
@@ -895,18 +970,6 @@ class Generator(Pickler):
     another function generator then make sure that all
     function generators (past one iteration) are of the 
     Generator type)
-
-    Note: If wanting to use generator expressions i.e.:
-    
-    (i for i in range(3))
-    
-    then you can pass it in as a string:
-    
-    Generator("(i for i in range(3))")
-    
-    You can use inspect.getsource to get the source code
-    on either its gi_code or gi_frame but you need to know
-    it's current col position as well.
     """
 
     def _custom_adjustment(self,line,lineno):
@@ -966,7 +1029,6 @@ class Generator(Pickler):
         _jump_stack: jump_positions currently being recorded (gets popped into jump_positions once 
                      the reference indent has been met or lower for the next line that does so)
                      it records a tuple of (reference_indent,jump_position_index)
-        _skip_indent: the indent level of a definition being defined (definitions shouldn't be adjusted)
         """
         ## for loop adjustments ##
         self.jump_positions,self._jump_stack,lineno=[],[],0
@@ -1057,7 +1119,7 @@ class Generator(Pickler):
         control flow statements, loops, etc. then set the adjusted 
         source code as the generators state
 
-        adjusts source code about control flow statements
+        Adjusts source code about control flow statements
         so that it can be used in a single directional flow
         as the generators states
 
@@ -1110,7 +1172,8 @@ class Generator(Pickler):
     
     def _init(self):
         """
-        initializes the frame
+        initializes the frame with the current 
+        states variables and the _locals proxy
         """
         assign=[" "*4+key+"=locals()['"+key+"']" for key in self.gi_frame.f_locals \
                 if isinstance(key,str) and key.isalnum() and key!="locals"]
@@ -1125,13 +1188,7 @@ class Generator(Pickler):
 """ % assign
 
     def init_states(self):
-        """
-        Initializes the state generation
-
-        For function generators:
-        It goes line by line to find the 
-        lines that have the yield statements
-        """
+        """Initializes the state generation as a generator"""
         ## since self.state starts as 'None' ##
         yield self._create_state(get_loops(self.lineno,self.jump_positions))
         loops=get_loops(self.lineno,self.jump_positions)
@@ -1144,9 +1201,10 @@ class Generator(Pickler):
 
     def __init__(self,FUNC=None,overwrite=False):
         """
-        Takes in a function or its source code as the first arguement
+        Takes in a function/generator or its source code as the first arguement
 
-        Otherwise it takes a dictionary of attributes as the keyword arguements
+        If FUNC=None it will simply initialize as without any attributes, this
+        is for the __setstate__ method in Pickler._copier use case
 
         Note:
          - gi_running: is the generator currently being executed
@@ -1164,7 +1222,7 @@ class Generator(Pickler):
                     ## change the offsets into indents ##
                     self.gi_frame.f_locals=offset_adjust(self.gi_frame.f_locals)
                 else:
-                    self.source=getsource(FUNC.gi_code)
+                    self.source=dedent(getsource(FUNC.gi_code))
                     self._source_lines=self._clean_source_lines(True)
                     self.lineno=self.linetable[FUNC.gi_frame.f_lineno-1]+lineno_adjust(FUNC)
                 self.gi_code=code(FUNC.gi_code)
@@ -1185,7 +1243,7 @@ class Generator(Pickler):
                     if FUNC.__code__.co_name=="<lambda>":
                         self.source=expr_getsource(FUNC)
                     else:
-                        self.source=getsource(FUNC)
+                        self.source=dedent(getsource(FUNC))
                     self.gi_code=code(FUNC.__code__)
                 else:
                     raise TypeError("type '%s' is an invalid initializer for a Generator" % type(FUNC))
@@ -1204,8 +1262,8 @@ class Generator(Pickler):
 
     def __len__(self):
         """
-        Gets the number of states for generators with yield 
-        statements indented exactly 4 spaces.
+        Gets the number of states for generators with 
+        yield statements indented exactly 4 spaces.
 
         In general, you shouldn't be able to get the length
         of a generator function, but if it's very predictably
