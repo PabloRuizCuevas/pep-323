@@ -49,7 +49,7 @@ For python 2:
  
  - builtin function 'next' was introduced in 2.6
 
- - dedent from textwrap module was introduced in 2.5
+ - dedent from textwrap module was introduced in 2.3
 """
 
 from types import FunctionType,GeneratorType
@@ -106,7 +106,10 @@ def dedent(text):
     ## because I'm only using this for functions source code ##
     ## we can use the indent from the first line as the ##
     ## minimum indent and remove unnecessary whitespace ##
-    text_iter,indent,line,dedented=enumerate(text),get_indent(text),-1,False
+    indent=get_indent(text)
+    if indent==0:
+        return text
+    text_iter,line,dedented=enumerate(text),-1,False
     text=""
     for index,char in text_iter:
         ## dedent the current line ##
@@ -245,7 +248,7 @@ FrameInfo.positions or get_instructions
 """
 def isin_block(source,frame):
     """Checks if a frame with its source is in a block statement"""
-    get_col_offset(frame)
+    #get_col_offset(frame)
     return False
 
 def track_iter(obj):
@@ -923,7 +926,7 @@ TODO:
     - fix track_iter via isin_block for compound statements where the iterator is used in the block statement
 
     Needs checking:
-
+    
     - check the backwards compatibility with the libraries and syntax used
 
     - extract_lambda and extract_genexpr need to handle excessive bracketing i.e. 
