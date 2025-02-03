@@ -33,6 +33,12 @@ changes will be made if any
 
 Backwards compatibility notes of relevance at the moment:
 
+reference for versions not available on the 
+cpython github repo or as an alternative for 
+where documentation is lacking: https://hg.python.org/cpython/file/2.2
+
+(2.2 since this is when generators were introduced)
+
 For python 2:
 
  - classes are not automatically inherited from object
@@ -49,33 +55,58 @@ For python 2:
  
  - builtin function 'next' was introduced in 2.6
 
- - dedent from textwrap module was introduced in 2.3
+ - dedent from textwrap module and get_history_item were introduced in 2.3
+
+ - before version 3.0 __bool__ was __nonzero__
+
+ - dis.get_instructions was introduced in 3.4
+
+ - CodeType.co_positions was introduced in 3.11
 """
 
 from types import FunctionType,GeneratorType
 from inspect import getsource,currentframe,findsource,getframeinfo
 from copy import deepcopy,copy
 from sys import version_info
-from readline import get_history_item
 from dis import get_instructions
 
-#########################
-### utility functions ###
-#########################
 ## minium version supported ##
 if version_info < (2,2):
     raise ImportError("""Python version 2.2 or above is required.
 
-Note: 
+Note:
 
 Python version 2.2 is when PEP 255 and 234 were implemented ('Simple Generators' and 'iterators') to the extent they
 were implemented allowing for function generators with the 'yield' keyword and iterators. Version 2.4 introduced 
 Generator expressions. Therefore, this python module/library is only useful for python versions 2.2 and above.
 """)
 
-## python 2 compatibility ##
+#########################
+### utility functions ###
+#########################
+
+if version_info < (2,3):
+    from warnings import warn
+    warn("Python version 2.3 or above is required for get_history_item for usage on CLIs",UserWarning)
+    def is_cli():
+        return False
+else:
+    from readline import get_history_item
+
+    def is_cli():
+        """Determines if using get_history_item is possible e.g. for CLIs"""
+        try:
+            get_history_item(0)
+            return True
+        except IndexError:
+            return False
+
 if version_info < (3,):
     range = xrange
+
+if version_info < (3,4):
+    def get_instructions(FUNC):
+        pass
 
 if version_info < (2,6):
     def next(iter_val,*args):
@@ -91,6 +122,26 @@ if version_info < (2,6):
             except StopIteration:
                 return args[0]
         return iter_val.next()
+    
+    ## make an attr dict out of the tuple
+    def get_col_offset(frame):
+        pass
+else:
+    def get_col_offset(frame):
+        return getframeinfo(frame).positions.col_offset
+    
+
+if version_info < (2,3):
+    def enumerate(gen):
+        index=0
+        for i in gen:
+            yield index,i
+            index+=1
+
+if version_info < (2,4):
+    def sorted(iterable):
+        """Sorts an iterable"""
+        pass
 
 def dedent(text):
     """
@@ -177,14 +228,6 @@ def lineno_adjust(FUNC):
                 current[1]=pos[1]
     raise ValueError("f_lasti not encountered")
 
-def is_cli():
-    """Determines if using get_history_item is possible e.g. for CLIs"""
-    try:
-        get_history_item(0)
-        return True
-    except IndexError:
-        return False
-
 def unpack_genexpr(source):
     """unpacks a generator expressions' for loops into a list of source lines"""
     lines,line,ID,depth,prev,has_for,has_end_if=[],"","",0,(0,""),False,False
@@ -229,9 +272,9 @@ def unpack_genexpr(source):
                     line=line[-2:]+" "
                 # ID="" ## isn't necessary because you don't get i.e. 'for for' or 'if if' in python syntax
     if has_end_if:
-        lines=lines[has_for:-1]+list(reversed(lines[:has_for]+[lines[-1]]))
+        lines=lines[has_for:-1]+(lines[:has_for]+[lines[-1]])[::-1]
     else:
-        lines=lines[has_for:]+list(reversed(lines[:has_for]))
+        lines=lines[has_for:]+(lines[:has_for])[::-1]
     ## arrange into lines
     indent=" "*4
     return [indent*index+line for index,line in enumerate(lines,start=1)]
@@ -239,7 +282,6 @@ def unpack_genexpr(source):
 ################
 ### tracking ###
 ################
-
 
 """
 Needs the col_offset in versions less than 
@@ -274,7 +316,7 @@ def track_iter(obj):
     obj=iter(obj)
     frame=currentframe().f_back
     if frame.f_code.co_name=="<genexpr>":
-        key=getframeinfo(frame).positions.col_offset
+        key=get_col_offset(frame)
     else:
         if is_cli():
             code_context=get_history_item(-frame.f_lineno)
@@ -897,6 +939,9 @@ class frame(Pickler):
             if not hasattr(self,attr):
                 return False
         return True
+    
+    if version_info < (3,5):
+        __nonzero__=__bool__
 
 class code(Pickler):
     """For pickling and copying code objects"""
@@ -915,6 +960,9 @@ class code(Pickler):
                 return False
         return True
 
+    if version_info < (3,0):
+        __nonzero__=__bool__
+
 #################
 ### Generator ###
 #################
@@ -923,11 +971,12 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
-    - fix track_iter via isin_block for compound statements where the iterator is used in the block statement
+    - fix isin_block for track_iter for the compound statements where the iterator is used in the block statement
+
+    - fix typing on Generator e.g. it should also be capable of handling async types as well;
+      this also means versioning will need to be implemented too.
 
     Needs checking:
-    
-    - check the backwards compatibility with the libraries and syntax used
 
     - extract_lambda and extract_genexpr need to handle excessive bracketing i.e. 
       (( i for i in range(3) )) but not (( i for i in range(3) )+1)
@@ -938,6 +987,16 @@ TODO:
     - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
     - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
     (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
+
+    -----------------------------------------------
+    Backwards compatibility:
+    -----------------------------------------------
+    - finish get_instructions
+
+    - finish col_offset
+
+    - finish sorted
+    -----------------------------------------------
 
 2. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
  - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
@@ -1150,7 +1209,7 @@ class Generator(Pickler):
             )
             self.linetable=indexes
             ## add all the outer loops ##
-            for start_pos,end_pos in reversed(loops):
+            for start_pos,end_pos in loops[::-1]:
                 start_pos-=1
                 end_pos-=1
                 flag,block=iter_adjust(self._source_lines[start_pos:end_pos])
@@ -1354,7 +1413,7 @@ class Generator(Pickler):
         raise exception
 
     def __setstate__(self,state):
-        super().__setstate__(state)
+        Pickler.__setstate__(self,state)
         self.state_generator=self.init_states()
 
     def __instancecheck__(self, instance):
@@ -1373,6 +1432,7 @@ if (3,5) <= version_info:
     is_cli.__annotations__={"return":bool}
     unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## tracking ##
+    isin_block.__annotations__={"source":str,"frame":FrameType,"return":bool}
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
@@ -1387,7 +1447,6 @@ if (3,5) <= version_info:
     offset_adjust.__annotations__={"f_locals":dict,"return":dict}
     control_flow_adjust.__annotations__={"lines":list[str],"indexes":list[int],"return":tuple[bool,list[str],list[int]]}
     indent_lines.__annotations__={"lines":list[str],"indent":int,"return":list[str]}
-    get_iter_offset.__annotations__={"line_iter":enumerate,"check":Callable[[str],bool],"adjustment":int,"return":int}
     extract_iter.__annotations__={"line":str,"number_of_indents":int|None,"return":str}
     iter_adjust.__annotations__={"outer_loop":list[str],"return":tuple[bool,list[str]]}
     loop_adjust.__annotations__={"lines":list[str],"indexes":list[int],"outer_loop":list[str],"pos":tuple[int,int],"return":tuple[list[str],list[int]]}
