@@ -62,6 +62,10 @@ For python 2:
  - dis.get_instructions was introduced in 3.4
 
  - CodeType.co_positions was introduced in 3.11
+
+ - Coroutines were introduced in 3.5
+
+ - Asynchronous generators were introduced in 3.6
 """
 
 from types import FunctionType,GeneratorType
@@ -122,26 +126,27 @@ if version_info < (2,6):
             except StopIteration:
                 return args[0]
         return iter_val.next()
-    
-    ## make an attr dict out of the tuple
-    def get_col_offset(frame):
-        pass
+
+if version_info < (3,11):
+    def get_col_offset(frame): ## shouldn't this be a different version??
+        lasti=frame.f_lasti
+        for instruction in get_instructions(frame.f_code):
+            if instruction.offset==lasti:
+                return instruction.positions.col_offset
+        raise ValueError("f_lasti not encountered")
 else:
+    ## make an attr dict out of the tuple ##
     def get_col_offset(frame):
         return getframeinfo(frame).positions.col_offset
     
 
 if version_info < (2,3):
     def enumerate(gen):
+        """Enumerates a generator/iterator"""
         index=0
         for i in gen:
             yield index,i
             index+=1
-
-if version_info < (2,4):
-    def sorted(iterable):
-        """Sorts an iterable"""
-        pass
 
 def dedent(text):
     """
@@ -196,14 +201,16 @@ def get_indent(line):
         count+=1
     return count
 
-def lineno_adjust(FUNC):
+def lineno_adjust(FUNC,frame=None):
     """
     unpacks a line of compound statements
     into lines up to the last instruction 
     that determines the adjustment required
     """
-    line,current_lineno,instructions=[],getframe(FUNC).f_lineno,get_instructions(FUNC)
-    ## get the instructions ##
+    if frame is None:
+        frame=getframe(FUNC)
+    line,current_lineno,instructions=[],frame.f_lineno,get_instructions(FUNC)
+    ## get the instructions at the lineno ##
     for instruction in instructions:
         lineno,obj=instruction.positions.lineno,(list(instruction.positions[2:]),instruction.offset)
         if not None in obj[0] and lineno==current_lineno:
@@ -217,8 +224,8 @@ def lineno_adjust(FUNC):
             break
     ## add the lines
     if line:
-        index,current,lasti=0,[0,0],getframe(FUNC).f_lasti
-        for pos,offset in sorted(line):
+        index,current,lasti=0,[0,0],frame.f_lasti
+        for pos,offset in line.sort():
             if offset==lasti:
                 return index
             if pos[0] > current[1]:
@@ -288,9 +295,17 @@ Needs the col_offset in versions less than
 that of those without co_positions or 
 FrameInfo.positions or get_instructions
 """
-def isin_block(source,frame):
+def isin_statement(source,frame):
     """Checks if a frame with its source is in a block statement"""
-    #get_col_offset(frame)
+    ## Get the start and end offsets ##
+    ## determine the offsets for the first statement ##
+    for index,char in enumerate(source):
+        ## skip strings ##
+        ## ..
+        if char == ":":
+            if lineno_adjust(frame.f_code,frame):
+                return False
+            return True
     return False
 
 def track_iter(obj):
@@ -326,7 +341,8 @@ def track_iter(obj):
         ## won't work for compound statements that are in block statements ##
         ## therefore, we check for a block statement and add 4 if so ##
         temp=code_context[key:]
-        if not isin_block(temp,frame) and (temp.startswith("if ") or temp.startswith("for ") or temp.startswith("while ") or is_definition(temp)):
+        if (temp.startswith("if ") or temp.startswith("for ") or \
+            temp.startswith("while ") or is_definition(temp)) and not isin_statement(temp,frame):
             key+=4
     frame.f_locals[".%s" % key]=obj
     return obj
@@ -971,17 +987,14 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
-    - fix isin_block for track_iter for the compound statements where the iterator is used in the block statement
-
-    - fix typing on Generator e.g. it should also be capable of handling async types as well;
-      this also means versioning will need to be implemented too.
-
     Needs checking:
 
     - extract_lambda and extract_genexpr need to handle excessive bracketing i.e. 
       (( i for i in range(3) )) but not (( i for i in range(3) )+1)
 
     - check .send on generator expressions and in general for those that don't use it
+
+    - check lineno_adjust to ensure that it's robust, not sure if it works in all cases
 
     format errors
     - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
@@ -991,11 +1004,7 @@ TODO:
     -----------------------------------------------
     Backwards compatibility:
     -----------------------------------------------
-    - finish get_instructions
-
-    - finish col_offset
-
-    - finish sorted
+    - finish get_instructions - make sure the positions and offsets are correct
     -----------------------------------------------
 
 2. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
@@ -1355,8 +1364,7 @@ class Generator(Pickler):
         # set the next state and setup the function
         next(self.state_generator) ## it will raise a StopIteration for us
         ## update with the new state and get the frame ##
-        self.init=self._init()
-        exec(self.init+self.state,globals(),locals())
+        exec(self._init()+self.state,globals(),locals())
         self.gi_running=True
         ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
         try:
@@ -1417,22 +1425,29 @@ class Generator(Pickler):
         self.state_generator=self.init_states()
 
     def __instancecheck__(self, instance):
-        return isinstance(instance,GeneratorType)
+        return isinstance(instance,AnyGeneratorType)
 
     def __subclasscheck__(self, subclass):
-        return issubclass(subclass,GeneratorType) or issubclass(subclass,type(self))
+        return issubclass(subclass,AnyGeneratorType)
+
+AnyGeneratorType=GeneratorType|Generator
 
 ## add the type annotations if the version is 3.5 or higher ##
+if (3,6) <= version_info:
+    from types import AsyncGeneratorType
+    AnyGeneratorType|=AsyncGeneratorType
+
 if (3,5) <= version_info:
-    from typing import Callable,Any,NoReturn,Iterable,Generator as builtin_Generator,AsyncGenerator,Coroutine
-    from types import CodeType,FrameType
-    AnyGenerator=FunctionType|builtin_Generator|AsyncGenerator|Coroutine
+    from typing import Callable,Any,NoReturn,Iterable
+    from types import CodeType,FrameType,CoroutineType
+    
+    AnyGeneratorType|=CoroutineType
     ## utility functions ##
-    lineno_adjust.__annotations__={"FUNC":AnyGenerator,"return":int}
+    lineno_adjust.__annotations__={"FUNC":AnyGeneratorType,"return":int}
     is_cli.__annotations__={"return":bool}
     unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## tracking ##
-    isin_block.__annotations__={"source":str,"frame":FrameType,"return":bool}
+    isin_statement.__annotations__={"source":str,"frame":FrameType,"return":bool}
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
@@ -1456,13 +1471,13 @@ if (3,5) <= version_info:
     ## expr_getsource ##
     code_attrs.__annotations__={"return":tuple[str,...]}
     attr_cmp.__annotations__={"obj1":object,"obj2":object,"attr":tuple[str,...],"return":bool}
-    getcode.__annotations__={"obj":AnyGenerator,"return":CodeType}
-    getframe.__annotations__={"obj":AnyGenerator,"return":FrameType}
-    expr_getsource.__annotations__={"FUNC":AnyGenerator,"return":str}
+    getcode.__annotations__={"obj":AnyGeneratorType,"return":CodeType}
+    getframe.__annotations__={"obj":AnyGeneratorType,"return":FrameType}
+    expr_getsource.__annotations__={"FUNC":AnyGeneratorType,"return":str}
     ## genexpr ##
-    extract_genexpr.__annotations__={"source_lines":list[str],"return":builtin_Generator}
+    extract_genexpr.__annotations__={"source_lines":list[str],"return":GeneratorType}
     ## lambda ##
-    extract_lambda.__annotations__={"source_code":str,"return":builtin_Generator}
+    extract_lambda.__annotations__={"source_code":str,"return":GeneratorType}
     ### copying/pickling ###
     Pickler.__copy__.__annotations__={"return":Pickler}
     Pickler.__deepcopy__.__annotations__={"memo":dict,"return":Pickler}
@@ -1478,7 +1493,7 @@ if (3,5) <= version_info:
     Generator._clean_source_lines.__annotations__={"return":list[str]}
     Generator._create_state.__annotations__={"return":None}
     Generator.init_states.__annotations__={"return":Iterable}
-    Generator.__init__.__annotations__={"FUNC":Callable|str|builtin_Generator|dict,"return":None}
+    Generator.__init__.__annotations__={"FUNC":AnyGeneratorType|str|None,"return":None}
     Generator.__len__.__annotations__={"return":int}
     Generator.__iter__.__annotations__={"return":Iterable}
     Generator.__next__.__annotations__={"return":Any}
