@@ -72,7 +72,6 @@ from types import FunctionType,GeneratorType
 from inspect import getsource,currentframe,findsource,getframeinfo
 from copy import deepcopy,copy
 from sys import version_info
-from dis import get_instructions
 
 ## minium version supported ##
 if version_info < (2,2):
@@ -109,8 +108,11 @@ if version_info < (3,):
     range = xrange
 
 if version_info < (3,4):
-    def get_instructions(FUNC):
+    def get_instructions(code_obj):
+        """Returns a generator of the instructions used by a given code object"""
         pass
+else:
+    from dis import get_instructions
 
 if version_info < (2,6):
     def next(iter_val,*args):
@@ -209,7 +211,7 @@ def lineno_adjust(FUNC,frame=None):
     """
     if frame is None:
         frame=getframe(FUNC)
-    line,current_lineno,instructions=[],frame.f_lineno,get_instructions(FUNC)
+    line,current_lineno,instructions=[],frame.f_lineno,get_instructions(frame.f_code)
     ## get the instructions at the lineno ##
     for instruction in instructions:
         lineno,obj=instruction.positions.lineno,(list(instruction.positions[2:]),instruction.offset)
@@ -290,23 +292,13 @@ def unpack_genexpr(source):
 ### tracking ###
 ################
 
-"""
-Needs the col_offset in versions less than 
-that of those without co_positions or 
-FrameInfo.positions or get_instructions
-"""
-def isin_statement(source,frame):
+def isin_statement(frame):
     """Checks if a frame with its source is in a block statement"""
-    ## Get the start and end offsets ##
-    ## determine the offsets for the first statement ##
-    for index,char in enumerate(source):
-        ## skip strings ##
-        ## ..
-        if char == ":":
-            if lineno_adjust(frame.f_code,frame):
-                return False
-            return True
-    return False
+    ## lineno_adjust returns how many lines in we are after the block statement ##
+    ## therefore we should get 0 if we're in the statement ##
+    if lineno_adjust(frame.f_code,frame):
+        return False
+    return True
 
 def track_iter(obj):
     """
@@ -342,7 +334,7 @@ def track_iter(obj):
         ## therefore, we check for a block statement and add 4 if so ##
         temp=code_context[key:]
         if (temp.startswith("if ") or temp.startswith("for ") or \
-            temp.startswith("while ") or is_definition(temp)) and not isin_statement(temp,frame):
+            temp.startswith("while ") or is_definition(temp)) and not isin_statement(frame):
             key+=4
     frame.f_locals[".%s" % key]=obj
     return obj
@@ -955,8 +947,8 @@ class frame(Pickler):
             if not hasattr(self,attr):
                 return False
         return True
-    
-    if version_info < (3,5):
+
+    if version_info < (3,0):
         __nonzero__=__bool__
 
 class code(Pickler):
@@ -1447,7 +1439,7 @@ if (3,5) <= version_info:
     is_cli.__annotations__={"return":bool}
     unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## tracking ##
-    isin_statement.__annotations__={"source":str,"frame":FrameType,"return":bool}
+    isin_statement.__annotations__={"frame":FrameType,"return":bool}
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
