@@ -292,14 +292,6 @@ def unpack_genexpr(source):
 ### tracking ###
 ################
 
-def isin_statement(frame):
-    """Checks if a frame with its source is in a block statement"""
-    ## lineno_adjust returns how many lines in we are after the block statement ##
-    ## therefore we should get 0 if we're in the statement ##
-    if lineno_adjust(frame.f_code,frame):
-        return False
-    return True
-
 def track_iter(obj):
     """
     Tracks an iterator in the local scope initiated by a for loop
@@ -334,7 +326,7 @@ def track_iter(obj):
         ## therefore, we check for a block statement and add 4 if so ##
         temp=code_context[key:]
         if (temp.startswith("if ") or temp.startswith("for ") or \
-            temp.startswith("while ") or is_definition(temp)) and not isin_statement(frame):
+            temp.startswith("while ") or is_definition(temp)) and lineno_adjust(frame.f_code,frame)==0:
             key+=4
     frame.f_locals[".%s" % key]=obj
     return obj
@@ -776,10 +768,13 @@ def expr_getsource(FUNC):
     ## otherwise match with generator expressions in the original source to get the source code ##
     attrs=(attr for attr in code_attrs() if not attr in ('co_argcount','co_posonlyargcount','co_kwonlyargcount',
                                                          'co_filename','co_linetable','co_lnotab','co_exceptiontable'))
-    for source in extractor(source):
+    if isinstance(source,list):
+        source="\n".join(source)
+    for col_offset,end_col_offset in extractor(source):
         try: ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
-            if attr_cmp(getcode(eval(source)),code_obj,attrs):
+            temp_code=getcode(eval(source[col_offset:end_col_offset]))
+            if attr_cmp(temp_code,code_obj,attrs):
                 return source
         except:
             pass
@@ -787,56 +782,48 @@ def expr_getsource(FUNC):
 ###############
 ### genexpr ###
 ###############
-def extract_genexpr(source_lines):
+def extract_genexpr(source):
     """Extracts each generator expression from a list of the source code lines"""
-    source,ID,is_genexpr,number_of_expressions,depth,prev="","",False,0,0,(0,"")
-    for line in source_lines:
-        ## if it's a new_line and you're looking for the next genexpr then it's not found ##
-        if number_of_expressions:
-            raise Exception("No matches to the original source code found")
-        line=enumerate(line)
-        for index,char in line:
-            ## skip all strings if not in depth
-            if char=="'" or char=='"':
-                if prev[0]-1==index and char==prev[1]:
-                    string_collector=collect_multiline_string
-                else:
-                    string_collector=collect_string
-                index,temp_line=string_collector(line,char)
-                prev=(index,char)
-                if depth:
-                    source+=temp_line
-                continue
-            ## detect brackets
-            elif char=="(":
-                depth+=1
-            elif char==")":
-                depth-=1
-                if depth==0:
-                    if is_genexpr:
-                        yield source+char
-                        number_of_expressions+=1
-                        is_genexpr=False
-                    source,ID="",""
-                continue
-            ## record source code ##
-            if depth:
-                source+=char
-                ## record ID ##
-                if char.isalnum():
-                    ID+=char
-                    ## detect a for loop
-                    if ID=="for":
-                        is_genexpr=True
-                else:
-                    ID=""
+    ID,is_genexpr,depth,prev="",False,0,(0,"")
+    source_iter=enumerate(source)
+    for index,char in source_iter:
+        ## skip all strings if not in genexpr
+        if char=="'" or char=='"':
+            if prev[0]-1==index and char==prev[1]:
+                string_collector=collect_multiline_string
+            else:
+                string_collector=collect_string
+            index,temp_line=string_collector(source_iter,char)
+            prev=(index,char)
+            continue
+        ## detect brackets
+        elif char=="(":
+            temp_col_offset=index
+            depth+=1
+        elif char==")":
+            depth-=1
+            if is_genexpr and depth+1==genexpr_depth:
+                yield col_offset,index+1
+                number_of_expressions+=1
+                ID,is_genexpr="",False
+            continue
+        ## record source code ##
+        if depth and not is_genexpr:
+            ## record ID ##
+            if char.isalnum():
+                ID+=char
+                ## detect a for loop
+                if ID=="for":
+                    genexpr_depth,is_genexpr,col_offset=depth,True,temp_col_offset
+            else:
+                ID=""
 
 ##############
 ### lambda ###
 ##############
 def extract_lambda(source_code):
     """Extracts each lambda expression from the source code string"""
-    source,ID,is_lambda,lambda_depth,prev="","",False,0,(0,"")
+    ID,is_lambda,lambda_depth,prev="",False,0,(0,"")
     source_code=enumerate(source_code)
     for index,char in source_code:
         ## skip all strings if not in lambda
@@ -847,8 +834,6 @@ def extract_lambda(source_code):
                 string_collector=collect_string
             index,temp_line=string_collector(source_code,char)
             prev=(index,char)
-            if is_lambda:
-                source+=temp_line
             continue
         ## detect brackets
         elif char=="(":
@@ -858,24 +843,20 @@ def extract_lambda(source_code):
         ## record source code ##
         if is_lambda:
             if char=="\n;" or (char==")" and depth+1==lambda_depth): # lambda_depth needed in case of brackets; depth+1 since depth would've got reduced by 1
-                yield source
-                source,ID,is_lambda="","",False
-            else:
-                source+=char
+                yield col_offset,index+1
+                ID,is_lambda="",False
         else:
             ## record ID ##
             if char.isalnum():
                 ID+=char
                 ## detect a lambda
                 if ID == "lambda" and depth <= 1:
-                    is_lambda=True
-                    lambda_depth=depth
-                    source+=ID
+                    lambda_depth,is_lambda,col_offset=depth,True,index-6
             else:
                 ID=""
     ## in case of a current match ending ##
     if is_lambda:
-        yield source
+        yield col_offset,None
 ########################
 ### pickling/copying ###
 ########################
@@ -980,9 +961,6 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Needs checking:
-
-    - extract_lambda and extract_genexpr need to handle excessive bracketing i.e. 
-      (( i for i in range(3) )) but not (( i for i in range(3) )+1)
 
     - check .send on generator expressions and in general for those that don't use it
 
@@ -1435,11 +1413,10 @@ if (3,5) <= version_info:
     
     AnyGeneratorType|=CoroutineType
     ## utility functions ##
-    lineno_adjust.__annotations__={"FUNC":AnyGeneratorType,"return":int}
+    lineno_adjust.__annotations__={"FUNC":AnyGeneratorType,"frame":FrameType|None,"return":int}
     is_cli.__annotations__={"return":bool}
     unpack_genexpr.__annotations__={"source":str,"return":list[str]}
     ## tracking ##
-    isin_statement.__annotations__={"frame":FrameType,"return":bool}
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
