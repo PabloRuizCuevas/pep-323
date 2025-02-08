@@ -959,10 +959,11 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
-    - make both string collectors return a list of strings - is it possible to have an adjust
-      in between strings??
+    - need to fix for yields used as values
 
     Needs checking:
+
+    - make sure returns are a StopIteration with the value returned
 
     - check .send on generator expressions and in general for those that don't use it
 
