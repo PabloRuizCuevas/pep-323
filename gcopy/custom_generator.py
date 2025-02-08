@@ -968,7 +968,7 @@ TODO:
 
     format errors
     - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
-    - with throw, extract the first line from self.state (for cpython) and then create an exception traceback out of that
+    - with throw, extract the first line from self._internals["state"] (for cpython) and then create an exception traceback out of that
     (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
 
     -----------------------------------------------
@@ -976,13 +976,8 @@ TODO:
     -----------------------------------------------
     - finish get_instructions - make sure the positions and offsets are correct
     -----------------------------------------------
-
-2. make an asynchronous verion? async generators have different attrs i.e. gi_frame is ag_frame
- - maybe make a preprocessor to rewrite some of the functions in Generator for ease of development
- - use getcode and getframe for more generalizability
-   also consider coroutines e.g. cr_code, cr_frame, etc.
-    
-3. write tests
+ 
+2. write tests
 
 control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
 need to test what happens when there are no lines e.g. empty lines or no state / EOF
@@ -1013,6 +1008,8 @@ class Generator(Pickler):
     Generator type)
     """
 
+    _internals={"prefix":"gi_","type":GeneratorType}
+
     def _custom_adjustment(self,line,lineno):
         """
         It does the following to the source lines:
@@ -1032,8 +1029,8 @@ class Generator(Pickler):
         if temp_line.startswith("yield "):
             return [indent+"return"+temp_line[5:]] ## 5 to retain the whitespace ##
         if temp_line.startswith("for ") or temp_line.startswith("while "):
-            self.jump_positions+=[[lineno,None]] ## has to be a list since we're assigning ##
-            self._jump_stack+=[(number_of_indents,len(self.jump_positions)-1)] ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
+            self._internals["jump_positions"]+=[[lineno,None]] ## has to be a list since we're assigning ##
+            self._internals["jump_stack"]+=[(number_of_indents,len(self._internals["jump_positions"])-1)] ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
             return [line]
         if temp_line.startswith("return "):
             ## close the generator then return ##
@@ -1067,14 +1064,14 @@ class Generator(Pickler):
 
         Note:
         jump_positions: are the fixed list of (lineno,end_lineno) for the loops (for and while)
-        _jump_stack: jump_positions currently being recorded (gets popped into jump_positions once 
+        jump_stack: jump_positions currently being recorded (gets popped into jump_positions once 
                      the reference indent has been met or lower for the next line that does so)
                      it records a tuple of (reference_indent,jump_position_index)
         """
         ## for loop adjustments ##
-        self.jump_positions,self._jump_stack,lineno=[],[],0
+        self._internals["jump_positions"],self._internals["jump_stack"],lineno=[],[],0
         ## setup source as an iterator and making sure the first indentation's correct ##
-        source=skip_source_definition(self.source)
+        source=skip_source_definition(self._internals["source"])
         source=source[get_indent(source):] ## we need to make sure the source is saved for skipping for line continuations ##
         source_iter=enumerate(source)
         line,lines,indented,space,indentation,prev=" "*4,[],False,0,4,(0,0,"")
@@ -1116,10 +1113,10 @@ class Generator(Pickler):
                     line+=char
                 if not line.isspace(): ## empty lines are possible ##
                     reference_indent=get_indent(line)
-                    if self._jump_stack:
+                    if self._internals["jump_stack"]:
                         end_lineno=len(lines)+1
-                        while self._jump_stack and reference_indent <= self._jump_stack[-1][0]: # -1: top of stack, 0: start lineno
-                            self.jump_positions[self._jump_stack.pop()[1]][1]=end_lineno ## +1 assuming exclusion slicing on the stop index ##
+                        while self._internals["jump_stack"] and reference_indent <= self._internals["jump_stack"][-1][0]: # -1: top of stack, 0: start lineno
+                            self._internals["jump_positions"][self._internals["jump_stack"].pop()[1]][1]=end_lineno ## +1 assuming exclusion slicing on the stop index ##
                     ## skip the definitions ##
                     if is_definition(line[reference_indent:]):
                         index,char,lineno,lines=collect_definition(line,lines,lineno,source,source_iter,reference_indent,prev)
@@ -1128,7 +1125,7 @@ class Generator(Pickler):
                         lines+=self._custom_adjustment(line,lineno)
                         ## make a linetable if using a running generator ##
                         if running and char=="\n":
-                            self.linetable+=[lineno]
+                            self._internals["linetable"]+=[lineno]
                 ## start a new line ##
                 if char in ":;":
                     # just in case
@@ -1141,11 +1138,11 @@ class Generator(Pickler):
         ## in case you get a for loop at the end and you haven't got the end jump_position ##
         ## then you just pop them all off as being the same end_lineno ##
         end_lineno=len(lines)+1
-        while self._jump_stack:
-            self.jump_positions[self._jump_stack.pop()[1]][1]=end_lineno
+        while self._internals["jump_stack"]:
+            self._internals["jump_positions"][self._internals["jump_stack"].pop()[1]][1]=end_lineno
         ## are not used by this generator (was only for formatting source code and 
         ## recording the jump positions needed in the for loop adjustments) ##
-        del self._jump_stack
+        del self._internals["jump_stack"]
         return lines
 
     def _create_state(self,loops):
@@ -1169,7 +1166,7 @@ class Generator(Pickler):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
-        temp_lineno=self.lineno-1 ## for 0 based indexing ##
+        temp_lineno=self._internals["lineno"]-1 ## for 0 based indexing ##
         if loops:
             start_pos,end_pos=loops.pop()
             ## for 0 based indexing since they're linenos ##
@@ -1177,46 +1174,46 @@ class Generator(Pickler):
             end_pos-=1
             ## adjustment ##
             blocks,indexes=control_flow_adjust(
-                self._source_lines[temp_lineno:end_pos],
+                self._internals["_source_lines"][temp_lineno:end_pos],
                 list(range(temp_lineno,end_pos)),
-                get_indent(self._source_lines[start_pos])
+                get_indent(self._internals["_source_lines"][start_pos])
             )
             blocks,indexes=loop_adjust(
                 blocks,indexes,
-                self._source_lines[start_pos:end_pos],
+                self._internals["_source_lines"][start_pos:end_pos],
                 *(start_pos,end_pos)
             )
-            self.linetable=indexes
+            self._internals["linetable"]=indexes
             ## add all the outer loops ##
             for start_pos,end_pos in loops[::-1]:
                 start_pos-=1
                 end_pos-=1
-                flag,block=iter_adjust(self._source_lines[start_pos:end_pos])
+                flag,block=iter_adjust(self._internals["_source_lines"][start_pos:end_pos])
                 blocks+=indent_lines(block,4-get_indent(block[0]))
                 if flag:
-                    self.linetable+=[start_pos]
-                self.linetable+=list(range(start_pos,end_pos))
-            self.state="\n".join(blocks+self._source_lines[end_pos:])
+                    self._internals["linetable"]+=[start_pos]
+                self._internals["linetable"]+=list(range(start_pos,end_pos))
+            self._internals["state"]="\n".join(blocks+self._internals["_source_lines"][end_pos:])
             return
-        block,self.linetable=control_flow_adjust(
-            self._source_lines[temp_lineno:],
-            list(range(temp_lineno,len(self._source_lines)))
+        block,self._internals["linetable"]=control_flow_adjust(
+            self._internals["_source_lines"][temp_lineno:],
+            list(range(temp_lineno,len(self._internals["_source_lines"])))
         )
-        self.state="\n".join(block)
+        self._internals["state"]="\n".join(block)
 
     def _locals(self):
         """
         proxy to replace locals within 'next_state' within 
         __next__ while still retaining the same functionality
         """
-        return self.gi_frame.f_locals
+        return self._internals["frame"].f_locals
     
     def _init(self):
         """
         initializes the frame with the current 
         states variables and the _locals proxy
         """
-        assign=[" "*4+key+"=locals()['"+key+"']" for key in self.gi_frame.f_locals \
+        assign=[" "*4+key+"=locals()['"+key+"']" for key in self._internals["frame"].f_locals \
                 if isinstance(key,str) and key.isalnum() and key!="locals"]
         if assign:
             assign="\n"+"\n".join(assign)
@@ -1230,15 +1227,15 @@ class Generator(Pickler):
 
     def init_states(self):
         """Initializes the state generation as a generator"""
-        ## since self.state starts as 'None' ##
-        yield self._create_state(get_loops(self.lineno,self.jump_positions))
-        loops=get_loops(self.lineno,self.jump_positions)
-        while (self.state and len(self.linetable) > self.gi_frame.f_lineno) or loops:
+        ## since self._internals["state"] starts as 'None' ##
+        yield self._create_state(get_loops(self._internals["lineno"],self._internals["jump_positions"]))
+        loops=get_loops(self._internals["lineno"],self._internals["jump_positions"])
+        while (self._internals["state"] and len(self._internals["linetable"]) > self._internals["frame"].f_lineno) or loops:
             yield self._create_state(loops)
-            loops=get_loops(self.lineno,self.jump_positions)
+            loops=get_loops(self._internals["lineno"],self._internals["jump_positions"])
 
-    _attrs=('_source_lines','gi_code','gi_frame','gi_running',
-            'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
+    # _attrs=('_source_lines','gi_code','gi_frame','gi_running',
+    #         'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
 
     def __init__(self,FUNC=None,overwrite=False):
         """
@@ -1250,56 +1247,64 @@ class Generator(Pickler):
         Note:
          - gi_running: is the generator currently being executed
          - gi_suspended: is the generator currently paused e.g. state is saved
+
+        Also, all attributes are set internally first and then exposed to the api.
+        The interals are accessible via the _internals dictionary
         """
         ## __setstate__ from Pickler._copier ##
         if not FUNC is None:
+            prefix=self._internals["prefix"] ## needed to identify certain attributes ##
             ## running generator ##
-            if hasattr(FUNC,"gi_code"):
-                self.linetable=[]
-                self.gi_frame=frame(FUNC.gi_frame)
+            if hasattr(FUNC,prefix+"code"):
+                self._internals["linetable"]=[]
+                self._internals["frame"]=frame(getframe(FUNC))
                 if FUNC.gi_code.co_name=="<genexpr>": ## co_name is readonly e.g. can't be changed by user ##
-                    self.source=expr_getsource(FUNC)
-                    self._source_lines=unpack_genexpr(self.source)
+                    self._internals["source"]=expr_getsource(FUNC)
+                    self._internals["source_lines"]=unpack_genexpr(self._internals["source"])
                     ## change the offsets into indents ##
-                    self.gi_frame.f_locals=offset_adjust(self.gi_frame.f_locals)
+                    self._internals["frame"].f_locals=offset_adjust(self._internals["frame"].f_locals)
                 else:
-                    self.source=dedent(getsource(FUNC.gi_code))
-                    self._source_lines=self._clean_source_lines(True)
-                    self.lineno=self.linetable[FUNC.gi_frame.f_lineno-1]+lineno_adjust(FUNC)
-                self.gi_code=code(FUNC.gi_code)
+                    self._internals["source"]=dedent(getsource(getcode(FUNC)))
+                    self._internals["source_lines"]=self._clean_source_lines(True)
+                    self._internals["lineno"]=self._internals["linetable"][getframe(FUNC).f_lineno-1]+lineno_adjust(FUNC)
+                self._internals["code"]=code(getcode(FUNC))
                 ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
-                if hasattr(FUNC,"gi_yieldfrom"):
-                    self.gi_yieldfrom=FUNC.gi_yieldfrom
+                if hasattr(FUNC,prefix+"yieldfrom"):
+                    self._internals["yieldfrom"]=getattr(FUNC,prefix+"yieldfrom")
                 else:
-                    self.gi_yieldfrom=None
-                self.gi_suspended=True
+                    self._internals["yieldfrom"]=None
+                self._internals["suspended"]=None
             ## uninitialized generator ##
             else:
                 ## source code string ##
                 if isinstance(FUNC,str):
-                    self.source=FUNC
-                    self.gi_code=code(compile(FUNC,"","eval"))
+                    self._internals["source"]=FUNC
+                    self._internals["code"]=code(compile(FUNC,"","eval"))
                 ## generator function ##
                 elif isinstance(FUNC,FunctionType):
                     if FUNC.__code__.co_name=="<lambda>":
-                        self.source=expr_getsource(FUNC)
+                        self._internals["source"]=expr_getsource(FUNC)
                     else:
-                        self.source=dedent(getsource(FUNC))
-                    self.gi_code=code(FUNC.__code__)
+                        self._internals["source"]=dedent(getsource(FUNC))
+                    self._internals["code"]=code(FUNC.__code__)
                 else:
                     raise TypeError("type '%s' is an invalid initializer for a Generator" % type(FUNC))
                 ## make sure the source code is standardized and usable by this generator ##
-                self._source_lines=self._clean_source_lines()
+                self._internals["_source_lines"]=self._clean_source_lines()
                 ## create the states ##
-                self.gi_frame=frame()
-                self.gi_suspended=False
-                self.gi_yieldfrom=None
-                self.lineno=1 ## modified every time __next__ is called; always start at line 1 ##
-            self.gi_running=False
-            self.state=None
-            self.state_generator=self.init_states()
+                self._internals["frame"]=frame()
+                self._internals["suspended"]=False
+                self._internals["yieldfrom"]=None
+                self._internals["lineno"]=1 ## modified every time __next__ is called; always start at line 1 ##
+            self._internals["running"]=False
+            self._internals["state"]=None
+            self._internals["state_generator"]=self.init_states()
             if overwrite:
                 currentframe().f_back.f_locals[getcode(FUNC).co_name]=self
+            ## api setup ##
+            for key in self._internals:
+                if not key in ("prefix","type"):
+                    setattr(self,prefix+key,self._internals[key])
 
     def __len__(self):
         """
@@ -1312,7 +1317,7 @@ class Generator(Pickler):
         """
         def number_of_yields():
             """Gets the number of yields that are indented exactly 4 spaces"""
-            for line in self.state:
+            for line in self._internals["state"]:
                 indents=get_indent(line)
                 temp=line[indents:]
                 if temp.startswith("yield") and not temp.startswith("yield from"):
@@ -1332,56 +1337,60 @@ class Generator(Pickler):
     def __next__(self):
         """updates the current state and returns the result"""
         # set the next state and setup the function
-        next(self.state_generator) ## it will raise a StopIteration for us
+        next(self._internals["state_generator"]) ## it will raise a StopIteration for us
         ## update with the new state and get the frame ##
-        exec(self._init()+self.state,globals(),locals())
-        self.gi_running=True
+        exec(self._init()+self._internals["state"],globals(),locals())
+        self._internals["running"]=True
         ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
         try:
             return locals()["next_state"]()
         finally:
             ## update the line position and frame ##
-            self.gi_running=False
+            self._internals["running"]=False
             ## update the frame ##
-            f_back=self.gi_frame
-            self.gi_frame=locals()[".frame"]
-            if self.gi_frame:
-                self.gi_frame=frame(self.gi_frame)
+            f_back=self._internals["frame"]
+            self._internals["frame"]=locals()[".frame"]
+            if self._internals["frame"]:
+                self._internals["frame"]=frame(self._internals["frame"])
                 ## remove locals from memory since it interferes with pickling ##
-                del self.gi_frame.f_locals["locals"]
-                self.gi_frame.f_back=f_back
+                del self._internals["frame"].f_locals["locals"]
+                self._internals["frame"].f_back=f_back
                 ## update f_locals ##
                 if f_back:
-                    f_back.f_locals.update(self.gi_frame.f_locals)
-                    self.gi_frame.f_locals=f_back.f_locals
-                self.gi_frame.f_locals[".send"]=None
-                self.gi_frame.f_lineno=self.gi_frame.f_lineno-self.init.count("\n")
-                if len(self.linetable) > self.gi_frame.f_lineno:
-                    self.lineno=self.linetable[self.gi_frame.f_lineno]+1 ## +1 to get the next lineno after returning ##
+                    f_back.f_locals.update(self._internals["frame"].f_locals)
+                    self._internals["frame"].f_locals=f_back.f_locals
+                self._internals["frame"].f_locals[".send"]=None
+                self._internals["frame"].f_lineno=self._internals["frame"].f_lineno-self.init.count("\n")
+                if len(self._internals["linetable"]) > self._internals["frame"].f_lineno:
+                    self._internals["lineno"]=self._internals["linetable"][self._internals["frame"].f_lineno]+1 ## +1 to get the next lineno after returning ##
                 else:
                     ## EOF ##
-                    self.lineno=len(self._source_lines)+1
+                    self._internals["lineno"]=len(self._internals["_source_lines"])+1
 
     def send(self,arg):
         """
         Send takes exactly one arguement 'arg' that 
         is sent to the functions yield variable
         """
-        if not self.gi_running:
+        if not self._internals["running"]:
             raise TypeError("can't send non-None value to a just-started generator")
-        # if self.gi_yieldfrom:
-        #     self.gi_yieldfrom.send(arg)
+        # if self._internals["yieldfrom"]:
+        #     self._internals["yieldfrom"].send(arg)
         #     return
-        self.gi_frame.f_locals()[".send"]=arg
+        self._internals["frame"].f_locals()[".send"]=arg
         return next(self)
 
     def close(self):
         """Creates a simple empty generator"""
-        self.state_generator=iter(())
-        self.gi_frame=None
-        self.gi_running=False
-        self.gi_suspended=False
-        self.gi_yieldfrom=None
+        self._internals.update(
+            {
+                "state_generator":iter(()),
+                "frame":None,
+                "running":False,
+                "suspended":False,
+                "yieldfrom":None
+            }
+        )
 
     def throw(self,exception):
         """
@@ -1392,13 +1401,13 @@ class Generator(Pickler):
 
     def __setstate__(self,state):
         Pickler.__setstate__(self,state)
-        self.state_generator=self.init_states()
+        self._internals["state_generator"]=self.init_states()
 
     def __instancecheck__(self, instance):
-        return isinstance(instance,AnyGeneratorType)
+        return isinstance(instance,self._type|type(self))
 
     def __subclasscheck__(self, subclass):
-        return issubclass(subclass,AnyGeneratorType)
+        return issubclass(subclass,self._type|type(self))
 
 AnyGeneratorType=GeneratorType|Generator
 
@@ -1406,11 +1415,16 @@ AnyGeneratorType=GeneratorType|Generator
 if (3,6) <= version_info:
     from types import AsyncGeneratorType
     AnyGeneratorType|=AsyncGeneratorType
+    class AsyncGenerator(Generator):
+        _internals={"prefix":"ag_","type":AsyncGeneratorType}
 
 if (3,5) <= version_info:
     from typing import Callable,Any,NoReturn,Iterable
     from types import CodeType,FrameType,CoroutineType
     
+    class Coroutine(Generator):
+        _internals={"prefix":"cr_","type":CoroutineType}
+
     AnyGeneratorType|=CoroutineType
     ## utility functions ##
     lineno_adjust.__annotations__={"FUNC":AnyGeneratorType,"frame":FrameType|None,"return":int}
