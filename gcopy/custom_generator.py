@@ -167,8 +167,7 @@ def dedent(text):
     indent=get_indent(text)
     if indent==0:
         return text
-    text_iter,line,dedented=enumerate(text),-1,False
-    text=""
+    text_iter,line,dedented,text=enumerate(text),-1,False,""
     for index,char in text_iter:
         ## dedent the current line ##
         if not dedented:
@@ -960,6 +959,9 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
+    - make both string collectors return a list of strings - is it possible to have an adjust
+      in between strings??
+
     Needs checking:
 
     - check .send on generator expressions and in general for those that don't use it
@@ -969,7 +971,7 @@ TODO:
     format errors
     - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
     - with throw, extract the first line from self._internals["state"] (for cpython) and then create an exception traceback out of that
-    (if wanting to port onto jupyter notebook you'd use the entire self._source_lines and then point to the lineno)
+    (if wanting to port onto jupyter notebook you'd use the entire self._internals["source_lines"] and then point to the lineno)
 
     -----------------------------------------------
     Backwards compatibility:
@@ -1009,6 +1011,7 @@ class Generator(Pickler):
     """
 
     _internals={"prefix":"gi_","type":GeneratorType}
+    _attrs=("_internals",)
 
     def _custom_adjustment(self,line,lineno):
         """
@@ -1086,7 +1089,10 @@ class Generator(Pickler):
                     string_collector=collect_string
                 temp_index,temp_line=string_collector(source_iter,char)
                 prev=(index,temp_index,char)
-                line+=temp_line
+                ## probably should make it return a list ##
+                temp_line=temp_line.split("\n")
+                lines+=[line for line in temp_line[:-1]]
+                line=temp_line[-1]
             ## makes the line singly spaced while retaining the indentation ##
             elif char==" ":
                 if indented:
@@ -1099,7 +1105,11 @@ class Generator(Pickler):
                 space=index
             ## join everything after the line continuation until the next \n or ; ##
             elif char=="\\":
-                skip(source_iter,get_indent(source[index+1:])) ## +1 since 'index:' is inclusive ##
+                whitespace=get_indent(source[index+1:])
+                ## skip the whitespace before newline ##
+                skip(source_iter,whitespace) ## +1 since 'index:' is inclusive ##
+                ## skip the whitespace after newline ##
+                skip(source_iter,get_indent(source[index+1+whitespace:]))
             ## create new line ##
             elif char in "#\n;:":
                 ## skip comments ##
@@ -1174,13 +1184,13 @@ class Generator(Pickler):
             end_pos-=1
             ## adjustment ##
             blocks,indexes=control_flow_adjust(
-                self._internals["_source_lines"][temp_lineno:end_pos],
+                self._internals["source_lines"][temp_lineno:end_pos],
                 list(range(temp_lineno,end_pos)),
-                get_indent(self._internals["_source_lines"][start_pos])
+                get_indent(self._internals["source_lines"][start_pos])
             )
             blocks,indexes=loop_adjust(
                 blocks,indexes,
-                self._internals["_source_lines"][start_pos:end_pos],
+                self._internals["source_lines"][start_pos:end_pos],
                 *(start_pos,end_pos)
             )
             self._internals["linetable"]=indexes
@@ -1188,16 +1198,16 @@ class Generator(Pickler):
             for start_pos,end_pos in loops[::-1]:
                 start_pos-=1
                 end_pos-=1
-                flag,block=iter_adjust(self._internals["_source_lines"][start_pos:end_pos])
+                flag,block=iter_adjust(self._internals["source_lines"][start_pos:end_pos])
                 blocks+=indent_lines(block,4-get_indent(block[0]))
                 if flag:
                     self._internals["linetable"]+=[start_pos]
                 self._internals["linetable"]+=list(range(start_pos,end_pos))
-            self._internals["state"]="\n".join(blocks+self._internals["_source_lines"][end_pos:])
+            self._internals["state"]="\n".join(blocks+self._internals["source_lines"][end_pos:])
             return
         block,self._internals["linetable"]=control_flow_adjust(
-            self._internals["_source_lines"][temp_lineno:],
-            list(range(temp_lineno,len(self._internals["_source_lines"])))
+            self._internals["source_lines"][temp_lineno:],
+            list(range(temp_lineno,len(self._internals["source_lines"])))
         )
         self._internals["state"]="\n".join(block)
 
@@ -1208,7 +1218,7 @@ class Generator(Pickler):
         """
         return self._internals["frame"].f_locals
     
-    def _init(self):
+    def _frame_init(self):
         """
         initializes the frame with the current 
         states variables and the _locals proxy
@@ -1227,15 +1237,17 @@ class Generator(Pickler):
 
     def init_states(self):
         """Initializes the state generation as a generator"""
+        ## api setup ##
+        prefix=self._internals["prefix"]
+        for key in ("code","frame","suspended","yieldfrom","running"):
+            setattr(self,prefix+key,self._internals[key])
+        del prefix
         ## since self._internals["state"] starts as 'None' ##
         yield self._create_state(get_loops(self._internals["lineno"],self._internals["jump_positions"]))
         loops=get_loops(self._internals["lineno"],self._internals["jump_positions"])
         while (self._internals["state"] and len(self._internals["linetable"]) > self._internals["frame"].f_lineno) or loops:
             yield self._create_state(loops)
             loops=get_loops(self._internals["lineno"],self._internals["jump_positions"])
-
-    # _attrs=('_source_lines','gi_code','gi_frame','gi_running',
-    #         'gi_suspended','gi_yieldfrom','jump_positions','lineno','source')
 
     def __init__(self,FUNC=None,overwrite=False):
         """
@@ -1273,7 +1285,7 @@ class Generator(Pickler):
                     self._internals["yieldfrom"]=getattr(FUNC,prefix+"yieldfrom")
                 else:
                     self._internals["yieldfrom"]=None
-                self._internals["suspended"]=None
+                self._internals["suspended"]=True
             ## uninitialized generator ##
             else:
                 ## source code string ##
@@ -1290,7 +1302,7 @@ class Generator(Pickler):
                 else:
                     raise TypeError("type '%s' is an invalid initializer for a Generator" % type(FUNC))
                 ## make sure the source code is standardized and usable by this generator ##
-                self._internals["_source_lines"]=self._clean_source_lines()
+                self._internals["source_lines"]=self._clean_source_lines()
                 ## create the states ##
                 self._internals["frame"]=frame()
                 self._internals["suspended"]=False
@@ -1301,10 +1313,6 @@ class Generator(Pickler):
             self._internals["state_generator"]=self.init_states()
             if overwrite:
                 currentframe().f_back.f_locals[getcode(FUNC).co_name]=self
-            ## api setup ##
-            for key in self._internals:
-                if not key in ("prefix","type"):
-                    setattr(self,prefix+key,self._internals[key])
 
     def __len__(self):
         """
@@ -1339,7 +1347,7 @@ class Generator(Pickler):
         # set the next state and setup the function
         next(self._internals["state_generator"]) ## it will raise a StopIteration for us
         ## update with the new state and get the frame ##
-        exec(self._init()+self._internals["state"],globals(),locals())
+        exec(self._frame_init()+self._internals["state"],globals(),locals())
         self._internals["running"]=True
         ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
         try:
@@ -1365,7 +1373,7 @@ class Generator(Pickler):
                     self._internals["lineno"]=self._internals["linetable"][self._internals["frame"].f_lineno]+1 ## +1 to get the next lineno after returning ##
                 else:
                     ## EOF ##
-                    self._internals["lineno"]=len(self._internals["_source_lines"])+1
+                    self._internals["lineno"]=len(self._internals["source_lines"])+1
 
     def send(self,arg):
         """
@@ -1404,10 +1412,10 @@ class Generator(Pickler):
         self._internals["state_generator"]=self.init_states()
 
     def __instancecheck__(self, instance):
-        return isinstance(instance,self._type|type(self))
+        return isinstance(instance,self._internals["type"]|type(self))
 
     def __subclasscheck__(self, subclass):
-        return issubclass(subclass,self._type|type(self))
+        return issubclass(subclass,self._internals["type"]|type(self))
 
 AnyGeneratorType=GeneratorType|Generator
 
@@ -1437,6 +1445,7 @@ if (3,5) <= version_info:
     collect_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
     collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
     collect_definition.__annotations__ = {"line": str,"lines": list[str],"lineno": int,"source": str,"source_iter": enumerate,"reference_indent": int,"prev": tuple[int, str],"return": tuple[int, str, int,list[str]]}
+    dedent.__annotations__={"text":str,"return":str}
     get_indent.__annotations__={"line":str,"return":int}
     skip.__annotations__={"iter_val":Iterable,"n":int,"return":None}
     is_alternative_statement.__annotations__={"line":str,"return":bool}
@@ -1476,6 +1485,7 @@ if (3,5) <= version_info:
     Generator._clean_source_lines.__annotations__={"return":list[str]}
     Generator._create_state.__annotations__={"return":None}
     Generator.init_states.__annotations__={"return":Iterable}
+    Generator._frame_init.__annotations__={"return":str}
     Generator.__init__.__annotations__={"FUNC":AnyGeneratorType|str|None,"return":None}
     Generator.__len__.__annotations__={"return":int}
     Generator.__iter__.__annotations__={"return":Iterable}
