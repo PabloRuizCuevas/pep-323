@@ -66,6 +66,8 @@ For python 2:
  - Coroutines were introduced in 3.5
 
  - Asynchronous generators were introduced in 3.6
+
+ - ternary conditionals were introduced in python 2.5
 """
 
 from types import FunctionType,GeneratorType
@@ -84,6 +86,10 @@ were implemented allowing for function generators with the 'yield' keyword and i
 Generator expressions. Therefore, this python module/library is only useful for python versions 2.2 and above.
 """)
 
+if version_info < (2,4):
+    from warnings import warn
+    warn("Python version 2.4 or above is required for generator expressions",UserWarning)
+
 #########################
 ### utility functions ###
 #########################
@@ -91,8 +97,16 @@ Generator expressions. Therefore, this python module/library is only useful for 
 if version_info < (2,3):
     from warnings import warn
     warn("Python version 2.3 or above is required for get_history_item for usage on CLIs",UserWarning)
+    
     def is_cli():
         return False
+    
+    def enumerate(gen):
+        """Enumerates a generator/iterator"""
+        index=0
+        for i in gen:
+            yield index,i
+            index+=1
 else:
     from readline import get_history_item
 
@@ -130,7 +144,7 @@ if version_info < (2,6):
         return iter_val.next()
 
 if version_info < (3,11):
-    def get_col_offset(frame): ## shouldn't this be a different version??
+    def get_col_offset(frame):
         lasti=frame.f_lasti
         for instruction in get_instructions(frame.f_code):
             if instruction.offset==lasti:
@@ -140,15 +154,11 @@ else:
     ## make an attr dict out of the tuple ##
     def get_col_offset(frame):
         return getframeinfo(frame).positions.col_offset
-    
 
-if version_info < (2,3):
-    def enumerate(gen):
-        """Enumerates a generator/iterator"""
-        index=0
-        for i in gen:
-            yield index,i
-            index+=1
+def empty_generator():
+    """Creates a simple empty generator"""
+    return
+    yield
 
 def dedent(text):
     """
@@ -229,10 +239,10 @@ def lineno_adjust(FUNC,frame=None):
         for pos,offset in line.sort():
             if offset==lasti:
                 return index
-            if pos[0] > current[1]:
+            if pos[0] > current[1]: ## independence ##
                 current=pos
                 index+=1
-            elif pos[1] > current[1]:
+            elif pos[1] > current[1]: ## intersection ##
                 current[1]=pos[1]
     raise ValueError("f_lasti not encountered")
 
@@ -253,7 +263,7 @@ def unpack_genexpr(source):
             prev=(index,char)
             line+=temp_line
             continue
-        if char=="(":
+        if char=="(": ## we're only interested in when the generator expression ends in terms of the depth ##
             depth+=1
         elif char==")":
             depth-=1
@@ -363,14 +373,14 @@ def skip_source_definition(source):
             depth-=1
     raise SyntaxError("Unexpected format encountered")
 
-def collect_string(iter_val,reference):
+def collect_string(iter_val,reference,f_string=False):
     """
     Collects strings in an iterable assuming correct 
     python syntax and the char before is a qoutation mark
     
     Note: make sure iter_val is an enumerated type
     """
-    line,backslash=reference,False
+    line,backslash,offsets=reference,False,tuple()
     for index,char in iter_val:
         if char==reference and not backslash:
             line+=char
@@ -379,9 +389,16 @@ def collect_string(iter_val,reference):
         backslash=False
         if char=="\\":
             backslash=True
+        if f_string:
+            if char=="{":
+                offsets+=((index,))
+            elif char=="}":
+                offsets[-1]+=(index,)
+    if offsets:
+        return index,yield_adjust(line,offsets)
     return index,line
 
-def collect_multiline_string(iter_val,reference):
+def collect_multiline_string(iter_val,reference,f_string=False):
     """
     Collects multiline strings in an iterable assuming 
     correct python syntax and the char before is a 
@@ -392,7 +409,7 @@ def collect_multiline_string(iter_val,reference):
     if a string starts with 3 qoutations
     then it's classed as a multistring
     """
-    line,backslash,prev,count=reference,False,-2,0
+    line,backslash,prev,count,offsets,ID,depth=reference,False,-2,0,tuple(),"",0
     for index,char in iter_val:
         if char==reference and not backslash:
             if index-prev==1:
@@ -407,6 +424,23 @@ def collect_multiline_string(iter_val,reference):
         backslash=False
         if char=="\\":
             backslash=True
+        if f_string:
+            if char=="(": ## only () will contain a value yield ##
+                depth+=1
+            elif char==")":
+                depth-=1
+            if char.isalnum():
+                ID+=char
+                if char == "yield":
+                    pass
+            else:
+                ID=""
+            if char=="{":
+                offsets+=((index,))
+            elif char=="}":
+                offsets[-1]+=(index,)
+    if offsets:
+        return index,yield_adjust(line,offsets)
     return index,line
 
 def collect_definition(line,lines,lineno,source,source_iter,reference_indent,prev):
@@ -549,9 +583,10 @@ def extract_iter(line,number_of_indents):
     """
     depth,ID,line_iter=0,"",enumerate(line)
     for index,char in line_iter:
-        if char=="(":
+        ## the 'in' key word must be avoided in all forms of loop comprehension ##
+        if char in "([{":
             depth+=1
-        elif char==")":
+        elif char in ")]}":
             depth-=1
         if char.isalnum() and depth==0:
             ID+=char
@@ -657,6 +692,12 @@ def send_adjust(line):
         ## indicator       yield statement            assignments
         return flag,["=".join(parts[index:]),"=".join(parts[:index])+reciever]
     return None,None
+
+def yield_adjust(line,values):
+    """adjusts value yields in a source line"""
+    ## values is either the start positions or the f-string locations ##
+    ## basically we go through each and extract the yield values ##
+    pass
 
 def get_loops(lineno,jump_positions):
     """
@@ -765,8 +806,9 @@ def expr_getsource(FUNC):
             source="\n".join(source[:current_max_lineno+1])
         return source[current_min:current_max]
     ## otherwise match with generator expressions in the original source to get the source code ##
-    attrs=(attr for attr in code_attrs() if not attr in ('co_argcount','co_posonlyargcount','co_kwonlyargcount',
-                                                         'co_filename','co_linetable','co_lnotab','co_exceptiontable'))
+    attrs=("co_freevars","co_cellvars","co_firstlineno","co_nlocals","co_stacksize","co_flags","co_code","co_consts", "co_names", "co_varnames","co_name")
+    if (3,3) <= version_info:
+        attrs+=("co_qualname",)
     if isinstance(source,list):
         source="\n".join(source)
     for col_offset,end_col_offset in extractor(source):
@@ -834,10 +876,10 @@ def extract_lambda(source_code):
             index,temp_line=string_collector(source_code,char)
             prev=(index,char)
             continue
-        ## detect brackets
-        elif char=="(":
+        ## detect brackets (lambda can be in all 3 types of brackets) ##
+        elif char in "({[":
             depth+=1
-        elif char==")":
+        elif char in "]})":
             depth-=1
         ## record source code ##
         if is_lambda:
@@ -867,10 +909,9 @@ class Pickler(object):
     _not_allowed=tuple()
 
     def _copier(self,FUNC):
-        """copying will create a new generator object but the copier will determine it's depth"""
-        items=((attr,FUNC(getattr(self,attr))) for attr in self._attrs if hasattr(self,attr))
+        """copying will create a new generator object but the copier will determine its depth"""
         obj=type(self)()
-        obj.__setstate__(dict(items))
+        obj.__setstate__(obj.__getstate__(obj,FUNC))
         return obj
 
     ## for copying ##
@@ -880,12 +921,13 @@ class Pickler(object):
     def __deepcopy__(self,memo):
         return self._copier(deepcopy)
     ## for pickling ##
-    def __getstate__(self):
+    def __getstate__(self,FUNC=lambda x:x):
         """Serializing pickle (what object you want serialized)"""
-        return dict(
-                    (attr,getattr(self,attr)) for attr in self._attrs 
-                    if hasattr(self,attr) and not attr in self._not_allowed
-                )
+        dct=dict()
+        for attr in self._attrs:
+            if hasattr(self,attr) and not attr in self._not_allowed:
+                dct[attr]=FUNC(getattr(self,attr))
+        return dct
 
     def __setstate__(self,state):
         """Deserializing pickle (returns an instance of the object with state)"""
@@ -959,15 +1001,32 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
-    - need to fix for yields used as values
+    Needs fixing:
+
+    - detect f-strings in collect_string and collect_multiline_string
+
+    - detect value yields in _clean_source_lines
+
+     - yield_adjust - need to fix for yields used as values
+      - unpacker - (yield 3),3,(yield 5),None
+      - unwrapper - yield (yield (yield 5))
+        
+        and f'{yield 4}' or '%s' % (yield 5) are also possible
+        also (yield None)
+
+        adjust these before hand an then replace with actual 
+        values during _clean_source_lines
+    
+    - add the yield adjust to the existing lines before the current line
 
     Needs checking:
 
-    - make sure returns are a StopIteration with the value returned
-
+    - check lineno_adjust to ensure that it's robust, not sure if it works in all cases.
+      It relies on a single line containing all the code, it might be possible that you
+      can have multiple independent expressions in one line but I haven't checked. -
+      This function is only to help with users that choose to use compound statements.
+    
     - check .send on generator expressions and in general for those that don't use it
-
-    - check lineno_adjust to ensure that it's robust, not sure if it works in all cases
 
     format errors
     - maybe edit or add to the exception traceback in __next__ so that the file and line number are correct
@@ -978,6 +1037,7 @@ TODO:
     Backwards compatibility:
     -----------------------------------------------
     - finish get_instructions - make sure the positions and offsets are correct
+      - used to get the current col_offset for track_iter on genexprs + for lineno_adjust
     -----------------------------------------------
  
 2. write tests
@@ -1022,6 +1082,7 @@ class Generator(Pickler):
         2. make sure the generator is closed on regular returns
         3. save the iterator from the for loops replacing with a nonlocal variation
         4. tend to all yield from ... with the same for loop variation
+        5. adjust all value yields either via unwrapping or unpacking
         """
         number_of_indents=get_indent(line)
         temp_line=line[number_of_indents:]
@@ -1038,7 +1099,7 @@ class Generator(Pickler):
             return [line]
         if temp_line.startswith("return "):
             ## close the generator then return ##
-            return [indent+"currentframe().f_back.f_locals['self'].close()",line]
+            return [indent+"currentframe().f_back.f_locals['self'].close()","raise StopIteration("+line[7:]+")"]
         ## handles the .send method ##
         flag,adjustment=send_adjust(temp_line)
         if flag:
@@ -1079,6 +1140,7 @@ class Generator(Pickler):
         source=source[get_indent(source):] ## we need to make sure the source is saved for skipping for line continuations ##
         source_iter=enumerate(source)
         line,lines,indented,space,indentation,prev=" "*4,[],False,0,4,(0,0,"")
+        ID,depth,depth_index,value_yields="",0,0,[]
         ## enumerate since I want the loop to use an iterator but the 
         ## index is needed to retain it for when it's used on get_indent
         for index,char in source_iter:
@@ -1088,12 +1150,9 @@ class Generator(Pickler):
                     string_collector=collect_multiline_string
                 else:
                     string_collector=collect_string
-                temp_index,temp_line=string_collector(source_iter,char)
+                temp_index,temp_line=string_collector(source_iter,char,(source[index-1]=="f")) ## f-strings ##
                 prev=(index,temp_index,char)
-                ## probably should make it return a list ##
-                temp_line=temp_line.split("\n")
-                lines+=[line for line in temp_line[:-1]]
-                line=temp_line[-1]
+                line+=temp_line
             ## makes the line singly spaced while retaining the indentation ##
             elif char==" ":
                 if indented:
@@ -1133,6 +1192,8 @@ class Generator(Pickler):
                         index,char,lineno,lines=collect_definition(line,lines,lineno,source,source_iter,reference_indent,prev)
                     else:
                         lineno+=1
+                        if value_yields:
+                            line=yield_adjust(line,value_yields)
                         lines+=self._custom_adjustment(line,lineno)
                         ## make a linetable if using a running generator ##
                         if running and char=="\n":
@@ -1144,8 +1205,21 @@ class Generator(Pickler):
                 else:
                     indented,line=False,""
                 space=index ## this is important (otherwise we get more indents than necessary) ##
+                value_yields=[]
             else:
                 line+=char
+                ## detect value yields ##
+                if char=="(": ## [yield] and {yield} is not possible only (yield) ##
+                    depth_index=index
+                    depth+=1
+                elif char==")":
+                    depth-=1
+                if depth and char.isalnum():
+                    ID+=char
+                    if ID=="yield":
+                        value_yields+=[depth_index]
+                else:
+                    ID=""
         ## in case you get a for loop at the end and you haven't got the end jump_position ##
         ## then you just pop them all off as being the same end_lineno ##
         end_lineno=len(lines)+1
@@ -1224,8 +1298,10 @@ class Generator(Pickler):
         initializes the frame with the current 
         states variables and the _locals proxy
         """
-        assign=[" "*4+key+"=locals()['"+key+"']" for key in self._internals["frame"].f_locals \
-                if isinstance(key,str) and key.isalnum() and key!="locals"]
+        assign=[]
+        for key in self._internals["frame"].f_locals:
+            if isinstance(key,str) and key.isalnum() and key!="locals":
+                assign+=[" "*4+"%s=locals()[%s]" % (key,key)]
         if assign:
             assign="\n"+"\n".join(assign)
         else:
@@ -1265,7 +1341,7 @@ class Generator(Pickler):
         The interals are accessible via the _internals dictionary
         """
         ## __setstate__ from Pickler._copier ##
-        if not FUNC is None:
+        if FUNC:
             prefix=self._internals["prefix"] ## needed to identify certain attributes ##
             ## running generator ##
             if hasattr(FUNC,prefix+"code"):
@@ -1381,19 +1457,19 @@ class Generator(Pickler):
         Send takes exactly one arguement 'arg' that 
         is sent to the functions yield variable
         """
-        if not self._internals["running"]:
+        if self._internals["lineno"] == 1:
             raise TypeError("can't send non-None value to a just-started generator")
-        # if self._internals["yieldfrom"]:
-        #     self._internals["yieldfrom"].send(arg)
-        #     return
-        self._internals["frame"].f_locals()[".send"]=arg
+        if self._internals["yieldfrom"]:
+            self._internals["yieldfrom"].send(arg)
+        else:
+            self._internals["frame"].f_locals()[".send"]=arg
         return next(self)
 
     def close(self):
-        """Creates a simple empty generator"""
+        """Closes the generator clearing its frame, state_generator, and yieldfrom"""
         self._internals.update(
             {
-                "state_generator":iter(()),
+                "state_generator":empty_generator(),
                 "frame":None,
                 "running":False,
                 "suspended":False,
@@ -1436,6 +1512,7 @@ if (3,5) <= version_info:
 
     AnyGeneratorType|=CoroutineType
     ## utility functions ##
+    empty_generator.__annotations__={"return":GeneratorType}
     lineno_adjust.__annotations__={"FUNC":AnyGeneratorType,"frame":FrameType|None,"return":int}
     is_cli.__annotations__={"return":bool}
     unpack_genexpr.__annotations__={"source":str,"return":list[str]}
@@ -1443,8 +1520,8 @@ if (3,5) <= version_info:
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
-    collect_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
-    collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"return":str}
+    collect_string.__annotations__={"iter_val":enumerate,"reference":str,"f_string":bool,"return":tuple[int,str]}
+    collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"f_string":bool,"return":tuple[int,str]}
     collect_definition.__annotations__ = {"line": str,"lines": list[str],"lineno": int,"source": str,"source_iter": enumerate,"reference_indent": int,"prev": tuple[int, str],"return": tuple[int, str, int,list[str]]}
     dedent.__annotations__={"text":str,"return":str}
     get_indent.__annotations__={"line":str,"return":int}
@@ -1460,6 +1537,7 @@ if (3,5) <= version_info:
     loop_adjust.__annotations__={"lines":list[str],"indexes":list[int],"outer_loop":list[str],"pos":tuple[int,int],"return":tuple[list[str],list[int]]}
     has_node.__annotations__={"line":str,"node":str,"return":bool}
     send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
+    yield_adjust.__annotations__={"line":str,"offsets":tuple[int,int],"return":str}
     get_loops.__annotations__={"lineno":int,"jump_positions":list[tuple[int,int]],"return":list[tuple[int,int]]}
     ## expr_getsource ##
     code_attrs.__annotations__={"return":tuple[str,...]}
