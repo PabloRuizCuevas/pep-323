@@ -28,7 +28,7 @@ SOFTWARE.
 
 In order to make this module as backwards compatible as possible 
 some of the functions used will be written out manually and a 
-preprocessor or otherwise condition statemnt will go over what 
+preprocessor or otherwise condition statement will go over what 
 changes will be made if any
 
 Backwards compatibility notes of relevance at the moment:
@@ -62,8 +62,6 @@ For python 2:
  - dis.get_instructions was introduced in 3.4
 
  - CodeType.co_positions was introduced in 3.11
-
- - Coroutines were introduced in 3.5
 
  - Asynchronous generators were introduced in 3.6
 
@@ -103,12 +101,11 @@ if version_info < (2,3):
     def is_cli():
         return False
     
-    def enumerate(gen):
+    def enumerate(gen,start=0):
         """Enumerates a generator/iterator"""
-        index=0
         for i in gen:
-            yield index,i
-            index+=1
+            yield start,i
+            start+=1
 else:
     from readline import get_history_item
 
@@ -326,7 +323,7 @@ def track_iter(obj):
     obj=iter(obj)
     frame=currentframe().f_back
     if frame.f_code.co_name=="<genexpr>":
-        key=get_col_offset(frame)
+        key="%s.%s" % (frame.f_lineno,get_col_offset(frame)) ## add the lineno since the offset could be anywhere and might override the indents that haven't finished ##
     else:
         if is_cli():
             code_context=get_history_item(-frame.f_lineno)
@@ -407,7 +404,7 @@ def collect_string(source_iter,reference,source=False):
                 if char.isalnum():
                     ID+=char
                     if char == "yield":
-                        temp_line=value_yield_adjust(source,source_iter,index,depth-1,limit)
+                        temp_line=value_yield_adjust(source,source_iter,index,limit)
                         line=temp_line.pop()
                         lines+=temp_line
                         in_f_string=False
@@ -458,8 +455,8 @@ def collect_multiline_string(source_iter,reference,source=False):
                     depth-=1
                 if char.isalnum():
                     ID+=char
-                    if char == "yield":
-                        temp_line=value_yield_adjust(source[index-len(line):],source_iter,index,depth-1,limit)
+                    if char == "yield" and depth==1:
+                        temp_line=value_yield_adjust(source[index-len(line):],source_iter,index,limit)
                         line=temp_line.pop()
                         lines+=temp_line
                         in_f_string=False
@@ -926,31 +923,18 @@ def extract_lambda(source_code):
     if is_lambda:
         yield col_offset,None
 
-def extract_value_yield():
-    """
-    Extracts value yields from a line
-    """
-    for char in l:
-        if something:
-            break
-        # if value_yields:
-        #     lines+=value_yield_adjust(temp_line,None,value_yields[-1],None,start_index) ## possibly init=value_yields[-1]+len("yield")
-    return
+"""TODO
 
-def value_yield_adjust(line,source_iter=None,index=None,init=None,left_limit=None):
+Finish unpack and value_yield_adjust for the value yields
+"""
+def unpack():
     """
-    adjusts the current line for value yields
-    
-    1. Extracts the segment
-    2. makes back new lines
-    3. replaces the segment
-    4. skips the iterable
-    5. gives back new lines
+    Unpacks value yields from a line
     """
     ## get the offsets and unpackings ##
     lines,temp_line,depth,value_yields=[],"",0,[]
     ## col_offset ##
-    for start_index,char in enumerate(line[left_limit:init][::-1]):
+    for start_index,char in enumerate(line[left_limit:index][::-1]):
         ## collect strings
         ## skip line continuations
         ## get depth
@@ -979,12 +963,25 @@ def value_yield_adjust(line,source_iter=None,index=None,init=None,left_limit=Non
         ## get depth
         ## identify value yields
         ## identify unpackings - unpackings have depth 0 ## recursion will help with unwrapping
+
+def value_yield_adjust(line,source_iter=None,index=None,left_limit=None):
+    """
+    adjusts the current line for value yields
+    
+    1. Extracts the segment
+    2. makes back new lines
+    3. replaces the segment
+    4. skips the iterable
+    5. gives back new lines
+    """
+    left=unpack()
+    right=unpack()
     if source_iter:
         skip(source_iter,end_index)
-        ## unpack the changes into their places ##
-        replacement=""
-        return lines+[line[left_limit:]+replacement]
-    return lines
+    ## unpack the changes into their places ##
+    if left_limit is None:
+        left_limit=index - len(left[-1])
+    return left+[left.pop()+right.pop(0)]+right+[line[left_limit:]+"*locals()['.args]"]
 
 ########################
 ### pickling/copying ###
@@ -1096,6 +1093,10 @@ TODO:
         values during _clean_source_lines
 
     Needs checking:
+
+    - check overwrite in __init__
+
+    - check track_iter since it now uses the line as well as the offset
 
     - check that the returns work now e.g. using next(self) and for i in self: ...
     
@@ -1319,7 +1320,7 @@ class Generator(Pickler):
                 if depth and char.isalnum():
                     ID+=char
                     if ID=="yield":
-                        temp_line=value_yield_adjust(source[index-len(line):],source_iter,index,depth-1)
+                        temp_line=value_yield_adjust(source[index-len(line):],source_iter,index)
                         line+=temp_line.pop()
                         lines+=temp_line
                 else:
@@ -1492,7 +1493,7 @@ class Generator(Pickler):
             self._internals["running"]=False
             self._internals["state"]=None
             self._internals["state_generator"]=self.init_states()
-            if overwrite:
+            if overwrite: ## this might not actually work??
                 currentframe().f_back.f_locals[getcode(FUNC).co_name]=self
 
     def __len__(self):
@@ -1566,8 +1567,8 @@ class Generator(Pickler):
         if self._internals["yieldfrom"]:
             self._internals["yieldfrom"].send(arg)
         else:
-            self._internals["frame"].f_locals()[".send"]=arg
-        return next(self)
+            self._internals["frame"].f_locals[".send"]=arg
+            return next(self)
 
     def close(self):
         """Closes the generator clearing its frame, state_generator, and yieldfrom"""
@@ -1636,7 +1637,8 @@ if (3,5) <= version_info:
     loop_adjust.__annotations__={"lines":list[str],"indexes":list[int],"outer_loop":list[str],"pos":tuple[int,int],"return":tuple[list[str],list[int]]}
     has_node.__annotations__={"line":str,"node":str,"return":bool}
     send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
-    value_yield_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"init":None|int,"left_limit":None|int,"offsets":tuple[int,int],"return":list[str]}
+    unpack.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"left_limit":None|int,"return":list[str]}
+    value_yield_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"left_limit":None|int,"return":list[str]}
     get_loops.__annotations__={"lineno":int,"jump_positions":list[tuple[int,int]],"return":list[tuple[int,int]]}
     ## expr_getsource ##
     code_attrs.__annotations__={"return":tuple[str,...]}
