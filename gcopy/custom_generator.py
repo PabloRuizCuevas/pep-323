@@ -925,46 +925,125 @@ def extract_lambda(source_code):
 
 """TODO
 
-Finish unpack and value_yield_adjust for the value yields
-"""
-def unpack():
-    """
-    Unpacks value yields from a line
-    """
-    ## get the offsets and unpackings ##
-    lines,temp_line,depth,value_yields=[],"",0,[]
-    ## col_offset ##
-    for start_index,char in enumerate(line[left_limit:index][::-1]):
-        ## collect strings
-        ## skip line continuations
-        ## get depth
-        ## identify value yields
-        ## identify unpackings - unpackings have depth 0 ## recursion will help with unwrapping
-        extract,value_yields=extract_value_yield()
-        if char=="," or depth > 0:
-            if value_yields:
-                lines+=value_yield_adjust(temp_line,None,value_yields[-1],None,start_index) ## possibly init=value_yields[-1]+len("yield")
-            else:
-                lines+=[temp_line]
-            if depth > 0:
-                break
-    end_index=0
-    ## end_col_offset ##
-    for end_index,char in enumerate(line[index:]):
-        if char=="," or depth < 0 or char in ";\n":
-            if value_yields:
-                lines+=value_yield_adjust(temp_line,None,value_yields[-1],None,start_index) ## possibly init=value_yields[-1]+len("yield")
-            else:
-                lines+=[temp_line]
-            if depth < 0 or char in ";\n":
-                break
-        ## collect strings
-        ## skip line continuations
-        ## get depth
-        ## identify value yields
-        ## identify unpackings - unpackings have depth 0 ## recursion will help with unwrapping
+unpack:
+ - add string collection
+ - check it
+ 
+unpack_adjust:
+ - add string collection
+ - check it
 
-def value_yield_adjust(line,source_iter=None,index=None,left_limit=None):
+assign_adjust:
+ - needs more work
+"""
+def unpack(line,index):
+    """
+    Unpacks value yields from a line into a list of lines
+    going towards its right side then the left side since
+    the right side will have to be unpacked whereas the left
+    side will be adjusted based on how the initial identification
+    of value yields occurs
+    """
+    depth,lines,ID,line,end_index=0,[],"","",0
+    line_iter=enumerate(line[index:])
+    for end_index,char in line_iter:
+        
+        ## collect strings and add to the lines ##
+
+        if char=="\\":
+            whitespace=get_indent(line[end_index+1:])
+            skip(line_iter,whitespace)
+            skip(line_iter,get_indent(line[end_index+whitespace+2:]))
+            line+=" "
+            continue
+        if char==",":
+            lines+=[line]
+        elif depth < 0 or char in ";\n":
+            lines+=[line]
+            break
+        if char=="(":
+            depth+=1
+        elif char==")":
+            depth-=1
+        if depth:
+            if char.isalnum():
+                ID+=char
+                if ID=="yield":
+                    ## once the right side has been unpacked we collect up the left using unpack_adjust ##
+                    temp_lines,offsets=unpack_adjust(unpack(line,end_index))
+                    lines+=temp_lines
+                    line=line[:offsets[0]]+"locals()['.args'].pop()" ## reduce the line + add the replacement
+                    ## udpate the variables
+                    line_iter=enumerate(line[offsets[1]:])
+                    end_index+=offsets[1]-index
+            else:
+                ID=""
+        else:
+            line+=char
+    return lines,(index,end_index)
+
+def assign_adjust(line,line_iter,reference_index):
+    """Adjusts assignments made in a line containing value yields"""
+    ## split by equals sign
+    depth,line,lines=0,"",[]
+    for index,char in line_iter:
+
+        ## collect strings ##
+
+        if char=="=" and depth:
+            lines+=[line]
+
+
+    # a=(b:=next(j))=c=(d:=3)=f,(yield next(j))
+
+    # a=(b:=next(j))
+    # b=c=(d:=3)
+    # ...
+    # d=...
+
+    ## 1.
+
+    # k=f,(yield next(j))
+    # a=(b:=next(j))=k
+    
+    ## named expressions pass
+    # a=b=next(j)
+    # ...
+    # b=...
+
+    ## You can't have functions in assignment, but you can have dictionary like assignments from functions
+    # func()[next(j)]=k
+
+    ## function dictionary assignments
+    # locals()[".args"].append(func())
+    # locals()[".args"].append(next(j))
+    # ...
+    # locals()[".args"].pop()[locals()[".args"].pop()]=...
+    return lines
+
+def unpack_adjust(line,offsets):
+    """adjusts the left side of the line containing a value yield to ensure that it works correctly"""
+    ## left - will not contain any value yields therefore is simply collecting the remaining items ##
+    ## it should break when it encounters an '=' with depth 0
+    depth,col_offset=0
+    line_iter=enumerate(line[:offsets[0]][::-1])
+    for col_offset,char in line_iter:
+        
+        ## collect strings ##
+
+        if char == ",":
+            lines+=[line]
+            break
+        if char=="(":
+            depth+=1
+        elif char==")":
+            depth-=1
+        if (char == "=" and depth == 0) or depth > 1: ## how to skip ':=' ??
+            return assign_adjust(line,line_iter,offsets[0])+[line]+lines,(col_offset,offsets[1])
+        line+=char
+    return [line]+lines,(col_offset,offsets[1])
+
+def value_yield_adjust(line,source_iter=None,index=None):
     """
     adjusts the current line for value yields
     
@@ -974,14 +1053,11 @@ def value_yield_adjust(line,source_iter=None,index=None,left_limit=None):
     4. skips the iterable
     5. gives back new lines
     """
-    left=unpack()
-    right=unpack()
+    lines,offsets=unpack_adjust(unpack(line,index))
     if source_iter:
-        skip(source_iter,end_index)
+        skip(source_iter,offsets[1])
     ## unpack the changes into their places ##
-    if left_limit is None:
-        left_limit=index - len(left[-1])
-    return left+[left.pop()+right.pop(0)]+right+[line[left_limit:]+"*locals()['.args]"]
+    return lines+[line[offsets[0]:]+",".join(["locals()['.args].pop(0)" for i in lines])]
 
 ########################
 ### pickling/copying ###
@@ -1638,7 +1714,9 @@ if (3,5) <= version_info:
     has_node.__annotations__={"line":str,"node":str,"return":bool}
     send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
     unpack.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"left_limit":None|int,"return":list[str]}
-    value_yield_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"left_limit":None|int,"return":list[str]}
+    unpack_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"return":list[str]}
+    assign_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"return":list[str]}
+    value_yield_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"return":list[str]}
     get_loops.__annotations__={"lineno":int,"jump_positions":list[tuple[int,int]],"return":list[tuple[int,int]]}
     ## expr_getsource ##
     code_attrs.__annotations__={"return":tuple[str,...]}
@@ -1677,5 +1755,5 @@ if (3,5) <= version_info:
     Generator._copier.__annotations__={"FUNC":Callable,"return":Generator}
     Generator.__copy__.__annotations__={"return":Generator}
     Generator.__deepcopy__.__annotations__={"memo":dict,"return":Generator}
-    Generator.__getstate__.__annotations__={"return":dict}
-    Generator.__setstate__.__annotations__={"state":dict,"return":None}
+    Generator.__instancecheck__.__annotations__={"instance":object,"return":bool}
+    Generator.__subclasscheck__.__annotations__={"subclass":type,"return":bool}
