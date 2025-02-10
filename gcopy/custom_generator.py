@@ -372,6 +372,19 @@ def skip_source_definition(source):
             depth-=1
     raise SyntaxError("Unexpected format encountered")
 
+
+def string_collector_proxy(index,char,prev,iterable,line=None):
+    """Proxy function for usage when collecting strings since this block of code gets used repeatedly"""
+    if prev[0]+2==prev[1]+1==index and prev[2]==char:
+        string_collector=collect_multiline_string
+    else:
+        string_collector=collect_string
+    temp_index,temp_line=string_collector(iterable,char)
+    prev=(index,temp_index,char)
+    if line is not None:
+        line+=temp_line
+    return line,prev
+
 def collect_string(source_iter,reference,source=False):
     """
     Collects strings in an iterable assuming correct 
@@ -478,13 +491,7 @@ def collect_definition(line,lines,lineno,source,source_iter,reference_indent,pre
         for index,char in source_iter:
             ## collect strings ##
             if char=="'" or char=='"':
-                if prev[0]+2==prev[1]+1==index and prev[2]==char:
-                    string_collector=collect_multiline_string
-                else:
-                    string_collector=collect_string
-                temp_index,temp_line=string_collector(source_iter,char)
-                prev=(index,temp_index,char)
-                line+=temp_line
+                line,prev=string_collector_proxy(index,char,prev,source_iter,line)
             ## newline ##
             elif char == "\n":
                 break
@@ -849,17 +856,12 @@ def expr_getsource(FUNC):
 ###############
 def extract_genexpr(source):
     """Extracts each generator expression from a list of the source code lines"""
-    ID,is_genexpr,depth,prev="",False,0,(0,"")
+    ID,is_genexpr,depth,prev="",False,0,(0,0,"")
     source_iter=enumerate(source)
     for index,char in source_iter:
         ## skip all strings if not in genexpr
         if char=="'" or char=='"':
-            if prev[0]-1==index and char==prev[1]:
-                string_collector=collect_multiline_string
-            else:
-                string_collector=collect_string
-            index,temp_line=string_collector(source_iter,char)
-            prev=(index,char)
+            _,prev=string_collector_proxy(index,char,prev,source_iter,_)
             continue
         ## detect brackets
         elif char=="(":
@@ -888,17 +890,12 @@ def extract_genexpr(source):
 ##############
 def extract_lambda(source_code):
     """Extracts each lambda expression from the source code string"""
-    ID,is_lambda,lambda_depth,prev="",False,0,(0,"")
+    ID,is_lambda,lambda_depth,prev="",False,0,(0,0,"")
     source_code=enumerate(source_code)
     for index,char in source_code:
-        ## skip all strings if not in lambda
+        ## skip all strings (we only want the offsets)
         if char=="'" or char=='"':
-            if prev[0]-1==index and char==prev[1]:
-                string_collector=collect_multiline_string
-            else:
-                string_collector=collect_string
-            index,temp_line=string_collector(source_code,char)
-            prev=(index,char)
+            _,prev=string_collector_proxy(index,char,prev,source_code)
             continue
         ## detect brackets (lambda can be in all 3 types of brackets) ##
         elif char in "({[":
@@ -923,18 +920,13 @@ def extract_lambda(source_code):
     if is_lambda:
         yield col_offset,None
 
-"""TODO
+"""
+TODO
+Needs checking and fixing:
 
-unpack:
- - add string collection
- - check it
- 
-unpack_adjust:
- - add string collection
- - check it
-
-assign_adjust:
- - needs more work
+unpack
+unpack_adjust
+assign_adjust
 """
 def unpack(line,index):
     """
@@ -982,18 +974,19 @@ def unpack(line,index):
             line+=char
     return lines,(index,end_index)
 
-def assign_adjust(line,line_iter,reference_index):
-    """Adjusts assignments made in a line containing value yields"""
-    ## split by equals sign
-    depth,line,lines=0,"",[]
+def extract_id(line_iter):
+    """Extracts a variable name from a line"""
+    line=""
     for index,char in line_iter:
+        if not char.isalnum():
+            break
+        line+=char
+    return line,index,char
 
-        ## collect strings ##
-
-        if char=="=" and depth:
-            lines+=[line]
-
-
+def assign_adjust(line,line_iter,reference_index):
+    """
+    Adjusts assignments made in a line containing value yields
+    i.e. possible cases:
     # a=(b:=next(j))=c=(d:=3)=f,(yield next(j))
 
     # a=(b:=next(j))
@@ -1019,6 +1012,34 @@ def assign_adjust(line,line_iter,reference_index):
     # locals()[".args"].append(next(j))
     # ...
     # locals()[".args"].pop()[locals()[".args"].pop()]=...
+    """
+    ## split by equals sign, sort out the dictionary assignments ##
+    depth,line,lines,in_key,in_dict,name,prev=0,"",[],None,None,"",(0,0,"")
+    for index,char in line_iter:
+        ## collect strings ##
+        if char=="'" or char=='"':
+            ## get the string collector type ##
+            line,prev=string_collector_proxy(index,char,prev,line_iter,line)
+            continue
+        if char=="[" and depth==in_key:
+            in_dict=depth
+            in_key=None
+        elif char=="(" and in_dict==depth-1:
+            in_dict=None
+            line,index,char=extract_id(line_iter)
+        if char=="=":
+            if depth:
+                lines+=[line]
+            else:
+                ## named expression ##
+                name,index,char=extract_id(line_iter)
+        if char == "(":
+            depth+=1
+        elif char == ")":
+            depth-=1
+        if char == "]" and depth: ## must be a dictionary assignment ##
+            in_key=depth
+        line+=char
     return lines
 
 def unpack_adjust(line,offsets):
@@ -1028,9 +1049,11 @@ def unpack_adjust(line,offsets):
     depth,col_offset=0
     line_iter=enumerate(line[:offsets[0]][::-1])
     for col_offset,char in line_iter:
-        
         ## collect strings ##
-
+        if char=="'" or char=='"':
+            ## get the string collector type ##
+            line,prev=string_collector_proxy(col_offset,char,prev,line_iter,line)
+            continue
         if char == ",":
             lines+=[line]
             break
@@ -1156,17 +1179,10 @@ TODO:
 
 1. general testing and fixing to make sure everything works before any more changes are made
 
-    Needs fixing:
-
-     - value_yield_adjust - need to fix for yields used as values
-      - unpacker - (yield 3),3,(yield 5),None
-      - unwrapper - yield (yield (yield 5))
-        
-        and f'{yield 4}' or '%s' % (yield 5) are also possible
-        also (yield None)
-
-        adjust these before hand an then replace with actual 
-        values during _clean_source_lines
+    Finish fixing:
+     - unpack
+     - unpack_adjust
+     - assign_adjust
 
     Needs checking:
 
@@ -1696,6 +1712,7 @@ if (3,5) <= version_info:
     track_iter.__annotations__={"obj":object,"return":Iterable}
     ## cleaning source code ##
     skip_source_definition.__annotations__={"source":str,"return":str}
+    string_collector_proxy.__annotations__={"index":int,"char":str,"prev":tuple[int,int,str],"iterable":Iterable,"line":str|None,"return":tuple[str|None,tuple[int,int,str]]}
     collect_string.__annotations__={"iter_val":enumerate,"reference":str,"f_string":bool,"return":tuple[int,str]}
     collect_multiline_string.__annotations__={"iter_val":enumerate,"reference":str,"f_string":bool,"return":tuple[int,str]}
     collect_definition.__annotations__ = {"line": str,"lines": list[str],"lineno": int,"source": str,"source_iter": enumerate,"reference_indent": int,"prev": tuple[int, str],"return": tuple[int, str, int,list[str]]}
@@ -1715,6 +1732,7 @@ if (3,5) <= version_info:
     send_adjust.__annotations__={"line":str,"return":tuple[None|int,None|list[str,str]]}
     unpack.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"left_limit":None|int,"return":list[str]}
     unpack_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"return":list[str]}
+    extract_id.__annotations__={"line_iter":None|Iterable,"return":tuple[str,int,str]}
     assign_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"return":list[str]}
     value_yield_adjust.__annotations__={"line":str,"source_iter":None|Iterable,"index":None|int,"return":list[str]}
     get_loops.__annotations__={"lineno":int,"jump_positions":list[tuple[int,int]],"return":list[tuple[int,int]]}
