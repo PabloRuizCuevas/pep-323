@@ -43,9 +43,9 @@ In order to achieve this the following assumptions are assumed to be true for th
 
 This assumption has been somewhat relaxed with the implementation of ```lineno_adjust``` and the use of get_instructions however this is not guranteed to work across all python versions since 3.11 is when we saw ```CodeType.co_positions``` enabling source code positions with column offsets but in general using compound statements is not recommended when trying to initialize a ```Generator``` instance from a running generator.
 
-4. you can retrieve the last line of execution in relation to your source code i.e. if ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_lineno``` to retrieve this.
+3. you can retrieve the last line of execution in relation to your source code i.e. if ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_lineno``` to retrieve this.
 
-5. all required variables in its current state can be retrieved.
+4. all required variables in its current state can be retrieved.
 
 i.e. if again ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_locals``` to retrieve the locals.
 
