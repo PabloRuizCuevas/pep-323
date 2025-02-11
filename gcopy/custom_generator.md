@@ -41,7 +41,7 @@ In order to achieve this the following assumptions are assumed to be true for th
 
 2. There are no compound statements present in the source code of your generator functions that have yields or yield froms.
 
-This assumption has been somewhat relaxed with the implementation of ```lineno_adjust``` and the use of get_instructions however this is not guranteed to work across all python versions since 3.11 is when we saw ```CodeType.co_positions``` enabling source code positions with column offsets but in general using compound statements is not recommended when trying to initialize a ```Generator``` instance from a running generator.
+This assumption has been somewhat relaxed with the implementation of ```lineno_adjust``` and the use of ```get_instructions``` however this is not guranteed to work across all python versions since 3.11 is when python introduced ```CodeType.co_positions``` enabling source code positions with column offsets but in general using compound statements is not recommended when trying to initialize a ```Generator``` instance from a running generator.
 
 3. you can retrieve the last line of execution in relation to your source code i.e. if ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_lineno``` to retrieve this.
 
@@ -87,7 +87,7 @@ e.g.
 
  - assignment yields e.g. ```...=yield ...``` are adjusted so that it's more accessible to recieving values sent to it via the ```Generator.send``` method
 
- - Records the start and end lineno positions for the for and while loops for later use when needing to adjust the current source code inside a loop encapsulation. These positions are recorded in the ```Generator._internals["jump_positions"]``` variable. Temporarily, a jump_stack is also used to later detect the end position and then update this in the jump_position back in ```Generator._clean_source_lines```.
+ - Records the start and end ```lineno``` positions for the for and while loops for later use when needing to adjust the current source code inside a loop encapsulation. These positions are recorded in the ```Generator._internals["jump_positions"]``` variable. Temporarily, a ```jump_stack``` is also used to later detect the end position and then update this in the jump_position back in ```Generator._clean_source_lines```.
 
 Also, value yields are handled via ```Generator._clean_source_lines``` and both string collector functions (or ```string_collector_proxy```)  e.g. yields of the form ```(yield ...)``` (yield statement with brackets around it).
 
@@ -115,7 +115,7 @@ class AsyncGenerator(Generator):
 ```
 So this means the attrs starting with a prefix will be accessible via i.e. ```Generator(FUNC).gi_frame``` but the others only via ```Generator(FUNC)._internals```.
 
-5. The state generator is created via ```Generator.init_states```. This firstly sets up the API to ensure all attributes using the prefix that are accessed by the user should be set and then sets the state generator as an evaluation loop where with each iteration the code is adjusted by ```Generator._create_state```.
+5. The state generator (```Generator()._internals.state_generator```) is created via ```Generator.init_states```. This firstly sets up the API to ensure all attributes using the prefix that are accessed by the user should be set and then sets the state generator as an evaluation loop where with each iteration the code is adjusted by ```Generator._create_state```.
 
 Adjustments are with ```get_loops``` and ```lineno``` to slice the source code to the current ```lineno```, finish the current loop encapsulating the current line, and adjust the current control flow. ```get_loops``` gets the loops encapsulating the current line. It does a linear search to check which one.
 
@@ -134,7 +134,7 @@ f_lineno
           -
                   -
 ```
-e.g. which of the loop positions together encapsulate the current lineno
+e.g. which of the loop positions together encapsulate the current ```lineno```
 
 In ```Generator._create_state``` we can adjust by ```lineno``` because the code is split up into lines and there are no yields present in the function body excluding inner definitions. This should mean that every line is a single execution and therefore no two lines should (by design) show up thereby allowing a clear iteration progression.
 
@@ -150,7 +150,7 @@ else:
 ```
 Examples such as these are possible because we are simply slicing based on the ```f_lineno``` and trying to exec this.
 
-Lastly the ```loop_adjust``` is responsible for ensuring that all loops have been iterated through correctly under the same approach of simply slicing the source code.
+Lastly the ```loop_adjust``` is responsible for ensuring that all loops have been iterated through correctly under the same approach of simply slicing the source code lines.
 
 ```python
 for i in range(3):
@@ -226,24 +226,26 @@ for i in range(3):
     print(5)
 ```
 
-It's also important to note that doing such adjustments e.g. control_flow_adjust and loop_adjust will change the source code and thus the line numbers, therefore, to ensure we can still perform our slicing we need to create a linetable for determining the current lineno correctly after each state completion.
+It's also important to note that doing such adjustments e.g. ```control_flow_adjust``` and ```loop_adjust``` will change the source code and thus the line numbers, therefore, to ensure we can still perform our slicing we need to create a ```linetable``` for determining the current ```lineno``` correctly after each ```state``` completion.
 
 ## Generation
 
 How the ```next()``` (e.g. the ```__next__``` builtin special/magic/dunder method implementation) usages works is to run:
-1. ```next()``` on ```state_generator``` to get the next ```state``` e.g. a sliced string (by the current lineno (this is why splitting the source code into lines before was important)) of the pre prepared source code with adjustments. The adjustments are done via the state_generator iterations/yield function as mentioned.
+1. ```next()``` on ```state_generator``` to get the next ```state``` e.g. a sliced string (by the current lineno (this is why splitting the source code into lines before was important)) of the pre prepared source code with adjustments. The adjustments are done via the ```Generator()._internals.state_generator``` iterations/yield function (```Generator().init_states```) as mentioned.
    
 3. exec a new temporary function into the current local scope with an initialisation header that makes sure to first load in the previous states local variables to retain the current state.
 
-The header is created from ```Generator._frame_init``` and is used to monkey patche the locals with the ```Generator._locals``` proxy (since apparently it may have variations between versions as to how it works), set up the previous frames locals, save the current frame in the previous frame e.g. inside ```Generator.__next__``` so the generator can update its state.
+The header is created from ```Generator._frame_init``` and is used to monkey patch the locals with the ```Generator._locals``` proxy (since apparently it may have variations between versions as to how it works), set up the previous frames locals, save the current frame in the previous frame e.g. inside ```Generator.__next__``` so the generator can update its state.
 
-5. run this function returning the result then updating the state and ```lineno```  using a try-finally block. Because the source code may get adjusted, a linetable is used to determine the lineno.
+5. run this function returning the result then updating the state and ```lineno```  using a try-finally block. Because the source code may get adjusted, a linetable is used to determine the ```lineno```.
+
+Note: "locals" in i.e. ```Generator().gi_frame``` (```Generator._locals``` that monkey patched ```locals```) is deleted from the frame locals during this try-finally block since this may/should not be pickled but shouldn't be in there anyway since it was only a proxy to ensure consistency.
 
 ## copying + pickling
 
 So long as the assumptions mentioned under the assumptions section of this document hold you should be able to copy/pickle any generator.
 
-How copying and pickling is done is via an inheritance (since more than one class made use of the same methods) of the ```Pickler``` class on definition of the ```Generator``` class. Essentially the idea is simple e.g. if you can copy/pickle the attributes that comprise of the objects state then just copy/pickle these then make up the object from the unpickling of these since we cannot directly copy/pickle the object.
+How copying and pickling is done is via an inheritance (since more than one class made use of the same methods) of the ```Pickler``` class on definition of the ```Generator``` class. Essentially the idea is simple e.g. if you can copy/pickle the attributes that comprise of the objects state then just copy/unpickle these to make up the object since we cannot directly copy/pickle the object.
 
 This ends up being very simple in implementation as for pickling we are effectively running a for loop on a selection or array of attrs that get a ```getattr``` and ```setattr``` applied for ```__getstate__``` and ```__setstate__``` respectively. For copying we are essentially making use of ```__getstate__``` but applying the desired copier to the attribute e.g. ```copy.copy``` or ```copy.deepcopy```.
 
