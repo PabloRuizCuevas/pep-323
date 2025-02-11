@@ -235,7 +235,7 @@ How the ```next()``` (e.g. the ```__next__``` builtin special/magic/dunder metho
    
 3. exec a new temporary function into the current local scope with an initialisation header that makes sure to first load in the previous states local variables to retain the current state.
 
-The header monkey patches locals (since apparently it may have variations between versions as to how it works), set up the previous frames locals, save the current frame in the previous frame e.g. inside ```Generator.__next__``` so the generator can update its state.
+The header is created from ```Generator._frame_init``` and is used to monkey patche the locals with the ```Generator._locals``` proxy (since apparently it may have variations between versions as to how it works), set up the previous frames locals, save the current frame in the previous frame e.g. inside ```Generator.__next__``` so the generator can update its state.
 
 5. run this function returning the result then updating the state and ```lineno```  using a try-finally block. Because the source code may get adjusted, a linetable is used to determine the lineno.
 
