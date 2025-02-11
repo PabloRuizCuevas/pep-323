@@ -65,7 +65,7 @@ When these assumptions hold the following conceptual design framework follows:
 
 ## initialisation
 
-1. The source code of your generator is retrieved via ```inspect.getsource``` and expr_getsource for function generators and expressions respectively and you can pass in a string of source code as well.
+1. The source code of your generator is retrieved via ```inspect.getsource``` and ```expr_getsource``` for function generators and expressions respectively and you can pass in a string of source code as well.
 2. standardize the source code retrieved and split it into lines so that it's in a usable format using ```Generator._clean_source_lines```. 
 
 e.g. 
@@ -75,7 +75,7 @@ e.g.
 
 - join up the line continuations i.e. "\ ... " will be skipped
 
-- translate certain sections of the source code into a usable format by the generator with ```Generator._custom_adjustment```
+translate certain sections of the source code into a usable format by the generator with ```Generator._custom_adjustment```
 e.g. 
  - ```yield``` statements are written as returns to give the temporary exiting; this helps with the code adjustments later that gives the continuation.
 
@@ -89,7 +89,7 @@ e.g.
 
  - Records the start and end lineno positions for the for and while loops for later use when needing to adjust the current source code inside a loop encapsulation. These positions are recorded in the ```Generator._internals["jump_positions"]``` variable. Temporarily, a jump_stack is also used to later detect the end position and then update this in the jump_position back in ```Generator._clean_source_lines```.
 
-Also, value yields are handled via ```Generator._clean_source_lines``` and both string collector functions (or ```string_collector_proxy```  e.g. yields of the form ```(yield ...)``` (yield statement with brackets around it).
+Also, value yields are handled via ```Generator._clean_source_lines``` and both string collector functions (or ```string_collector_proxy```)  e.g. yields of the form ```(yield ...)``` (yield statement with brackets around it).
 
 Value yields need adjustment via ```value_yield_adjust``` by inserting new lines into the current source lines as the value yields need to be evaluated prior to usage e.g. value yields yield values but also returns a value (e.g. if you send a value to it via ```Generator.send``` rather than running ```next()``` otherwise its return value is by default ```None```) therefore the idea is to yield the values before (will work the same since the entire line is ran like this e.g. anything before the yield will also need to be saved into the stack since the yield could yield from an i.e. iterable and therefore depends on what line ran before), save their returns into a temporary stack, pop the stack / unpack all the value into its expression.
 
@@ -119,9 +119,9 @@ So this means the attrs starting with a prefix will be accessible via i.e. ```Ge
 6.
 Adjustments are with ```get_loops``` and ```lineno``` to slice the source code to the current ```lineno```, finish the current loop encapsulating the current line, and adjust the current control flow. ```get_loops``` gets the loops encapsulating the current line. It does a linear search to check which one.
 
-    To illustrate ```get_loops``` it simply tries to identify the following:
+To illustrate ```get_loops``` it simply tries to identify the following:
 
-    (Note: each colum is a jump_position with its start and end position identified via '-'; '|' indicates the correct selection)
+(Note: each colum is a jump_position with its start and end position identified via '-'; '|' indicates the correct selection)
 
 ```
                |  |  |
@@ -140,14 +140,14 @@ In ```Generator._create_state``` we can adjust by ```lineno``` because the code 
 
 Additionally, the ```control_flow_adjust``` function is used to address unreachable code code that occurs since we simply slice the source code by a lineno e.g.:
 
-    i.e. the following code would not run due to a ```SyntaxError```
+i.e. the following code would not run due to a ```SyntaxError```
     ```python
 
         print("hi")
     else:
         print("done")
     ```
-    Examples such as these are possible because we are simply slicing based on the ```f_lineno``` and trying to exec this.
+Examples such as these are possible because we are simply slicing based on the ```f_lineno``` and trying to exec this.
 
 Lastly the ```loop_adjust``` is responsible for ensuring that all loops have been iterated through correctly under the same approach of simply slicing the source code.
 
@@ -169,7 +169,7 @@ Lastly the ```loop_adjust``` is responsible for ensuring that all loops have bee
             print(4)
         print(5)
     ```
-    should map to:
+should map to:
     ```python
     locals()['.continue']=True
     for _ in (None,):
@@ -240,3 +240,9 @@ The header monkey patches locals (since apparently it may have variations betwee
 ## copying + pickling
 
 So long as the assumptions mentioned under the assumptions section of this document hold you should be able to copy/pickle any generator.
+
+How copying and pickling is done is via an inheritance (since more than one class made use of the same methods) of the ```Pickler``` class on definition of the ```Generator``` class. Essentially the idea is simple e.g. if you can copy/pickle the attributes that comprise of the objects state then just copy/pickle these then make up the object from the unpickling of these since we cannot directly copy/pickle the object.
+
+This ends up being very simple in implementation as for pickling we are effectively running a for loop on a selection or array of attrs that get a ```getattr``` and ```setattr``` applied for ```__getstate__``` and ```__setstate__``` respectively. For copying we are essentially making use of ```__getstate__``` but applying the desired copier to the attribute e.g. ```copy.copy``` or ```copy.deepcopy```.
+
+You should see that I've made a custom ```code``` and ```frame``` class that also inherit the ```Pickler``` class to ensure that these objects are also pickleable since they are by default not allowed to be pickled.
