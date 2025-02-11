@@ -243,7 +243,7 @@ Note: "locals" in i.e. ```Generator().gi_frame``` (```Generator._locals``` that 
 
 ## copying + pickling
 
-So long as the assumptions mentioned under the assumptions section of this document hold you should be able to copy/pickle any generator.
+So long as the assumptions mentioned under the assumptions section of this document hold and the frame locals are copyable/pickleable then it should be possible to copy/pickle a generator under these conditions.
 
 How copying and pickling is done is via an inheritance (since more than one class made use of the same methods) of the ```Pickler``` class on definition of the ```Generator``` class. Essentially the idea is simple e.g. if you can copy/pickle the attributes that comprise of the objects state then just copy/unpickle these to make up the object since we cannot directly copy/pickle the object.
 
