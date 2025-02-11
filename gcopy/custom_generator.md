@@ -1,4 +1,8 @@
-# custom_generator.py
+## Documentation for custom_generator
+
+in this file I'll be exploring the custom_generator.py file at a high level explaining what the core pipeline of the conceptual process is at a high level and then explaining what each and every function does and how it's related to each other in terms of what goals each achieves at a lower level e.g. one of more nuance.
+
+## custom_generator.py
 
 This file implements a class called Generator to emulate what a function generator does in cpython.
 
@@ -6,44 +10,11 @@ Note: it's currently not finished yet; see the TODO comment on top of the Genera
 
 ## approach:
 
-To emulate a generator we essentially evaluate source code on fly (section the source code by its yield statements (shouldn't do inner functions however)) using the source code as part fo the generators state. Using source code is much easier to manipulate (especially across different versions of cpython) and means all the work to get it working is mostly in adjusting the source code per iteration when it's needed.
+To emulate a generator we essentially evaluate source code on the fly sectioning the source code by its yield statements (shouldn't do inner functions however) and using these sections of the source code as each generators state. Using source code is much easier to manipulate (especially across different versions of cpython) and means all the work to get it working is mostly in initialisation and adjusting the source code per iteration.
 
-So, specifically what happens is the following:
-1. inspect.getsource is called on your function generator (else it will use the string given to it if you're doing that)
-2. standardize the source code retrieved and split it by line so that it's in a usable format e.g. makes sure the idents are correct where using ";" (since they don't have to start with an indentation of 4), join up the line continuations i.e. "\ ... " will be skipped, and split on "\n" and ";"
-3. translate the source code into a usable format by the generator (Note: this step is still experimental and could change) e.g. some loops might be rewritten into a more usable form.
-4. initialize the generator with attributes (should resemble a generators attrs but some are new add ons for better accessibility):
- - gi_code
- - gi_frame
- - gi_running
- - gi_suspended
- - gi_yieldfrom
- - lineno
- - state
- - jump_positions
- - state_generator
+There are two parts that make up the process on the whole e.g. initialisation and generation:
 
-From here the generator should be usable.
-
-How the ```next()``` usages work on it (e.g. the \_\_next\_\_ builtin special/magic/dunder method implementation) is to run:
-1. ```next()``` on ```state_generator``` to get the next ```state```
-2. exec a new temporary function into the current local scope that allows a frame of variables to be passed in and the use of nonlocals
-3. run this function returning the result
-4. If it ran successfully we're good otherwise the exception will be caught and it will get formatted (how it would be in regular generators; note: this step is optional e.g. it's not a priority to format it's exceptions this way only more beneficial)
-
-## backwards compatibility:
-
-This is mentioned in the comment I made at the top of the file. Fortuneatly this results in simply using if statements and no preprocessing thus far should be needed.
-
-## copying + pickling
-
-Once we've finished the emulation of the generator well then this should be fairly easy. I've only roughly detailed in what needs to happen, but it's not particularly difficult. The same is true with pickling because so long as the emulation works we should be fine.
-
-## Documentation for custom_generator
-
-in this file I'll be exploring the custom_generator.py file at a high level explaining what the core pipeline of the conceptual process is at a high level and then explaining what each and every function does and how it's related to each other in terms of what goals each achieves at a lower level e.g. one of more nuance.
-
-# High level overview:
+# Detailed overview
 
 ## code layout
 
@@ -58,7 +29,9 @@ The python module custom_generator can be categorized into sections identified b
  - lambda
  - Generator
 
-## proof of concept
+# Running the Generator:
+
+## Assumptions
 
 The idea is actually very simple e.g. emulate what a generator does.
 
@@ -68,13 +41,11 @@ In order to achieve this the following assumptions are assumed to be true for th
 
 2. There are no compound statements present in the source code of your generator functions that have yields or yield froms.
 
-We may consider implementing a way to determine the relevant col_offsets required to achieve this (in python version 3.11 we got co_positions which allows this), however, this is discouraged in the python style guide and thus this is not as considerably necessary in light of this view.
+This assumption has been somewhat relaxed with the implementation of ```lineno_adjust``` and the use of get_instructions however this is not guranteed to work across all python versions since 3.11 is when we saw ```CodeType.co_positions``` enabling source code positions with column offsets but in general using compound statements is not recommended when trying to initialize a ```Generator``` instance from a running generator.
 
-Therefore, if there is/are compound statements, there's no way to tell where the states get split up unless we develop and/or utilize such methods that are also robust.
+4. you can retrieve the last line of execution in relation to your source code i.e. if ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_lineno``` to retrieve this.
 
-3. you can retrieve the last line of execution in relation to your source code i.e. if ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_lineno``` to retrieve this.
-
-4. all required variables in its current state can be retrieved.
+5. all required variables in its current state can be retrieved.
 
 i.e. if again ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_locals``` to retrieve the locals.
 
@@ -92,34 +63,84 @@ For now this means using our track_iter function; for ease of use we recommend i
 
 When these assumptions hold the following conceptual design framework follows:
 
-## How does Generator in custom_generator work?
+## initialisation
 
-The Generator from custom_generator is initialized through stages starting from the  \_\_init\_\_ method and then after finishing allows the user to access its core implementations desired methods (i.e. \_\_next\_\_,\_\_copy\_\_,\_\_deepcopy\_\_,\_\_getstate\_\_,\_\_setstate\_\_).
+1. The source code of your generator is retrieved via ```inspect.getsource``` and expr_getsource for function generators and expressions respectively and you can pass in a string of source code as well.
+2. standardize the source code retrieved and split it into lines so that it's in a usable format using ```Generator._clean_source_lines```. 
 
-These are the stages of initialization in order:
+e.g. 
+- makes sure the indents are correct where using ";" (since they don't have to start with an indentation of 4)
 
-1. determine how to set the attributes based on the type of object passed and then proceed to setting them
+- split on "\n" and ";"
 
-2. get the source code
+- join up the line continuations i.e. "\ ... " will be skipped
 
-3. clean and format the source lines into lines
+- translate certain sections of the source code into a usable format by the generator with ```Generator._custom_adjustment```
+e.g. 
+ - ```yield``` statements are written as returns to give the temporary exiting; this helps with the code adjustments later that gives the continuation.
 
- - cleaning: involves removing empty lines, making sure any compound statements that shouldn't have yields are split into lines and their indents are correctly 4 spaces (+ the current indent more if inside a code block)
- 
-        Note: cleaning doesn't touch defintions
+ - ```yield from``` statements are written as for loops with returns to give the same effect as yields.
 
- - formating: this involves changing yields to returns, yield froms to for loops, returns to closing the generator then returning, yields that handle sends with an additional line to catch the recieved value. It also tracks the start and end positions of for/while loops for later temporary adjustments to ensure the code runs correctly.
+ - ```return``` statements are replaced with a ```StopIteration``` of the return value written in a try-finally clause to then close the generator after doing so and end the state generations.
 
-4. setup the state generator
+ - Definitions e.g. ```def, async def, class, async class``` are left untouched since these are classes/functions of their own.
 
-Setting up the state generator is about adjusting the current state e.g. source code from the current ```f_lineno``` downwards (relative to the new cleaned source lines).
+ - assignment yields e.g. ```...=yield ...``` are adjusted so that it's more accessible to recieving values sent to it via the ```Generator.send``` method
 
-There are 2 adjustments that are be made on creation of its states to ensure the generator runs correctly:
+ - Records the start and end lineno positions for the for and while loops for later use when needing to adjust the current source code inside a loop encapsulation. These positions are recorded in the ```Generator._internals["jump_positions"]``` variable. Temporarily, a jump_stack is also used to later detect the end position and then update this in the jump_position back in ```Generator._clean_source_lines```.
 
-1. ```control_flow_adjust```
-    - this is about removal of unreachable code that would otherwise cause syntax errors
+Also, value yields are handled via ```Generator._clean_source_lines``` and both string collector functions (or ```string_collector_proxy```  e.g. yields of the form ```(yield ...)``` (yield statement with brackets around it).
 
-    i.e. the following code would not run
+Value yields need adjustment via ```value_yield_adjust``` by inserting new lines into the current source lines as the value yields need to be evaluated prior to usage e.g. value yields yield values but also returns a value (e.g. if you send a value to it via ```Generator.send``` rather than running ```next()``` otherwise its return value is by default ```None```) therefore the idea is to yield the values before (will work the same since the entire line is ran like this e.g. anything before the yield will also need to be saved into the stack since the yield could yield from an i.e. iterable and therefore depends on what line ran before), save their returns into a temporary stack, pop the stack / unpack all the value into its expression.
+
+```value_yield_adjust``` recieves the source line and the current index which is the index associated with the identification that the source code cleaner has encountered a value yield and therefore needs to adjust it. What it does is go from left to right unpacking and unwrapping the expressions into lines in correct order of execution so that it can be usable by the Generator making sure to save the return values of each yield in a stack that gets popped as the replacement for the adjustment.
+
+Each value yield individually will simply be adjusted as a send or assignment yield to work in the Generator.
+
+4. initialize the generator ```_internals``` with attributes (should resemble a generators attrs but some are new add ons for better accessibility):
+ - gi_code
+ - gi_frame
+ - gi_running
+ - gi_suspended
+ - gi_yieldfrom
+ - lineno
+ - state
+ - jump_positions
+ - state_generator
+
+Note: I've made the attrs available under ```_internals``` to seperate the familiar api and the attrs used and may likely changes this from a dictionary to a class or attrdict if desirable for example since I also want to make separate the initializer/preparation methods. This also helps with translating the Generator function to ```AsyncGenerator``` since it means only needing to setup the prefix and type as seen in the code:
+```python
+class AsyncGenerator(Generator):
+    _internals={"prefix":"ag_","type":AsyncGeneratorType}
+```
+So this means the attrs starting with a prefix will be accessible via i.e. ```Generator(FUNC).gi_frame``` but the others only via ```Generator(FUNC)._internals```.
+
+5. The state generator is created via ```Generator.init_states```. This firstly sets up the API to ensure all attributes using the prefix that are accessed by the user should be set and then sets the state generator as an evaluation loop where with each iteration the code is adjusted by ```Generator._create_state```.
+6.
+Adjustments are with ```get_loops``` and ```lineno``` to slice the source code to the current ```lineno```, finish the current loop encapsulating the current line, and adjust the current control flow. ```get_loops``` gets the loops encapsulating the current line. It does a linear search to check which one.
+
+    To illustrate ```get_loops``` it simply tries to identify the following:
+
+    (Note: each colum is a jump_position with its start and end position identified via '-'; '|' indicates the correct selection)
+
+```
+               |  |  |
+            -  -  -
+        -
+        -   -        -
+f_lineno 
+          -    -
+                     -
+          -
+                  -
+```
+e.g. which of the loop positions together encapsulate the current lineno
+
+In ```Generator._create_state``` we can adjust by ```lineno``` because the code is split up into lines and there are no yields present in the function body excluding inner definitions. This should mean that every line is a single execution and therefore no two lines should (by design) show up thereby allowing a clear iteration progression.
+
+Additionally, the ```control_flow_adjust``` function is used to address unreachable code code that occurs since we simply slice the source code by a lineno e.g.:
+
+    i.e. the following code would not run due to a ```SyntaxError```
     ```python
 
         print("hi")
@@ -128,10 +149,7 @@ There are 2 adjustments that are be made on creation of its states to ensure the
     ```
     Examples such as these are possible because we are simply slicing based on the ```f_lineno``` and trying to exec this.
 
-2. ```temporary_loop_adjust```
-    - this is to ensure we are running through the current and outer loops correctly despite slicing through the source as mentioned.
-
-    For example, if this is our source and the dashed line is the cut off from the current ```f_lineno``` this is what running ```temporary_loop_adjust``` is trying to achieve after running ```get_loops```:
+Lastly the ```loop_adjust``` is responsible for ensuring that all loops have been iterated through correctly under the same approach of simply slicing the source code.
 
     ```python
     for i in range(3):
@@ -153,7 +171,8 @@ There are 2 adjustments that are be made on creation of its states to ensure the
     ```
     should map to:
     ```python
-    while True:
+    locals()['.continue']=True
+    for _ in (None,):
         print(1)
         break # continue adjustment
         break # break adjustment
@@ -205,23 +224,19 @@ There are 2 adjustments that are be made on creation of its states to ensure the
         print(5)
     ```
 
-    To illustrate ```get_loops``` it simply tries to identify the following:
+It's also important to note that doing such adjustments e.g. control_flow_adjust and loop_adjust will change the source code and thus the line numbers, therefore, to ensure we can still perform our slicing we need to create a linetable for determining the current lineno correctly after each state completion.
 
-    (Note: each colum is a jump_position with its start and end position identified via '-'; '|' indicates the correct selection)
+## Generation
 
-```
-               |  |  |
-            -  -  -
-        -
-        -   -        -
-f_lineno 
-          -    -
-                     -
-          -
-                  -
-```
-e.g. which of the loop positions together encapsulate the current lineno
+How the ```next()``` (e.g. the ```__next__``` builtin special/magic/dunder method implementation) usages works is to run:
+1. ```next()``` on ```state_generator``` to get the next ```state``` e.g. a sliced string (by the current lineno (this is why splitting the source code into lines before was important)) of the pre prepared source code with adjustments. The adjustments are done via the state_generator iterations/yield function as mentioned.
+   
+3. exec a new temporary function into the current local scope with an initialisation header that makes sure to first load in the previous states local variables to retain the current state.
 
-based on this we should clearly tell how this relates to the conditional statements in ```get_loops``` source code. The jump positions as mentioned get recorded on ```_custom_adjustment``` (bear in mind that the ordering of ```jump_positions``` recorded on ```_custom_adjustment``` are in order; which means from outer most loop to any encapsulated loops within it).
-    
-Once, adjusted from source and then adjusted from current state, we can then essentially exec the code and return the result thus completing the emulation of a generator via an on the fly executable source code adjustment iterator.
+The header monkey patches locals (since apparently it may have variations between versions as to how it works), set up the previous frames locals, save the current frame in the previous frame e.g. inside ```Generator.__next__``` so the generator can update its state.
+
+5. run this function returning the result then updating the state and ```lineno```  using a try-finally block. Because the source code may get adjusted, a linetable is used to determine the lineno.
+
+## copying + pickling
+
+So long as the assumptions mentioned under the assumptions section of this document hold you should be able to copy/pickle any generator.
