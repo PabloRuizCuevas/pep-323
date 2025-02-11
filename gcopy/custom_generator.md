@@ -142,59 +142,74 @@ Additionally, the ```control_flow_adjust``` function is used to address unreacha
 
 i.e. the following code would not run due to a ```SyntaxError```
 
-    ```python
+```python
 
-        print("hi")
-    else:
-        print("done")
-    ```
+    print("hi")
+else:
+    print("done")
+```
 Examples such as these are possible because we are simply slicing based on the ```f_lineno``` and trying to exec this.
 
 Lastly the ```loop_adjust``` is responsible for ensuring that all loops have been iterated through correctly under the same approach of simply slicing the source code.
 
-    ```python
-    for i in range(3):
-        for j in range(5):
-            print(0)
-            for k in range(7):
-                if True:
-                -----------------------------
-                    print(1)
-                    continue
-                else:
-                    print("done")
-                break
-            print(2)
-            for k in range(9):
-                print(3)
-            print(4)
-        print(5)
-    ```
-should map to:
-    
-    ```python
-    locals()['.continue']=True
-    for _ in (None,):
-        print(1)
-        break # continue adjustment
-        break # break adjustment
-        locals()[".continue"]=False
-        break # this break is here by default since the while loop is to help with control flow
-    ## next section ##
-    if locals()[".continue"]:
+```python
+for i in range(3):
+    for j in range(5):
+        print(0)
         for k in range(7):
             if True:
+            -----------------------------
                 print(1)
                 continue
             else:
                 print("done")
             break
-    ## next section ##
+        print(2)
+        for k in range(9):
+            print(3)
+        print(4)
+    print(5)
+```
+should map to:
+    
+```python
+locals()['.continue']=True
+for _ in (None,):
+    print(1)
+    break # continue adjustment
+    break # break adjustment
+    locals()[".continue"]=False
+    break # this break is here by default since the while loop is to help with control flow
+## next section ##
+if locals()[".continue"]:
+    for k in range(7):
+        if True:
+            print(1)
+            continue
+        else:
+            print("done")
+        break
+## next section ##
+print(2)
+for k in range(9):
+    print(3)
+print(4)
+## next section ##
+for j in range(5):
+    print(0)
+    for k in range(7):
+        if True:
+            print(1)
+            continue
+        else:
+            print("done")
+        break
     print(2)
     for k in range(9):
         print(3)
     print(4)
-    ## next section ##
+## next section ##
+for i in range(3):
     for j in range(5):
         print(0)
         for k in range(7):
@@ -208,23 +223,8 @@ should map to:
         for k in range(9):
             print(3)
         print(4)
-    ## next section ##
-    for i in range(3):
-        for j in range(5):
-            print(0)
-            for k in range(7):
-                if True:
-                    print(1)
-                    continue
-                else:
-                    print("done")
-                break
-            print(2)
-            for k in range(9):
-                print(3)
-            print(4)
-        print(5)
-    ```
+    print(5)
+```
 
 It's also important to note that doing such adjustments e.g. control_flow_adjust and loop_adjust will change the source code and thus the line numbers, therefore, to ensure we can still perform our slicing we need to create a linetable for determining the current lineno correctly after each state completion.
 
