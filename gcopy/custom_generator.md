@@ -138,9 +138,10 @@ e.g. which of the loop positions together encapsulate the current lineno
 
 In ```Generator._create_state``` we can adjust by ```lineno``` because the code is split up into lines and there are no yields present in the function body excluding inner definitions. This should mean that every line is a single execution and therefore no two lines should (by design) show up thereby allowing a clear iteration progression.
 
-Additionally, the ```control_flow_adjust``` function is used to address unreachable code code that occurs since we simply slice the source code by a lineno e.g.:
+Additionally, the ```control_flow_adjust``` function is used to address unreachable code that occurs since we simply slice the source code by a lineno e.g.:
 
 i.e. the following code would not run due to a ```SyntaxError```
+
     ```python
 
         print("hi")
