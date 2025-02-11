@@ -116,7 +116,7 @@ class AsyncGenerator(Generator):
 So this means the attrs starting with a prefix will be accessible via i.e. ```Generator(FUNC).gi_frame``` but the others only via ```Generator(FUNC)._internals```.
 
 5. The state generator is created via ```Generator.init_states```. This firstly sets up the API to ensure all attributes using the prefix that are accessed by the user should be set and then sets the state generator as an evaluation loop where with each iteration the code is adjusted by ```Generator._create_state```.
-6.
+
 Adjustments are with ```get_loops``` and ```lineno``` to slice the source code to the current ```lineno```, finish the current loop encapsulating the current line, and adjust the current control flow. ```get_loops``` gets the loops encapsulating the current line. It does a linear search to check which one.
 
 To illustrate ```get_loops``` it simply tries to identify the following:
