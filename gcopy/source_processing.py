@@ -1,9 +1,18 @@
 #################################################
 ### cleaning/extracting/adjusting source code ###
 #################################################
-from utils import get_instructions, version_info, getcode, getframe, attr_cmp, chain
+from utils import *
 from inspect import getsource, findsource
 from typing import Iterable, GeneratorType, FrameType, Any
+
+
+def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:
+    """Updates the depth of brackets"""
+    if char in selection[0]:
+        depth += 1
+    elif char in selection[1]:
+        depth -= 1
+    return depth
 
 
 def get_indent(line: str) -> int:
@@ -80,12 +89,8 @@ def unpack_genexpr(source: str) -> list[str]:
         if char == "'" or char == '"':
             line, prev = string_collector_proxy(index, char, prev, source_iter, line)
             continue
-        if (
-            char == "("
-        ):  ## we're only interested in when the generator expression ends in terms of the depth ##
-            depth += 1
-        elif char == ")":
-            depth -= 1
+        ## we're only interested in when the generator expression ends in terms of the depth ##
+        depth = update_depth(depth, char)
         ## accumulate the current line
         line += char
         ## collect IDs
@@ -152,10 +157,7 @@ def skip_source_definition(source: str) -> str:
     for index, char in source_iter:
         if char == ":" and depth == 0:
             return source[index + 1 :]
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
+        depth = update_depth(depth, char, ("([{", ")]}"))
     raise SyntaxError("Unexpected format encountered")
 
 
@@ -183,15 +185,7 @@ def string_collector_proxy(
     prev = (index, temp_index, char)
     if source:
         ## lines (adjustments) + line (string collected) ##
-        line += temp_line.pop()
-        ## if we have adjustments then we need to ensure that the line is adjusted ##
-        ## we have to unpack_adjust only if we got a yield ##
-        if temp_line:
-            temp_lines, final_line, offset = unpack(
-                line, iterable
-            )  ## line shouldn't be None ##
-            line = final_line
-        return line, prev, temp_lines
+        return temp_line.pop(), prev, temp_line
         # line+=temp_line ## line shouldn't be None otherwise we don't get an adjustment ##
     if line is not None:
         line += temp_line
@@ -283,17 +277,11 @@ def unpack_fstring(
     line, ID, depth, break_check, lines = "", "", 0, 0, []
     for index, char in source_iter:
         ## may need so that we can detect break_check < 0 to break e.g. } (f-string) ##
-        if char == "{":
-            break_check += 1
-        elif char == "}":
-            break_check -= 1
+        break_check = update_depth(break_check, char, ("{", "}"))
         if break_check < 0:
             break
         line += char
-        if char == "(":  ## only () will contain a value yield ##
-            depth += 1
-        elif char == ")":
-            depth -= 1
+        depth = update_depth(depth, char)
         if char.isalnum():
             ID += char
             if char == "yield" and depth == 1:
@@ -460,10 +448,7 @@ def extract_iter(line: str, number_of_indents: int) -> str:
     depth, ID, line_iter = 0, "", enumerate(line)
     for index, char in line_iter:
         ## the 'in' key word must be avoided in all forms of loop comprehension ##
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
+        depth = update_depth(depth, char, ("([{", ")]}"))
         if char.isalnum() and depth == 0:
             ID += char
             if ID == "in":
@@ -703,7 +688,7 @@ def extract_genexpr(source: str) -> GeneratorType:
     for index, char in source_iter:
         ## skip all strings if not in genexpr
         if char == "'" or char == '"':
-            _, prev = string_collector_proxy(index, char, prev, source_iter, _)
+            _, prev = string_collector_proxy(index, char, prev, source_iter)
             continue
         ## detect brackets
         elif char == "(":
@@ -741,10 +726,7 @@ def extract_lambda(source_code: str) -> GeneratorType:
             _, prev = string_collector_proxy(index, char, prev, source_code)
             continue
         ## detect brackets (lambda can be in all 3 types of brackets) ##
-        elif char in "({[":
-            depth += 1
-        elif char in "]})":
-            depth -= 1
+        depth = update_depth(depth, char, ("([{", ")]}"))
         ## record source code ##
         if is_lambda:
             if char == "\n;" or (
@@ -793,13 +775,24 @@ def unwrap(
 
 
 def unpack(
-    line: str, source_iter: Iterable, unwrapping: bool = False
+    line: str = empty_generator(),
+    source_iter: Iterable = empty_generator(),
+    unwrapping: bool = False,
 ) -> tuple[list[str], str, int]:
     """
     Unpacks value yields from a line into a
     list of lines going towards its right side
     """
-    depth, lines, ID, line, end_index, final_line, prev = 0, [], "", "", 0, "", ""
+    depth, depth_total, lines, ID, line, end_index, final_line, prev = (
+        0,
+        0,
+        [],
+        "",
+        "",
+        0,
+        "",
+        "",
+    )
     line_iter = enumerate(chain(line, source_iter))
     for end_index, char in line_iter:
         ## collect strings and add to the lines ##
@@ -830,12 +823,20 @@ def unpack(
         elif char == ":":  ## must be a named expression if depth is not zero ##
             lines, final_line, line, ID = update_lines(lines, line, final_line, ID)
             continue
+        ## record the current depth ##
+        if char == "[{":
+            depth_total += 1
+        elif char == "}]":
+            depth_total -= 1
+            if unwrapping and depth_total < 0:
+                break
         if char == "(":
             depth += 1
+            depth_total += 1
         elif char == ")":
             depth -= 1
-            if unwrapping and depth < 0:
-                break
+            depth_total -= 1
+        ## check for unwrapping/updating ##
         if depth:
             if char.isalnum():
                 ID += char
@@ -851,3 +852,60 @@ def unpack(
             line += char
         prev = char
     return lines, final_line, end_index
+
+
+def except_adjust(
+    current_lines: list[str], exception_lines: list[str], final_line: str
+) -> list[str]:
+    """
+    Checks if lines that were adjusted because of value yields
+    were in an except statement and therefore needs adjusting
+    """
+    ## except statement with its adjustments ##
+    if final_line[get_indent(final_line) :].startswith("except"):
+        indent = " " * 4
+        for index, line in enumerate(current_lines[::-1], start=1):
+            current_lines[-index] = indent + current_lines[-index]
+            reference_indent = get_indent(line)
+            if line[reference_indent].startswith("try"):
+                break
+        current_indent = " " * (reference_indent + 4)
+        return (
+            current_lines[:-index]
+            + [" " * reference_indent + "try:"]
+            + current_lines[index:]
+            + [
+                " " * reference_indent + "except:",
+                current_indent + "locals()['.error'] = exc_info()[1]",
+            ]
+            + indent_lines(exception_lines[:-1], current_indent)
+            + [current_indent + "raise locals()['.error']"]
+            + [final_line]
+        )
+    return current_lines + exception_lines + [final_line]
+
+
+def string_collector_adjust(
+    index: int,
+    char: str,
+    prev: tuple[int, int, str],
+    source_iter: Iterable,
+    line: str,
+    source: str,
+    lines: list[str],
+) -> tuple[str, int, list[str]]:
+    """Adjust the string collector in case of any value yields in the f-strings"""
+    string_collected, prev, temp_lines = string_collector_proxy(
+        index, char, prev, source_iter, line, source
+    )
+    if temp_lines:
+        lines_start, line_start, lines_end, line_end = (
+            unpack(line)[:-1],
+            unpack(source_iter=source_iter)[:-1],
+        )
+        final_lines, final_line = (
+            lines_start + temp_lines + lines_end,
+            line_start + string_collected + line_end,
+        )
+        return "", prev, except_adjust(lines, final_lines, final_line)
+    return string_collected, prev, lines
