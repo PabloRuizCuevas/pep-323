@@ -241,9 +241,15 @@ class Generator(Pickler):
                 self._internals["jump_stack"]
                 and reference_indent <= self._internals["jump_stack"][-1][0]
             ):  # -1: top of stack, 0: indent
-                self._internals["jump_positions"][
-                    self._internals["jump_stack"].pop()[1]
-                ][1] = end_lineno
+                index = self._internals["jump_stack"].pop()[1]
+                self._internals["jump_positions"][index][1] = end_lineno
+                if (
+                    self._internals["jump_stack_adjuster"]
+                    and self._internals["jump_positions"][index][0]
+                    == self._internals["jump_stack_adjuster"][-1][0]
+                ):
+                    lines += self._internals["jump_stack_adjuster"].pop().pop()
+        return lines
 
     def _append_line(
         self,
@@ -267,7 +273,7 @@ class Generator(Pickler):
             line += char
         if not line.isspace():  ## empty lines are possible ##
             reference_indent = get_indent(line)
-            self._update_jump_positions(self, lines, reference_indent)
+            lines = self._update_jump_positions(self, lines, reference_indent)
             ## skip the definitions ##
             if is_definition(line[reference_indent:]):
                 index, char, lineno, lines = collect_definition(
@@ -286,6 +292,65 @@ class Generator(Pickler):
         else:
             indented, line = False, ""
         return index, char, lineno, lines, line, indented, indentation
+
+    def _block_adjust(
+        self,
+        current_lines: list[str],
+        new_lines: list[str],
+        final_line: str,
+        lineno: int,
+    ) -> list[str]:
+        """
+        Checks if lines that were adjusted because of value yields
+        were in a block statement and therefore needs adjusting
+        """
+        ## make sure the lines are adjusted properly ##
+        final_lines = [self._custom_adjustment(line, lineno) for line in final_lines]
+        check = final_line[get_indent(final_line) :].startswith
+        ## the end of the loop needs to be appended with the new_lines ##
+        if check("while"):
+            self._internals["jump_stack_adjuster"] += [lineno, new_lines]
+        ## needs to indent itself and all other lines until the end of the block ##
+        elif check("elif"):
+            number_of_indents = get_indent(final_line)
+            final_line = (
+                " " * (number_of_indents + 4) + final_line[number_of_indents + 2 :]
+            )
+            return (
+                current_lines
+                + [" " * number_of_indents + "else:"]
+                + indent_lines(new_lines)
+                + [final_line]
+            )
+        elif check("except"):
+            return except_adjust(current_lines, new_lines, final_line)
+        return current_lines + new_lines + [final_line]
+
+    def _string_collector_adjust(
+        self,
+        index: int,
+        char: str,
+        prev: tuple[int, int, str],
+        source_iter: Iterable,
+        line: str,
+        source: str,
+        lines: list[str],
+    ) -> tuple[str, int, list[str]]:
+        """Adjust the string collector in case of any value yields in the f-strings"""
+        string_collected, prev, new_lines = string_collector_proxy(
+            index, char, prev, source_iter, line, source
+        )
+        if new_lines:
+            lines_start, line_start, lines_end, line_end = (
+                unpack(line)[:-1],
+                unpack(source_iter=source_iter)[:-1],
+            )
+            final_lines, final_line = (
+                lines_start + new_lines + lines_end,
+                line_start + string_collected + line_end,
+            )
+            return "", prev, self._block_adjust(lines, final_lines, final_line)
+        return string_collected, prev, lines
 
     def _clean_source_lines(self, running: bool = False) -> list[str]:
         """
@@ -306,16 +371,21 @@ class Generator(Pickler):
                      it records a tuple of (reference_indent,jump_position_index)
         """
         ## for loop adjustments ##
-        self._internals["jump_positions"], self._internals["jump_stack"], lineno = (
+        (
+            self._internals["jump_positions"],
+            self._internals["jump_stack"],
+            self._internals["jump_stack_adjuster"],
+            lineno,
+        ) = (
+            [],
             [],
             [],
             0,
         )
         ## setup source as an iterator and making sure the first indentation's correct ##
         source = skip_source_definition(self._internals["source"])
-        source = source[
-            get_indent(source) :
-        ]  ## we need to make sure the source is saved for skipping for line continuations ##
+        ## we need to make sure the source is saved for skipping for line continuations ##
+        source = source[get_indent(source) :]
         source_iter = enumerate(source)
         line, lines, indented, space, indentation, prev = (
             " " * 4,
@@ -331,7 +401,7 @@ class Generator(Pickler):
         for index, char in source_iter:
             ## collect strings ##
             if char == "'" or char == '"':
-                line, prev, lines = string_collector_adjust(
+                line, prev, lines = self._string_collector_adjust(
                     index, char, prev, source_iter, line, source, lines
                 )
             ## makes the line singly spaced while retaining the indentation ##
@@ -350,7 +420,8 @@ class Generator(Pickler):
                 line += " "  ## in case of a line continuation without a space before or after ##
             ## create new line ##
             elif char in "#\n;:":
-                index, char, lineno, lines, line, indented, indentation = (
+                ## 'space' is important (otherwise we get more indents than necessary) ##
+                space, char, lineno, lines, line, indented, indentation = (
                     self._append_line(
                         source,
                         source_iter,
@@ -362,7 +433,6 @@ class Generator(Pickler):
                         prev,
                     )
                 )
-                space = index  ## this is important (otherwise we get more indents than necessary) ##
             else:
                 line += char
                 ## detect value yields ##
@@ -372,10 +442,11 @@ class Generator(Pickler):
                 if depth and char.isalnum():
                     ID += char
                     if ID == "yield":
+                        ## how is this getting custom adjusted? - each line has to be checked and adjusted ##
                         temp, line, lines = (
                             len(lines),
                             "",
-                            except_adjust(lines, *unpack(line, source_iter)[:-1]),
+                            self._block_adjust(lines, *unpack(line, source_iter)[:-1]),
                         )
                         lineno += 1
                         if running:
@@ -386,9 +457,9 @@ class Generator(Pickler):
                     ID = ""
         ## in case you get a for loop at the end and you haven't got the end jump_position ##
         ## then you just pop them all off as being the same end_lineno ##
-        self._update_jump_positions(self, lines)
+        lines = self._update_jump_positions(self, lines)
         ## jump_stack is no longer needed ##
-        del self._internals["jump_stack"]
+        del self._internals["jump_stack"], self._internals["jump_stack_adjuster"]
         return lines
 
     def _create_state(self) -> None:
