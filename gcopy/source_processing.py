@@ -862,50 +862,22 @@ def except_adjust(
     were in an except statement and therefore needs adjusting
     """
     ## except statement with its adjustments ##
-    if final_line[get_indent(final_line) :].startswith("except"):
-        indent = " " * 4
-        for index, line in enumerate(current_lines[::-1], start=1):
-            current_lines[-index] = indent + current_lines[-index]
-            reference_indent = get_indent(line)
-            if line[reference_indent].startswith("try"):
-                break
-        current_indent = " " * (reference_indent + 4)
-        return (
-            current_lines[:-index]
-            + [" " * reference_indent + "try:"]
-            + current_lines[index:]
-            + [
-                " " * reference_indent + "except:",
-                current_indent + "locals()['.error'] = exc_info()[1]",
-            ]
-            + indent_lines(exception_lines[:-1], current_indent)
-            + [current_indent + "raise locals()['.error']"]
-            + [final_line]
-        )
-    return current_lines + exception_lines + [final_line]
-
-
-def string_collector_adjust(
-    index: int,
-    char: str,
-    prev: tuple[int, int, str],
-    source_iter: Iterable,
-    line: str,
-    source: str,
-    lines: list[str],
-) -> tuple[str, int, list[str]]:
-    """Adjust the string collector in case of any value yields in the f-strings"""
-    string_collected, prev, temp_lines = string_collector_proxy(
-        index, char, prev, source_iter, line, source
+    indent = " " * 4
+    for index, line in enumerate(current_lines[::-1], start=1):
+        current_lines[-index] = indent + current_lines[-index]
+        reference_indent = get_indent(line)
+        if line[reference_indent].startswith("try"):
+            break
+    current_indent = " " * (reference_indent + 4)
+    return (
+        current_lines[:-index]
+        + [" " * reference_indent + "try:"]
+        + current_lines[index:]
+        + [
+            " " * reference_indent + "except:",
+            current_indent + "locals()['.error'] = exc_info()[1]",
+        ]
+        + indent_lines(exception_lines[:-1], current_indent)
+        + [current_indent + "raise locals()['.error']"]
+        + [final_line]
     )
-    if temp_lines:
-        lines_start, line_start, lines_end, line_end = (
-            unpack(line)[:-1],
-            unpack(source_iter=source_iter)[:-1],
-        )
-        final_lines, final_line = (
-            lines_start + temp_lines + lines_end,
-            line_start + string_collected + line_end,
-        )
-        return "", prev, except_adjust(lines, final_lines, final_line)
-    return string_collected, prev, lines
