@@ -4,6 +4,7 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Finish fixing:
+     - Need to deal with value yields in block statements e.g. if, elif, for, while
      - collect_string and collect_multiline_string for the f-string detection
      - unpack
      - get_instructions .positions needs implementing for versions < 3.11 if possible (might not be)
