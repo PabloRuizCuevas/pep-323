@@ -6,12 +6,12 @@ if version_info < (3, 5):
 ##################################
 ### picklable/copyable objects ###
 ##################################
-from utils import empty_generator, enumerate, hasattrs, code_attrs, offset_adjust
 from types import FunctionType, GeneratorType, CodeType
 from inspect import currentframe
 from copy import deepcopy, copy
 from textwrap import dedent
 from source_processing import *
+from track import offset_adjust
 
 try:
     from typing import NoReturn
@@ -331,10 +331,9 @@ class Generator(Pickler):
         for index, char in source_iter:
             ## collect strings ##
             if char == "'" or char == '"':
-                line, prev, temp_lines = string_collector_proxy(
-                    index, char, prev, source_iter, line, source
+                line, prev, lines = string_collector_adjust(
+                    index, char, prev, source_iter, line, source, lines
                 )
-                lines += temp_lines
             ## makes the line singly spaced while retaining the indentation ##
             elif char == " ":
                 if indented:
@@ -367,18 +366,22 @@ class Generator(Pickler):
             else:
                 line += char
                 ## detect value yields ##
-                if char == "(":  ## [yield] and {yield} is not possible only (yield) ##
-                    depth += 1
-                elif char == ")":
-                    depth -= 1
+                depth = update_depth(
+                    depth, char
+                )  ## [yield] and {yield} is not possible only (yield) ##
                 if depth and char.isalnum():
                     ID += char
                     if ID == "yield":
-                        temp_lines, final_line, end_offset = unpack(line, source_iter)
-                        ## update ##
-                        line += final_line
-                        lineno += len(temp_lines)
-                        lines += temp_lines
+                        temp, line, lines = (
+                            len(lines),
+                            "",
+                            except_adjust(lines, *unpack(line, source_iter)[:-1]),
+                        )
+                        lineno += 1
+                        if running:
+                            self._internals["linetable"] += [lineno] * (
+                                len(lines) - temp
+                            )
                 else:
                     ID = ""
         ## in case you get a for loop at the end and you haven't got the end jump_position ##
