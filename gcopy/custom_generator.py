@@ -1,8 +1,3 @@
-## minium version supported ##
-if version_info < (3, 5):
-    ## if positions in get_instructions does not happen ##
-    ## for lower versions this will have to be 3.11 ##
-    raise ImportError("Python version 3.5 or above is required")
 ##################################
 ### picklable/copyable objects ###
 ##################################
@@ -10,8 +5,8 @@ from types import FunctionType, GeneratorType, CodeType
 from inspect import currentframe
 from copy import deepcopy, copy
 from textwrap import dedent
-from source_processing import *
-from track import offset_adjust
+from gcopy.source_processing import *
+from gcopy.track import offset_adjust
 
 try:
     from typing import NoReturn
@@ -19,6 +14,13 @@ except:
     NoReturn = {
         "NoReturn"
     }  ## for 3.5 since 3.6.2; there might be alternatives that are better than this for 3.5 ##
+
+
+## minium version supported ##
+if version_info < (3, 5):
+    ## if positions in get_instructions does not happen ##
+    ## for lower versions this will have to be 3.11 ##
+    raise ImportError("Python version 3.5 or above is required")
 
 
 class Pickler:
@@ -32,7 +34,7 @@ class Pickler:
     def _copier(self, FUNC: FunctionType) -> object:
         """copying will create a new generator object but the copier will determine its depth"""
         obj = type(self)()
-        obj.__setstate__(obj.__getstate__(obj, FUNC))
+        obj.__setstate__(obj.__getstate__(FUNC))
         return obj
 
     ## for copying ##
@@ -55,6 +57,21 @@ class Pickler:
         """Deserializing pickle (returns an instance of the object with state)"""
         for key, value in state.items():
             setattr(self, key, value)
+
+
+class code(Pickler):
+    """For pickling and copying code objects"""
+
+    _attrs = code_attrs()
+
+    def __init__(self, code_obj: CodeType = None) -> None:
+        if code_obj:
+            for attr in self._attrs:
+                setattr(self, attr, getattr(code_obj, attr))
+
+    def __bool__(self) -> bool:
+        """Used on i.e. if code_obj:"""
+        return hasattrs(self, self._attrs)
 
 
 class frame(Pickler):
@@ -100,21 +117,6 @@ class frame(Pickler):
     def __bool__(self) -> bool:
         """Used on i.e. if frame:"""
         return hasattrs(self, ("f_code", "f_lasti", "f_lineno", "f_locals"))
-
-
-class code(Pickler):
-    """For pickling and copying code objects"""
-
-    _attrs = code_attrs()
-
-    def __init__(self, code_obj: CodeType = None) -> None:
-        if code_obj:
-            for attr in self._attrs:
-                setattr(self, attr, getattr(code_obj, attr))
-
-    def __bool__(self) -> bool:
-        """Used on i.e. if code_obj:"""
-        return hasattrs(self, self._attrs)
 
 
 #################
@@ -182,17 +184,9 @@ class Generator(Pickler):
         number_of_indents = get_indent(line)
         temp_line = line[number_of_indents:]
         indent = " " * number_of_indents
-        if temp_line.startswith("yield from "):
-            return [
-                indent
-                + "currentframe().f_back.f_locals['.yieldfrom']="
-                + temp_line[11:],
-                indent
-                + "for currentframe().f_back.f_locals['.i'] in currentframe().f_back.f_locals['.yieldfrom']:",
-                indent + "    return currentframe().f_back.f_locals['.i']",
-            ]
-        if temp_line.startswith("yield "):
-            return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
+        result = yield_adjust(temp_line, indent)
+        if result is not None:
+            return result
         if temp_line.startswith("for ") or temp_line.startswith("while "):
             self._internals["jump_positions"] += [
                 [lineno, None]
@@ -210,31 +204,16 @@ class Generator(Pickler):
                 indent + "finally:",
                 indent + "    currentframe().f_back.f_locals['self'].close()",
             ]
-        ## handles the .send method ##
-        flag, adjustment = send_adjust(temp_line)
-        if flag:
-            if flag == 2:
-                ## 5: to get past the 'yield'
-                return [indent + "return" + adjustment[0][5:], indent + adjustment[1]]
-            else:
-                ## 11: to get past the 'yield from'
-                return [
-                    indent
-                    + "currentframe().f_back.f_locals['.yieldfrom']="
-                    + adjustment[0][11:],
-                    indent
-                    + "for currentframe().f_back.f_locals['.i'] in currentframe().f_back.f_locals['.yieldfrom']:",
-                    indent + "    return currentframe().f_back.f_locals['.i']",
-                    indent
-                    + "    %scurrentframe().f_back.f_locals['.yieldfrom'].send(currentframe().f_back.f_locals['.send'])"
-                    % adjustment[1],
-                ]
         return [line]
 
     def _update_jump_positions(
-        self, lines: list[str], reference_indent: int = -1
+        self, lines: list[str], lineno: int, reference_indent: int = -1
     ) -> None:
-        """Updates the end jump positions in self._internals["jump_positions"]"""
+        """
+        Updates the end jump positions in self._internals["jump_positions"].
+        It may also append the current lines with adjustments if it's a while
+        loop that used a value yield in its condition
+        """
         if self._internals["jump_stack"]:
             end_lineno = len(lines) + 1
             while (
@@ -248,7 +227,9 @@ class Generator(Pickler):
                     and self._internals["jump_positions"][index][0]
                     == self._internals["jump_stack_adjuster"][-1][0]
                 ):
-                    lines += self._internals["jump_stack_adjuster"].pop().pop()
+                    adjustments = self._internals["jump_stack_adjuster"].pop().pop()
+                    self._internals["linetable"] += [lineno] * len(adjustments)
+                    lines += adjustments
         return lines
 
     def _append_line(
@@ -260,7 +241,6 @@ class Generator(Pickler):
         lines: list[str],
         lineno: int,
         indentation: int,
-        prev: tuple[int, int, str],
     ) -> tuple[int, str, int, list[str], str, bool, int]:
         ## skip comments ##
         if char == "#":
@@ -273,11 +253,11 @@ class Generator(Pickler):
             line += char
         if not line.isspace():  ## empty lines are possible ##
             reference_indent = get_indent(line)
-            lines = self._update_jump_positions(self, lines, reference_indent)
+            lines = self._update_jump_positions(lines, lineno, reference_indent)
             ## skip the definitions ##
             if is_definition(line[reference_indent:]):
                 index, char, lineno, lines = collect_definition(
-                    line, lines, lineno, source, source_iter, reference_indent, prev
+                    index, lines, lineno, source, source_iter, reference_indent
                 )
             else:
                 lineno += 1
@@ -314,7 +294,10 @@ class Generator(Pickler):
         elif check("elif"):
             number_of_indents = get_indent(final_line)
             final_line = (
-                " " * (number_of_indents + 4) + final_line[number_of_indents + 2 :]
+                " " * (number_of_indents + 4)
+                + final_line[
+                    number_of_indents + 2 :
+                ]  ## +4 to encapsulate in an else statement +2 to make it an 'if' statement ##
             )
             return (
                 current_lines
@@ -387,7 +370,9 @@ class Generator(Pickler):
         ## we need to make sure the source is saved for skipping for line continuations ##
         source = source[get_indent(source) :]
         source_iter = enumerate(source)
-        line, lines, indented, space, indentation, prev = (
+        ID, depth, line, lines, indented, space, indentation, prev = (
+            "",
+            0,
             " " * 4,
             [],
             False,
@@ -395,7 +380,6 @@ class Generator(Pickler):
             4,
             (0, 0, ""),
         )
-        ID, depth = "", 0
         ## enumerate since I want the loop to use an iterator but the
         ## index is needed to retain it for when it's used on get_indent
         for index, char in source_iter:
@@ -430,15 +414,15 @@ class Generator(Pickler):
                         lines,
                         lineno,
                         indentation,
-                        prev,
                     )
                 )
+                depth, ID = 0, ""
             else:
                 line += char
-                ## detect value yields ##
-                depth = update_depth(
-                    depth, char
-                )  ## [yield] and {yield} is not possible only (yield) ##
+                ## detect value yields [yield] and {yield} is not possible only (yield) ##
+                depth = update_depth(depth, char)
+                if char == "=":  ## '... = yield ...' and '... = yield from ...'
+                    depth += 1
                 if depth and char.isalnum():
                     ID += char
                     if ID == "yield":
@@ -453,11 +437,12 @@ class Generator(Pickler):
                             self._internals["linetable"] += [lineno] * (
                                 len(lines) - temp
                             )
+                        depth, ID = 0, ""
                 else:
                     ID = ""
         ## in case you get a for loop at the end and you haven't got the end jump_position ##
         ## then you just pop them all off as being the same end_lineno ##
-        lines = self._update_jump_positions(self, lines)
+        lines = self._update_jump_positions(lines, lineno)
         ## jump_stack is no longer needed ##
         del self._internals["jump_stack"], self._internals["jump_stack_adjuster"]
         return lines
@@ -550,7 +535,7 @@ class Generator(Pickler):
             % assign
         )
 
-    def init_states(self) -> GeneratorType:
+    def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
         ## api setup ##
         prefix = self._internals["prefix"]
@@ -586,16 +571,14 @@ class Generator(Pickler):
         """
         ## __setstate__ from Pickler._copier ##
         if FUNC:
-            prefix = self._internals[
-                "prefix"
-            ]  ## needed to identify certain attributes ##
+            ## needed to identify certain attributes ##
+            prefix = self._internals["prefix"]
             ## running generator ##
             if hasattr(FUNC, prefix + "code"):
                 self._internals["linetable"] = []
                 self._internals["frame"] = frame(getframe(FUNC))
-                if (
-                    FUNC.gi_code.co_name == "<genexpr>"
-                ):  ## co_name is readonly e.g. can't be changed by user ##
+                ## co_name is readonly e.g. can't be changed by user ##
+                if FUNC.gi_code.co_name == "<genexpr>":
                     self._internals["source"] = expr_getsource(FUNC)
                     self._internals["source_lines"] = unpack_genexpr(
                         self._internals["source"]
@@ -607,9 +590,10 @@ class Generator(Pickler):
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     self._internals["source_lines"] = self._clean_source_lines(True)
+                    self._internals["frame"] = getframe(FUNC)
                     self._internals["lineno"] = self._internals["linetable"][
-                        getframe(FUNC).f_lineno - 1
-                    ] + lineno_adjust(FUNC)
+                        self._internals["frame"].f_lineno - 1
+                    ] + lineno_adjust(self._internals["frame"])
                 self._internals["code"] = code(getcode(FUNC))
                 ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
                 if hasattr(FUNC, prefix + "yieldfrom"):
@@ -645,12 +629,11 @@ class Generator(Pickler):
                 self._internals["frame"] = frame()
                 self._internals["suspended"] = False
                 self._internals["yieldfrom"] = None
-                self._internals["lineno"] = (
-                    1  ## modified every time __next__ is called; always start at line 1 ##
-                )
+                ## modified every time __next__ is called; always start at line 1 ##
+                self._internals["lineno"] = 1
             self._internals["running"] = False
             self._internals["state"] = None
-            self._internals["state_generator"] = self.init_states()
+            self._internals["state_generator"] = self._init_states()
             if overwrite:  ## this might not actually work??
                 currentframe().f_back.f_locals[getcode(FUNC).co_name] = self
 
@@ -688,10 +671,8 @@ class Generator(Pickler):
 
     def __next__(self) -> Any:
         """updates the current state and returns the result"""
-        # set the next state and setup the function
-        next(
-            self._internals["state_generator"]
-        )  ## it will raise a StopIteration for us
+        # set the next state and setup the function; it will raise a StopIteration for us
+        next(self._internals["state_generator"])
         ## update with the new state and get the frame ##
         exec(self._frame_init() + self._internals["state"], globals(), locals())
         self._internals["running"] = True
