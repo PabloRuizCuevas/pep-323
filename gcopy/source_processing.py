@@ -1,9 +1,10 @@
 #################################################
 ### cleaning/extracting/adjusting source code ###
 #################################################
-from utils import *
+from .utils import *
 from inspect import getsource, findsource
-from typing import Iterable, GeneratorType, FrameType, Any
+from typing import Iterable, Any
+from types import GeneratorType, FrameType
 
 
 def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:
@@ -25,14 +26,12 @@ def get_indent(line: str) -> int:
     return count
 
 
-def lineno_adjust(FUNC: Any, frame: FrameType = None) -> int:
+def lineno_adjust(frame: FrameType) -> int:
     """
     unpacks a line of compound statements
     into lines up to the last instruction
     that determines the adjustment required
     """
-    if frame is None:
-        frame = getframe(FUNC)
     line, current_lineno, instructions = (
         [],
         frame.f_lineno,
@@ -45,7 +44,7 @@ def lineno_adjust(FUNC: Any, frame: FrameType = None) -> int:
             instruction.offset,
         )
         if not None in obj[0] and lineno == current_lineno:
-            ## get the lines ##
+            ## exhaust the iter to get all the lines ##
             line = [obj]
             for instruction in instructions:
                 lineno, obj = instruction.positions.lineno, (
@@ -56,10 +55,12 @@ def lineno_adjust(FUNC: Any, frame: FrameType = None) -> int:
                     break
                 line += [obj]
             break
-    ## add the lines
+    ## combine the lines until f_lasti is encountered to return how many lines ##
+    ## futher from the current line would the offset be if split up into lines ##
     if line:
         index, current, lasti = 0, [0, 0], frame.f_lasti
-        for pos, offset in line.sort():
+        line.sort()
+        for pos, offset in line:
             if offset == lasti:
                 return index
             if pos[0] > current[1]:  ## independence ##
@@ -119,6 +120,7 @@ def unpack_genexpr(source: str) -> list[str]:
     if has_end_if:
         lines = lines[has_for:-1] + (lines[:has_for] + [lines[-1]])[::-1]
     else:
+        print("here:", lines)
         lines = lines[has_for:] + (lines[:has_for])[::-1]
     ## arrange into lines
     indent = " " * 4
@@ -129,9 +131,8 @@ def skip_line_continuation(source_iter: Iterable, source: str, index: int) -> No
     """skips line continuations in source"""
     whitespace = get_indent(source[index + 1 :])  ## +1 since 'index:' is inclusive ##
     ## skip the whitespace after newline ##
-    skip(
-        source_iter, whitespace + get_indent(source[index + 1 + whitespace + 1 :])
-    )  ## skip the current char, whitespace, newline and whitespace after ##
+    ## skip the current char, whitespace, newline and whitespace after ##
+    skip(source_iter, whitespace + 1 + get_indent(source[index + 1 + whitespace + 1 :]))
 
 
 def skip_source_definition(source: str) -> str:
@@ -159,37 +160,6 @@ def skip_source_definition(source: str) -> str:
             return source[index + 1 :]
         depth = update_depth(depth, char, ("([{", ")]}"))
     raise SyntaxError("Unexpected format encountered")
-
-
-def string_collector_proxy(
-    index: int,
-    char: str,
-    prev: tuple[int, int, str],
-    iterable: Iterable,
-    line: str = None,
-    source: str = None,
-) -> tuple[list[str], str, int]:
-    """Proxy function for usage when collecting strings since this block of code gets used repeatedly"""
-    # get the string collector type ##
-    if prev[0] + 2 == prev[1] + 1 == index and prev[2] == char:
-        string_collector, temp_index = collect_multiline_string, 3
-    else:
-        string_collector, temp_index = collect_string, 1
-    ## determine if we need to look for f-strings in case of value yields ##
-    f_string = False
-    if (
-        source and version_info >= (3, 6) and source[index - temp_index] == "f"
-    ):  ## f-strings ##
-        f_string = source[index:]  ## use the source to determine the extractions ##
-    temp_index, temp_line = string_collector(iterable, char, f_string)
-    prev = (index, temp_index, char)
-    if source:
-        ## lines (adjustments) + line (string collected) ##
-        return temp_line.pop(), prev, temp_line
-        # line+=temp_line ## line shouldn't be None otherwise we don't get an adjustment ##
-    if line is not None:
-        line += temp_line
-    return line, prev
 
 
 def collect_string(
@@ -270,6 +240,144 @@ def collect_multiline_string(
     return index, line
 
 
+def string_collector_proxy(
+    index: int,
+    char: str,
+    prev: tuple[int, int, str],
+    iterable: Iterable,
+    line: str = None,
+    source: str = None,
+) -> tuple[list[str], str, int]:
+    """Proxy function for usage when collecting strings since this block of code gets used repeatedly"""
+    # get the string collector type ##
+    if prev[0] + 2 == prev[1] + 1 == index and prev[2] == char:
+        string_collector, temp_index = collect_multiline_string, 3
+    else:
+        string_collector, temp_index = collect_string, 1
+    ## determine if we need to look for f-strings in case of value yields ##
+    f_string = False
+    if source and version_info >= (3, 6) and source[index - temp_index] == "f":
+        f_string = source[index:]  ## use the source to determine the extractions ##
+    temp_index, temp_line = string_collector(iterable, char, f_string)
+    prev = (index, temp_index, char)
+    if source:
+        ## lines (adjustments) + line (string collected) ##
+        return temp_line.pop(), prev, temp_line
+    if line is not None:
+        line += temp_line
+    return line, prev
+
+
+def update_lines(
+    lines: list[str],
+    line: str,
+    final_line: str,
+    char: str,
+    source_iter: Iterable = None,
+) -> tuple[list[str], str, int] | tuple[tuple[list[str], str, int], str]:
+    """Updates the lines and final line with the new line"""
+    yield_adjust()
+    lines += [line]
+    final_line += line
+    final_line += "locals()['.args'].pop()" + char
+    if source_iter:
+        return unwrap(line, source_iter, lines, final_line)[:-1], ""
+    return lines, final_line, ""
+
+
+def unwrap(
+    line: str, source_iter: Iterable, lines: list[str], final_line: str
+) -> tuple[list[str], str, str, int]:
+    """unwraps the next unpacking in association with the current lines and final line"""
+    temp_lines, temp_final_line, temp_end_index = unpack(line, source_iter, True)
+    final_line += temp_final_line
+    lines += temp_lines
+    return lines, final_line, "", temp_end_index
+
+
+def unpack(
+    line: str = empty_generator(),
+    source_iter: Iterable = empty_generator(),
+    unwrapping: bool = False,
+) -> tuple[list[str], str, int]:
+    """
+    Unpacks value yields from a line into a
+    list of lines going towards its right side
+    """
+    depth, depth_total, end_index, lines, ID, line, final_line, prev = (
+        0,
+        0,
+        0,
+        [],
+        "",
+        "",
+        "",
+        "",
+    )
+    line_iter = enumerate(chain(line, source_iter))
+    for end_index, char in line_iter:
+        ## collect strings and add to the lines ##
+        if char == "'" or char == '"':
+            line, prev, temp_lines = string_collector_proxy(
+                end_index, char, prev, line_iter, line, line  ## is this correct??
+            )
+            lines += temp_lines
+            continue
+        ## dictionary assignment ##
+        if char == "[" and prev not in (" ", ""):
+            lines, final_line, line, end_index = unwrap(
+                line, source_iter, lines, final_line
+            )
+            continue
+        if char == "\\":
+            skip_line_continuation(line_iter, line, end_index)
+            line += " "
+            continue
+        if char in ",<=>/|+-*&%@^":  ## splitting operators ##
+            if end_index - 1 == operator:  ## since we can have i.e. ** or %= etc. ##
+                lines, final_line, line = update_lines(lines, line, final_line)
+                continue
+            operator = end_index
+        elif depth == 0 and char in "#:;\n":  ## split and break condition ##
+            lines += [line]
+            break
+        elif char == ":":  ## must be a named expression if depth is not zero ##
+            lines, final_line, line, ID = update_lines(lines, line, final_line, ID)
+            continue
+        ## record the current depth ##
+        if char in "[{":
+            depth_total += 1
+        elif char in "}]":
+            depth_total -= 1
+            if unwrapping and depth_total < 0:
+                break
+        if char == "(":
+            depth += 1
+            depth_total += 1
+        elif char == ")":
+            depth -= 1
+            depth_total -= 1
+        ## check for unwrapping/updating ##
+        if depth:
+            if char.isalnum():
+                ID += char
+                if ID == "yield":  ## unwrapping ##
+                    lines, final_line, line, end_index = unwrap(
+                        line, source_iter, lines, final_line
+                    )
+                elif ID in ("is", "in", "and", "or"):
+                    lines, final_line, line = update_lines(lines, line, final_line)
+            else:
+                ID = ""
+        else:
+            line += char
+        prev = char
+    ## is this necessary??
+    if line:
+        lines, final_line, line = update_lines(lines, line, final_line)
+    return lines, final_line, end_index
+
+
 def unpack_fstring(
     source: str, source_iter: Iterable, start_index: int
 ) -> tuple[list[str], str, int]:
@@ -293,13 +401,12 @@ def unpack_fstring(
 
 
 def collect_definition(
-    line: str,
+    start_index: int,
     lines: list[str],
     lineno: int,
     source: str,
     source_iter: Iterable,
     reference_indent: int,
-    prev: tuple[int, int, str],
 ) -> tuple[int, str, int, list[str]]:
     """
     Collects a block of code from source, specifically a
@@ -309,23 +416,19 @@ def collect_definition(
     while reference_indent < indent:
         ## we're not specific about formatting the definitions ##
         ## we just need to make sure to include them ##
-        for index, char in source_iter:
-            ## collect strings ##
-            if char == "'" or char == '"':
-                line, prev = string_collector_proxy(
-                    index, char, prev, source_iter, line
-                )
+        for end_index, char in source_iter:
             ## newline ##
-            elif char == "\n":
+            if char == "\n":
                 break
-            else:
-                line += char
         ## add the line and get the indentation to check if continuing ##
         lineno += 1
-        lines += [line]
-        line, indent = "", get_indent(source[index + 1 :])
+        lines += [source[start_index:end_index]]
+        indent = get_indent(source[end_index + 1 :])
+        start_index = end_index + 1
+    if char != "\n":
+        lines[-1] += char
     ## make sure to return the index and char for the indentation ##
-    return index, char, lineno, lines
+    return end_index, char, lineno, lines
 
 
 def skip(iter_val: Iterable, n: int) -> None:
@@ -394,8 +497,7 @@ def control_flow_adjust(
     It will also add 'try:' when there's an
     'except' line on the next minimum indent
     """
-    new_lines, current_min = [], get_indent(lines[0])
-    line_iter = enumerate(lines)
+    new_lines, current_min, line_iter = [], get_indent(lines[0]), enumerate(lines)
     for index, line in line_iter:
         temp_indent = get_indent(line)
         temp_line = line[temp_indent:]
@@ -406,6 +508,7 @@ def control_flow_adjust(
                 end_index, line, temp_indent = skip_alternative_statements(
                     line_iter, temp_indent
                 )
+                ## remove from the linetable and update the index ##
                 del indexes[index:end_index]
                 index = end_index
             current_min = temp_indent
@@ -413,8 +516,11 @@ def control_flow_adjust(
                 new_lines = (
                     [" " * 4 + "try:"]
                     + indent_lines(new_lines)
-                    + [line[current_min - 4 :]]
+                    + [
+                        line[current_min - 4 :]
+                    ]  ## -4 since we're in a function for the code execution ##
                 )
+                ## add to the linetable ##
                 indexes = [indexes[0]] + indexes
         ## add the line (adjust if indentation is not reference_indent) ##
         if current_min != reference_indent:
@@ -445,7 +551,7 @@ def extract_iter(line: str, number_of_indents: int) -> str:
     e.g. we extract the second ... in:
     for ... in ...:
     """
-    depth, ID, line_iter = 0, "", enumerate(line)
+    depth, ID, line_iter = 0, "", enumerate(line[number_of_indents:], number_of_indents)
     for index, char in line_iter:
         ## the 'in' key word must be avoided in all forms of loop comprehension ##
         depth = update_depth(depth, char, ("([{", ")]}"))
@@ -477,6 +583,31 @@ def iter_adjust(outer_loop: list[str]) -> tuple[bool, list[str]]:
     return flag, outer_loop
 
 
+def skip_blocks(
+    new_lines: list[str], line_iter: Iterable, index: int, line: str
+) -> None:
+    """
+    Skips over for/while and definition blocks
+    and removes indentation from the line
+    """
+    indent = get_indent(line)
+    temp_line = line[indent:]
+    while (
+        temp_line.startswith("for ")
+        or temp_line.startswith("while ")
+        or is_definition(temp_line)
+    ):
+        for index, line in line_iter:
+            temp_indent = get_indent(line)
+            if temp_indent <= indent:
+                break
+            new_lines += [line]
+        ## continue back ##
+        indent = temp_indent
+        temp_line = line[indent:]
+    return new_lines, temp_line, index
+
+
 def loop_adjust(
     lines: list[str], indexes: list[int], outer_loop: list[str], *pos: tuple[int, int]
 ) -> tuple[list[str], list[int]]:
@@ -493,22 +624,11 @@ def loop_adjust(
     """
     new_lines, flag, line_iter = [], False, enumerate(lines)
     for index, line in line_iter:
-        indent = get_indent(line)
-        temp_line = line[indent:]
         ## skip over for/while and definition blocks ##
-        while (
-            temp_line.startswith("for ")
-            or temp_line.startswith("while ")
-            or is_definition(temp_line)
-        ):
-            for index, line in line_iter:
-                temp_indent = get_indent(line)
-                if temp_indent <= indent:
-                    break
-                new_lines += [line]
-            ## continue back ##
-            indent = temp_indent
-            temp_line = line[indent:]
+        ## since these are complete blocks of their own ##
+        ## and don't need to be adjusted ##
+        new_lines, temp_line, index = skip_blocks(new_lines, line_iter, index, line)
+        ## adjustments ##
         if temp_line.startswith("continue"):
             flag = True
             new_lines += ["break"]
@@ -519,66 +639,54 @@ def loop_adjust(
         else:
             new_lines += [line]
     ## adjust it in case it's an iterator ##
-    flag, outer_loop = iter_adjust(outer_loop)
+    flag, outer_loop = iter_adjust(
+        outer_loop
+    )  ## why does this get to dicate the 'flag' ?? ##
     if flag:
+        ## the loop adjust itself ##
         return [
             "    locals()['.continue']=True",
             "    for _ in (None,):",
         ] + indent_lines(new_lines, 8 - get_indent(new_lines[0])) + [
             "    if locals()['.continue']:"
         ] + indent_lines(
-            outer_loop, 8 - get_indent(outer_loop[0])
+            outer_loop,
+            8
+            - get_indent(
+                outer_loop[0]
+            ),  ## add the outer loop (dedented so that it works) ##
         ), [
             indexes[0],
-            indexes[0],
+            indexes[
+                0
+            ],  ## add all the indexes which are also adjusted for the changes ##
         ] + indexes + [
             pos[0]
         ] + list(
             range(*pos)
         )
+    ## If it doesn't need any adjustments e.g. to continue and break statements ##
+    ## then we just dedent the current lines and add the outer loop ##
     return indent_lines(lines, 4 - get_indent(lines[0])) + indent_lines(
         outer_loop, 4 - get_indent(outer_loop[0])
     ), indexes + list(range(*pos))
 
 
-def has_node(line: str, node: str) -> bool:
-    """Checks if a node has starting IDs that match"""
-    ID, nodes, checks = "", [], node.split()
-    for char in line:
-        ## no strings allowed ##
-        if char == "'" or char == '"':
-            return False
-        if char.isalnum():
-            ID += char
-        elif char == " ":
-            if ID:
-                nodes += [ID]
-                for node, check in zip(nodes, checks):
-                    if node != check:
-                        return False
-                if len(nodes) == len(checks):
-                    return True
-    return False
-
-
-def send_adjust(line: str) -> tuple[int | None, str | None]:
-    """Checks for variables assigned to yields for making adjustments"""
-    parts, flag = line.split("="), 0
-    for index, node in enumerate(parts):
-        node = node[get_indent(node) :]
-        if has_node(node, "yield from "):
-            flag = 1
-            break
-        if has_node(node, "yield "):
-            flag = 2
-            break
-    if flag:
-        reciever = "="
-        if flag == 2:
-            reciever += "locals()['.send']"
-        ## indicator       yield statement            assignments
-        return flag, ["=".join(parts[index:]), "=".join(parts[:index]) + reciever]
-    return None, None
+def yield_adjust(temp_line: str, indent: str) -> list[str]:
+    """
+    temp_line: line trimmed at the start by its indent
+    indent: the current indent in string form
+    """
+    if temp_line.startswith("yield from "):
+        return [
+            indent
+            + "locals()['.yieldfrom']="
+            + temp_line[11:],  ## 11 to get past the yield from
+            indent + "for locals()['.i'] in locals()['.yieldfrom']:",
+            indent + "    return locals()['.i']",
+        ]
+    if temp_line.startswith("yield "):
+        return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
 
 
 def get_loops(
@@ -591,11 +699,9 @@ def get_loops(
     ## get the outer loops that contian the current lineno ##
     loops = []
     ## jump_positions are in the form (start_lineno,end_lineno) ##
-    for (
-        pos
-    ) in (
-        jump_positions
-    ):  ## importantly we go from start to finish to capture nesting loops ##
+    for pos in jump_positions:
+
+        ## importantly we go from start to finish to capture nesting loops ##
         ## make sure the lineno is contained within the position for a ##
         ## loop adjustment and because the jump positions are ordered we ##
         ## can also break when the start lineno is beyond the current lineno ##
@@ -683,7 +789,7 @@ def expr_getsource(FUNC: Any) -> str:
 ###############
 def extract_genexpr(source: str) -> GeneratorType:
     """Extracts each generator expression from a list of the source code lines"""
-    ID, is_genexpr, depth, prev = "", False, 0, (0, 0, "")
+    ID, depth, prev = "", 0, (0, 0, "")
     source_iter = enumerate(source)
     for index, char in source_iter:
         ## skip all strings if not in genexpr
@@ -695,20 +801,18 @@ def extract_genexpr(source: str) -> GeneratorType:
             temp_col_offset = index
             depth += 1
         elif char == ")":
-            depth -= 1
-            if is_genexpr and depth + 1 == genexpr_depth:
+            if genexpr_depth and depth == genexpr_depth:
                 yield col_offset, index + 1
-                number_of_expressions += 1
-                ID, is_genexpr = "", False
+                genexpr_depth = None
+            depth -= 1
             continue
-        ## record source code ##
-        if depth and not is_genexpr:
+        if depth and genexpr_depth is not None:
             ## record ID ##
             if char.isalnum():
                 ID += char
                 ## detect a for loop
                 if ID == "for":
-                    genexpr_depth, is_genexpr, col_offset = depth, True, temp_col_offset
+                    ID, genexpr_depth, col_offset = "", depth, temp_col_offset
             else:
                 ID = ""
 
@@ -718,7 +822,7 @@ def extract_genexpr(source: str) -> GeneratorType:
 ##############
 def extract_lambda(source_code: str) -> GeneratorType:
     """Extracts each lambda expression from the source code string"""
-    ID, is_lambda, lambda_depth, prev, depth = "", False, 0, (0, 0, ""), 0
+    ID, lambda_depth, depth, prev = "", None, 0, (0, 0, "")
     source_code = enumerate(source_code)
     for index, char in source_code:
         ## skip all strings (we only want the offsets)
@@ -728,130 +832,23 @@ def extract_lambda(source_code: str) -> GeneratorType:
         ## detect brackets (lambda can be in all 3 types of brackets) ##
         depth = update_depth(depth, char, ("([{", ")]}"))
         ## record source code ##
-        if is_lambda:
-            if char == "\n;" or (
-                char == ")" and depth + 1 == lambda_depth
-            ):  # lambda_depth needed in case of brackets; depth+1 since depth would've got reduced by 1
+        if lambda_depth:
+            # lambda_depth needed in case of brackets; depth+1 since depth would've got reduced by 1
+            if char == "\n;" or depth + 1 == lambda_depth:
                 yield col_offset, index + 1
-                ID, is_lambda = "", False
+                lambda_depth = None
         else:
             ## record ID ##
             if char.isalnum():
                 ID += char
                 ## detect a lambda
                 if ID == "lambda" and depth <= 1:
-                    lambda_depth, is_lambda, col_offset = depth, True, index - 6
+                    ID, lambda_depth, col_offset = "", depth, index - 6
             else:
                 ID = ""
     ## in case of a current match ending ##
-    if is_lambda:
+    if lambda_depth:
         yield col_offset, None
-
-
-def update_lines(
-    lines: list[str],
-    line: str,
-    final_line: str,
-    char: str,
-    source_iter: Iterable = None,
-) -> tuple[list[str], str, int] | tuple[tuple[list[str], str, int], str]:
-    """Updates the lines and final line with the new line"""
-    lines += [line]
-    final_line += line
-    final_line += "locals()['.args'].pop()" + char
-    if source_iter:
-        return unwrap(line, source_iter, lines, final_line)[:-1], ""
-    return lines, final_line, ""
-
-
-def unwrap(
-    line: str, source_iter: Iterable, lines: list[str], final_line: str
-) -> tuple[list[str], str, str, int]:
-    """unwraps the next unpacking in association with the current lines and final line"""
-    temp_lines, temp_final_line, temp_end_index = unpack(line, source_iter, True)
-    final_line += temp_final_line
-    lines += temp_lines
-    return lines, final_line, "", temp_end_index
-
-
-def unpack(
-    line: str = empty_generator(),
-    source_iter: Iterable = empty_generator(),
-    unwrapping: bool = False,
-) -> tuple[list[str], str, int]:
-    """
-    Unpacks value yields from a line into a
-    list of lines going towards its right side
-    """
-    depth, depth_total, lines, ID, line, end_index, final_line, prev = (
-        0,
-        0,
-        [],
-        "",
-        "",
-        0,
-        "",
-        "",
-    )
-    line_iter = enumerate(chain(line, source_iter))
-    for end_index, char in line_iter:
-        ## collect strings and add to the lines ##
-        if char == "'" or char == '"':
-            line, prev, temp_lines = string_collector_proxy(
-                end_index, char, prev, line_iter, line
-            )
-            lines += temp_lines
-            continue
-        ## dictionary assignment ##
-        if char == "[" and prev not in (" ", ""):
-            lines, final_line, line, end_index = unwrap(
-                line, source_iter, lines, final_line
-            )
-            continue
-        if char == "\\":
-            skip_line_continuation(line_iter, line, end_index)
-            line += " "
-            continue
-        if char in ",<=>/|+-*&%@^":  ## splitting operators ##
-            if end_index - 1 == operator:  ## since we can have i.e. ** or %= etc. ##
-                lines, final_line, line = update_lines(lines, line, final_line)
-                continue
-            operator = end_index
-        elif depth == 0 and char in "#:;\n":  ## split and break condition ##
-            lines += [line]
-            break
-        elif char == ":":  ## must be a named expression if depth is not zero ##
-            lines, final_line, line, ID = update_lines(lines, line, final_line, ID)
-            continue
-        ## record the current depth ##
-        if char == "[{":
-            depth_total += 1
-        elif char == "}]":
-            depth_total -= 1
-            if unwrapping and depth_total < 0:
-                break
-        if char == "(":
-            depth += 1
-            depth_total += 1
-        elif char == ")":
-            depth -= 1
-            depth_total -= 1
-        ## check for unwrapping/updating ##
-        if depth:
-            if char.isalnum():
-                ID += char
-                if ID == "yield":  ## unwrapping ##
-                    lines, final_line, line, end_index = unwrap(
-                        line, source_iter, lines, final_line
-                    )
-                elif ID in ["is", "in", "and", "or"]:
-                    lines, final_line, line = update_lines(lines, line, final_line)
-            else:
-                ID = ""
-        else:
-            line += char
-        prev = char
-    return lines, final_line, end_index
 
 
 def except_adjust(
@@ -868,16 +865,17 @@ def except_adjust(
         reference_indent = get_indent(line)
         if line[reference_indent].startswith("try"):
             break
-    current_indent = " " * (reference_indent + 4)
+    number_of_indents = reference_indent + 8
+    current_indent = " " * number_of_indents
     return (
         current_lines[:-index]
         + [" " * reference_indent + "try:"]
-        + current_lines[index:]
+        + current_lines[-index:]
         + [
-            " " * reference_indent + "except:",
+            current_indent[:-4] + "except:",
             current_indent + "locals()['.error'] = exc_info()[1]",
         ]
-        + indent_lines(exception_lines[:-1], current_indent)
+        + indent_lines(exception_lines, number_of_indents)
         + [current_indent + "raise locals()['.error']"]
         + [final_line]
     )
