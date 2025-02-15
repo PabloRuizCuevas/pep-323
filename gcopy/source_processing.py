@@ -272,16 +272,11 @@ def update_lines(
     lines: list[str],
     line: str,
     final_line: str,
-    char: str,
-    source_iter: Iterable = None,
 ) -> tuple[list[str], str, int] | tuple[tuple[list[str], str, int], str]:
     """Updates the lines and final line with the new line"""
-    yield_adjust()
+    ## yield_adjust(), "locals()['.args'] += [locals()['.send']]"
     lines += [line]
-    final_line += line
-    final_line += "locals()['.args'].pop()" + char
-    if source_iter:
-        return unwrap(line, source_iter, lines, final_line)[:-1], ""
+    final_line += "locals()['.args'].pop()"
     return lines, final_line, ""
 
 
@@ -295,6 +290,35 @@ def unwrap(
     return lines, final_line, "", temp_end_index
 
 
+def named_adjust(
+    line: str,
+    source_iter: Iterable,
+    lines: list[str],
+    final_line: str,
+    char: str,
+    ID: str,
+    line_iter: Iterable,
+) -> tuple[list[str], str, str, int]:
+    """
+    Adjusts the lines and final line for named expressions
+    and named expressions within named expressions
+    """
+    ## you can't have ': =' or ':\=' ##
+    final_line += char + "="
+    ## skip the next iteration ##
+    next(line_iter)
+    ## this should mean that we can just unwrap it. ##
+    ## If the named expression is a dictionary then ##
+    ## it will be the last line added to the lines ##
+    if not ID:
+        temp = [lines.pop()]
+    else:
+        temp = []
+    lines, final_line, line, end_index = unwrap(line, source_iter, lines, final_line)
+    lines += temp
+    return lines, final_line, line, end_index
+
+
 def unpack(
     line: str = empty_generator(),
     source_iter: Iterable = empty_generator(),
@@ -304,75 +328,92 @@ def unpack(
     Unpacks value yields from a line into a
     list of lines going towards its right side
     """
-    depth, depth_total, end_index, lines, ID, line, final_line, prev = (
-        0,
-        0,
-        0,
-        [],
-        "",
-        "",
-        "",
-        "",
-    )
-    line_iter = enumerate(chain(line, source_iter))
+    (
+        depth,
+        depth_total,
+        end_index,
+        space,
+        lines,
+        ID,
+        line,
+        final_line,
+        prev,
+        indented,
+        operator,
+    ) = (0, 0, 0, 0, [], "", "", "", (0, 0, ""), False, 0)
+    source = ""
+    line_iter = chain(enumerate(line), source_iter)
     for end_index, char in line_iter:
+        ## record the source for string_collector_proxy (there might be better ways of doing this) ##
+        source += char
         ## collect strings and add to the lines ##
         if char == "'" or char == '"':
+            ## it should unpack f-strings as well ##
             line, prev, temp_lines = string_collector_proxy(
-                end_index, char, prev, line_iter, line, line  ## is this correct??
+                end_index, char, prev, line_iter, source, source  ## is this correct??
             )
             lines += temp_lines
-            continue
+            ## make sure the length of the source is corrected ##
+            source += " " * (prev[1] - prev[0])
+        ## makes the line singly spaced while retaining the indentation ##
+        elif char == " ":
+            line, space, indented = singly_space(end_index, char, line, space, indented)
         ## dictionary assignment ##
-        if char == "[" and prev not in (" ", ""):
+        elif char == "[" and prev[-1] not in (" ", ""):
             lines, final_line, line, end_index = unwrap(
                 line, source_iter, lines, final_line
             )
-            continue
-        if char == "\\":
+        elif char == "\\":
             skip_line_continuation(line_iter, line, end_index)
-            line += " "
-            continue
-        if char in ",<=>/|+-*&%@^":  ## splitting operators ##
-            if end_index - 1 == operator:  ## since we can have i.e. ** or %= etc. ##
+            if space + 1 != end_index:
+                line += " "
+                space = end_index
+        ## splitting operators ##
+        elif char in ",<=>/|+-*&%@^":
+            ## since we can have i.e. ** or %= etc. ##
+            if end_index - 1 == operator:
+                final_line += char
+            else:
                 lines, final_line, line = update_lines(lines, line, final_line)
-                continue
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
             lines += [line]
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
-            lines, final_line, line, ID = update_lines(lines, line, final_line, ID)
-            continue
-        ## record the current depth ##
-        if char in "[{":
-            depth_total += 1
-        elif char in "}]":
-            depth_total -= 1
-            if unwrapping and depth_total < 0:
-                break
-        if char == "(":
-            depth += 1
-            depth_total += 1
-        elif char == ")":
-            depth -= 1
-            depth_total -= 1
-        ## check for unwrapping/updating ##
-        if depth:
+            lines, final_line, line, end_index = named_adjust(
+                line, source_iter, lines, final_line, char, ID, line_iter
+            )
+        else:
+            ## record the current depth ##
+            if char in "[{":
+                depth_total += 1
+            elif char in "}]":
+                depth_total -= 1
+                if unwrapping and depth_total < 0:
+                    final_line += char
+                    break
+            elif char == "(":
+                depth += 1
+                depth_total += 1
+            elif char == ")":
+                depth -= 1
+                depth_total -= 1
+            ## check for unwrapping/updating ##
             if char.isalnum():
+                ## in case of ... ... (otherwise you keep appending the ID) ##
+                if space + 1 == end_index:
+                    ID = ""
                 ID += char
-                if ID == "yield":  ## unwrapping ##
+                if depth and ID == "yield":  ## unwrapping ##
                     lines, final_line, line, end_index = unwrap(
                         line, source_iter, lines, final_line
                     )
-                elif ID in ("is", "in", "and", "or"):
+                elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
                     lines, final_line, line = update_lines(lines, line, final_line)
             else:
                 ID = ""
-        else:
             line += char
-        prev = char
-    ## is this necessary??
+            prev = prev[:-1] + (char,)
     if line:
         lines, final_line, line = update_lines(lines, line, final_line)
     return lines, final_line, end_index
@@ -879,3 +920,15 @@ def except_adjust(
         + [current_indent + "raise locals()['.error']"]
         + [final_line]
     )
+
+
+def singly_space(index: int, char: str, line: str, space: int, indented: bool) -> str:
+    """For ensuring all spaces in a line are single spaces"""
+    if indented:
+        if space + 1 != index:
+            line += char
+    else:
+        line += char
+        if space + 1 != index:
+            indented = True
+    return line, index, indented
