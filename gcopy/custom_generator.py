@@ -390,18 +390,14 @@ class Generator(Pickler):
                 )
             ## makes the line singly spaced while retaining the indentation ##
             elif char == " ":
-                if indented:
-                    if space + 1 != index:
-                        line += char
-                else:
-                    line += char
-                    if space + 1 != index:
-                        indented = True
-                space = index
+                line, space, indented = singly_space(index, char, line, space, indented)
             ## join everything after the line continuation until the next \n or ; ##
             elif char == "\\":
                 skip_line_continuation(source_iter, source, index)
-                line += " "  ## in case of a line continuation without a space before or after ##
+                ## in case of a line continuation without a space before or after ##
+                if space + 1 != index:
+                    line += " "
+                    space = index
             ## create new line ##
             elif char in "#\n;:":
                 ## 'space' is important (otherwise we get more indents than necessary) ##
@@ -424,6 +420,9 @@ class Generator(Pickler):
                 if char == "=":  ## '... = yield ...' and '... = yield from ...'
                     depth += 1
                 if depth and char.isalnum():
+                    ## in case of ... ... (otherwise you keep appending the ID) ##
+                    if space + 1 == index:
+                        ID = ""
                     ID += char
                     if ID == "yield":
                         ## how is this getting custom adjusted? - each line has to be checked and adjusted ##
