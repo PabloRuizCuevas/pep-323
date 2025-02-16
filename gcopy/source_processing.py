@@ -300,7 +300,6 @@ def named_adjust(
 
 
 def update_lines(
-    end_index: int,
     char: str,
     line: str,
     lines: list[str],
@@ -308,20 +307,23 @@ def update_lines(
     not_end: bool = True,
     unwrap: Iterable | None = None,
 ) -> tuple[list[str], str]:
-    if unwrap:
-        temp_lines, temp_final_line, _ = unpack(line, unwrap, True)
-        lines += temp_lines + [temp_final_line]
-        line = ""
-    else:
-        lines += [line]
+    """
+    adds the current line or the unwrapped line to the lines
+    if it's not a variable or constant otherwise the line is
+    added to the final lines
+    """
     if line.strip().isalnum():
         final_line += line
     else:
         final_line += "locals()[.'args'].pop() "
+        if unwrap:
+            temp_lines, temp_final_line, _ = unpack(line, unwrap, True)
+            lines += temp_lines + [temp_final_line]
+        else:
+            lines += [line]
     if not_end:
         final_line += char + " "
-    line = line[end_index:]
-    return line, lines, final_line
+    return "", lines, final_line
 
 
 def unpack(
@@ -365,9 +367,7 @@ def unpack(
             line, space, indented = singly_space(end_index, char, line, space, indented)
         ## dictionary assignment ##
         elif char == "[" and prev[-1] not in (" ", ""):
-            line, lines, final_line = update_lines(
-                end_index, char, line, lines, final_line
-            )
+            line, lines, final_line = update_lines(char, line, lines, final_line)
         elif char == "\\":
             skip_line_continuation(line_iter, line, end_index)
             if space + 1 != end_index:
@@ -377,16 +377,14 @@ def unpack(
         elif char in ",<=>/|+-*&%@^":
             ## since we can have i.e. ** or %= etc. ##
             if end_index - 1 != operator:
-                line, lines, final_line = update_lines(
-                    end_index, char, line, lines, final_line
-                )
+                line, lines, final_line = update_lines(char, line, lines, final_line)
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
             lines += [line]
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
             line, lines, final_line = named_adjust(
-                end_index, char, line, lines, final_line, line_iter, ID
+                char, line, lines, final_line, line_iter, ID
             )
         else:
             ## record the current depth ##
@@ -405,20 +403,18 @@ def unpack(
                     ## what should happen when we unwrap? ##
                     ## go from the last bracket onwards for the replacement ##
                     line, lines, final_line = update_lines(
-                        end_index, char, line, lines, final_line, unwrap=line_iter
+                        char, line, lines, final_line, unwrap=line_iter
                     )
                 elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
                     line, lines, final_line = update_lines(
-                        end_index, char, line, lines, final_line
+                        char, line, lines, final_line
                     )
             else:
                 ID = ""
             line += char
             prev = prev[:-1] + (char,)
     if line:
-        line, lines, final_line = update_lines(
-            end_index, char, line, lines, final_line, False
-        )
+        line, lines, final_line = update_lines(char, line, lines, final_line, False)
     return lines, final_line, end_index
 
 
