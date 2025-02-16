@@ -269,8 +269,6 @@ def string_collector_proxy(
 
 
 def named_adjust(
-    end_index: int,
-    char: str,
     line: str,
     lines: list[str],
     final_line: str,
@@ -280,50 +278,73 @@ def named_adjust(
     """
     Adjusts the lines and final line for named expressions
     and named expressions within named expressions
+
+    a = (b:=next(j)) = c
+
+    next(j)
+    b = next(j)
+
+
     """
-    ## you can't have ': =' or ':\=' ##
-    final_line += char + "="
-    ## skip the next iteration ##
+    line += ":="
+    ## skip the next iteration to the '=' char ##
+    ## for ':=' you can't have ': =' or ':\=' ##
     next(line_iter)
     ## this should mean that we can just unwrap it. ##
     ## If the named expression is a dictionary then ##
-    ## it will be the last line added to the lines ##
-    if not ID:
+    ## it will be the last line added to the new lines ##
+    temp = []
+    if ID and lines:
         temp = [lines.pop()]
-    else:
-        temp = []
-    line, lines, final_line = update_lines(
-        end_index, char, line, lines, final_line, unwrap=line_iter
+    named = True
+    line, lines, final_line, named = update_lines(
+        line, lines, final_line, named, line_iter
     )
     lines += temp
-    return lines, final_line, line, end_index
+    return line, lines, final_line, named
+
+
+def unpack_adjust(line: str) -> list[str]:
+    """adjusts the unpacked line for usage and value yields"""
+    if line.startswith("yield "):
+        return yield_adjust(line, "") + ["locals()['.args'] += [locals()['.send']]"]
+    return ["locals()['.args'] += [%s]" % line]
 
 
 def update_lines(
-    char: str,
     line: str,
     lines: list[str],
     final_line: str,
-    not_end: bool = True,
+    named: bool = False,
     unwrap: Iterable | None = None,
+    bracket_index: int = None,
+    operator: str = "",
 ) -> tuple[list[str], str]:
     """
     adds the current line or the unwrapped line to the lines
     if it's not a variable or constant otherwise the line is
     added to the final lines
     """
-    if line.strip().isalnum():
-        final_line += line
-    else:
-        final_line += "locals()[.'args'].pop() "
+    if not line.isspace():
         if unwrap:
-            temp_lines, temp_final_line, _ = unpack(line, unwrap, True)
-            lines += temp_lines + [temp_final_line]
+            temp_lines, temp_final_line, _ = unpack(source_iter=unwrap, unwrapping=True)
+            if not named:
+                temp_final_line = "yield " + temp_final_line[:-1]
+                lines += temp_lines + unpack_adjust(temp_final_line.strip())
+                line = line[:bracket_index] + "locals()['.args'].pop() "
+            else:
+                lines += temp_lines
+                line += temp_final_line
         else:
-            lines += [line]
-    if not_end:
-        final_line += char + " "
-    return "", lines, final_line
+            if line.strip().isalnum() or named:
+                final_line += line
+            else:
+                final_line += "locals()['.args'].pop() "
+                lines += unpack_adjust(line.strip())
+            line = ""
+    if operator:
+        final_line += operator + " "
+    return line, lines, final_line, named
 
 
 def unpack(
@@ -350,6 +371,7 @@ def unpack(
     ) = (0, 0, 0, 0, [], "", "", "", (0, 0, ""), False, 0)
     source = ""
     line_iter = chain(enumerate(line), source_iter)
+    named = False
     for end_index, char in line_iter:
         ## record the source for string_collector_proxy (there might be better ways of doing this) ##
         source += char
@@ -367,7 +389,9 @@ def unpack(
             line, space, indented = singly_space(end_index, char, line, space, indented)
         ## dictionary assignment ##
         elif char == "[" and prev[-1] not in (" ", ""):
-            line, lines, final_line = update_lines(char, line, lines, final_line)
+            line, lines, final_line, named = update_lines(
+                line + char, lines, final_line, named, line_iter
+            )
         elif char == "\\":
             skip_line_continuation(line_iter, line, end_index)
             if space + 1 != end_index:
@@ -377,21 +401,29 @@ def unpack(
         elif char in ",<=>/|+-*&%@^":
             ## since we can have i.e. ** or %= etc. ##
             if end_index - 1 != operator:
-                line, lines, final_line = update_lines(char, line, lines, final_line)
+                line, lines, final_line, named = update_lines(
+                    line, lines, final_line, named, operator=char
+                )
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
             lines += [line]
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
-            line, lines, final_line = named_adjust(
-                char, line, lines, final_line, line_iter, ID
+            line, lines, final_line, named = named_adjust(
+                line, lines, final_line, line_iter, ID
             )
+            ID, prev = "", prev[:-1] + (
+                char,
+            )  ## since we're going to skip some chars ##
         else:
             ## record the current depth ##
+            ## could be more efficient but this is more readable ##
             depth_total = update_depth(depth_total, char, ("([{", "}])"))
             depth = update_depth(depth, char)
+            if char == "(":
+                bracket_index = len(source) - len(line)
             if unwrapping and depth_total < 0:
-                final_line += char
+                line += char
                 break
             ## check for unwrapping/updating ##
             if char.isalnum():
@@ -402,19 +434,23 @@ def unpack(
                 if depth and ID == "yield":  ## unwrapping ##
                     ## what should happen when we unwrap? ##
                     ## go from the last bracket onwards for the replacement ##
-                    line, lines, final_line = update_lines(
-                        char, line, lines, final_line, unwrap=line_iter
+                    line, lines, final_line, named = update_lines(
+                        line, lines, final_line, named, line_iter, bracket_index
                     )
+                    ID, prev = "", prev[:-1] + (char,)
+                    continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
                 elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
-                    line, lines, final_line = update_lines(
-                        char, line, lines, final_line
+                    line, lines, final_line, named = update_lines(
+                        line, lines, final_line, named, operator=ID
                     )
+                    ID, prev = "", prev[:-1] + (char,)
+                    continue
             else:
                 ID = ""
             line += char
             prev = prev[:-1] + (char,)
     if line:
-        line, lines, final_line = update_lines(char, line, lines, final_line, False)
+        final_line += line
     return lines, final_line, end_index
 
 
@@ -424,6 +460,7 @@ def unpack_fstring(
     """detects a value yield then adjusts the line for f-strings"""
     line, ID, depth, break_check, lines = "", "", 0, 0, []
     for index, char in source_iter:
+
         ## may need so that we can detect break_check < 0 to break e.g. } (f-string) ##
         break_check = update_depth(break_check, char, ("{", "}"))
         if break_check < 0:
