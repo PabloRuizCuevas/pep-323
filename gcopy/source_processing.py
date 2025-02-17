@@ -283,8 +283,6 @@ def named_adjust(
 
     next(j)
     b = next(j)
-
-
     """
     line += ":="
     ## skip the next iteration to the '=' char ##
@@ -319,6 +317,7 @@ def update_lines(
     unwrap: Iterable | None = None,
     bracket_index: int = None,
     operator: str = "",
+    yielding: bool = False,
 ) -> tuple[list[str], str]:
     """
     adds the current line or the unwrapped line to the lines
@@ -326,20 +325,27 @@ def update_lines(
     added to the final lines
     """
     if not line.isspace():
+        ## unwrapping ##
         if unwrap:
-            temp_lines, temp_final_line, _ = unpack(source_iter=unwrap, unwrapping=True)
-            if not named:
+            temp_lines, temp_final_line, _ = unpack(
+                source_iter=unwrap, unwrapping=True, named=named
+            )
+            if yielding:
                 temp_final_line = "yield " + temp_final_line[:-1]
                 lines += temp_lines + unpack_adjust(temp_final_line.strip())
-                line = line[:bracket_index] + "locals()['.args'].pop() "
+                line = line[:bracket_index] + "locals()['.args'].pop(0) "
             else:
                 lines += temp_lines
                 line += temp_final_line
+        ## unpacking ##
         else:
+
+            ## variable ##
             if line.strip().isalnum() or named:
                 final_line += line
+            ## expression ##
             else:
-                final_line += "locals()['.args'].pop() "
+                final_line += "locals()['.args'].pop(0) "
                 lines += unpack_adjust(line.strip())
             line = ""
     if operator:
@@ -351,6 +357,7 @@ def unpack(
     line: str = empty_generator(),
     source_iter: Iterable = empty_generator(),
     unwrapping: bool = False,
+    named: bool = False,
 ) -> tuple[list[str], str, int]:
     """
     Unpacks value yields from a line into a
@@ -371,7 +378,7 @@ def unpack(
     ) = (0, 0, 0, 0, [], "", "", "", (0, 0, ""), False, 0)
     source = ""
     line_iter = chain(enumerate(line), source_iter)
-    named = False
+    # named = False
     for end_index, char in line_iter:
         ## record the source for string_collector_proxy (there might be better ways of doing this) ##
         source += char
@@ -412,9 +419,8 @@ def unpack(
             line, lines, final_line, named = named_adjust(
                 line, lines, final_line, line_iter, ID
             )
-            ID, prev = "", prev[:-1] + (
-                char,
-            )  ## since we're going to skip some chars ##
+            ## since we're going to skip some chars ##
+            ID, prev = "", prev[:-1] + (char,)
         else:
             ## record the current depth ##
             ## could be more efficient but this is more readable ##
@@ -435,7 +441,13 @@ def unpack(
                     ## what should happen when we unwrap? ##
                     ## go from the last bracket onwards for the replacement ##
                     line, lines, final_line, named = update_lines(
-                        line, lines, final_line, named, line_iter, bracket_index
+                        line,
+                        lines,
+                        final_line,
+                        named,
+                        line_iter,
+                        bracket_index,
+                        yielding=True,
                     )
                     ID, prev = "", prev[:-1] + (char,)
                     continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
