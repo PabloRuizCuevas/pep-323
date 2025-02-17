@@ -171,8 +171,20 @@ def collect_string(
 
     Note: make sure source_iter is an enumerated type
     """
-    line, backslash, left_brace, lines = reference, False, -2, []
+    line, backslash, left_brace, lines = reference, False, 0, []
     for index, char in source_iter:
+        ## detect f-strings for value yields ##
+        if source and char == "{" or left_brace:
+            if char != "{" and left_brace % 2:
+                ## we could check for yields before unpacking but this is maybe more efficient ##
+                temp_lines, final_line, _ = unpack(char, source_iter, True)
+                # print(f"{line,temp_lines,final_line=}")
+                ## update ##
+                lines += temp_lines
+                line += final_line
+                left_brace = 0
+                continue
+            left_brace += 1
         if char == reference and not backslash:
             line += char
             break
@@ -180,16 +192,6 @@ def collect_string(
         backslash = False
         if char == "\\":
             backslash = True
-        ## detect f-strings for value yields ##
-        if source and char == "{":
-            if index - 1 != left_brace:
-                temp_lines, final_line, right_brace = unpack_fstring(
-                    source, source_iter, left_brace
-                )
-                ## update ##
-                lines += temp_lines
-                line += final_line
-            left_brace = index
     if source:
         return index, lines + [line]  ## we have to add it for the f-string case ##
     return index, line
@@ -208,8 +210,19 @@ def collect_multiline_string(
     if a string starts with 3 qoutations
     then it's classed as a multistring
     """
-    line, backslash, prev, count, left_brace, lines = reference, False, -2, 0, None, []
+    line, backslash, prev, count, left_brace, lines = reference, False, -2, 0, 0, []
     for index, char in source_iter:
+        ## detect f-strings for value yields ##
+        if source and char == "{" or left_brace:
+            if char != "{" and left_brace % 2 == 0:
+                ## we could check for yields before unpacking but this is maybe more efficient ##
+                temp_lines, final_line, _ = unpack(
+                    source_iter=source_iter, unwrapping=True
+                )
+                ## update ##
+                lines += temp_lines
+                line += final_line
+            left_brace += 1
         if char == reference and not backslash:
             if index - prev == 1:
                 count += 1
@@ -223,18 +236,6 @@ def collect_multiline_string(
         backslash = False
         if char == "\\":
             backslash = True
-        ## detect f-strings for value yields ##
-        if source and char == "{":
-
-            ## needs fixing ##
-            if left_brace and index - 1 != left_brace:
-                temp_lines, final_line, right_brace = unpack_fstring(
-                    source, source_iter, left_brace
-                )
-                ## update ##
-                lines += temp_lines
-                line += final_line
-            left_brace = index
     if source:
         return index, lines + [line]  ## we have to add it for the f-string case ##
     return index, line
@@ -266,6 +267,18 @@ def string_collector_proxy(
     if line is not None:
         line += temp_line
     return line, prev
+
+
+def inverse_bracket(bracket: str) -> str:
+    """Gets the inverse of the current bracket"""
+    return {
+        "(": ")",
+        ")": "(",
+        "{": "}",
+        "}": "{",
+        "[": "]",
+        "]": "[",
+    }.get(bracket, None)
 
 
 def named_adjust(
@@ -309,6 +322,9 @@ def unpack_adjust(line: str) -> list[str]:
     return ["locals()['.args'] += [%s]" % line]
 
 
+operators = ",<=>/|+-*&%@^"
+
+
 def update_lines(
     line: str,
     lines: list[str],
@@ -333,13 +349,13 @@ def update_lines(
             if yielding:
                 temp_final_line = "yield " + temp_final_line[:-1]
                 lines += temp_lines + unpack_adjust(temp_final_line.strip())
-                line = line[:bracket_index] + "locals()['.args'].pop(0) "
+                line = line[:bracket_index]
+                line += "locals()['.args'].pop(0) "
             else:
                 lines += temp_lines
                 line += temp_final_line
         ## unpacking ##
         else:
-
             ## variable ##
             if line.strip().isalnum() or named:
                 final_line += line
@@ -363,22 +379,23 @@ def unpack(
     Unpacks value yields from a line into a
     list of lines going towards its right side
     """
+    line_iter = chain(enumerate(line), source_iter)
     (
         depth,
         depth_total,
         end_index,
         space,
         lines,
+        source,
+        bracket,
         ID,
         line,
         final_line,
         prev,
         indented,
         operator,
-    ) = (0, 0, 0, 0, [], "", "", "", (0, 0, ""), False, 0)
-    source = ""
-    line_iter = chain(enumerate(line), source_iter)
-    # named = False
+        bracket_index,
+    ) = (0, 0, 0, 0, [], "", "", "", "", "", (0, 0, ""), False, 0, None)
     for end_index, char in line_iter:
         ## record the source for string_collector_proxy (there might be better ways of doing this) ##
         source += char
@@ -405,12 +422,14 @@ def unpack(
                 line += " "
                 space = end_index
         ## splitting operators ##
-        elif char in ",<=>/|+-*&%@^":
+        elif char in operators:
             ## since we can have i.e. ** or %= etc. ##
             if end_index - 1 != operator:
                 line, lines, final_line, named = update_lines(
                     line, lines, final_line, named, operator=char
                 )
+            if unwrapping:
+                break
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
             lines += [line]
@@ -423,14 +442,20 @@ def unpack(
             ID, prev = "", prev[:-1] + (char,)
         else:
             ## record the current depth ##
-            ## could be more efficient but this is more readable ##
-            depth_total = update_depth(depth_total, char, ("([{", "}])"))
-            depth = update_depth(depth, char)
+            if char in "([{":
+                depth_total += 1
+                bracket = char
+            elif char in ")}]":
+                depth_total -= 1
+                if unwrapping and depth_total < 0 or char != inverse_bracket(bracket):
+                    line += char
+                    break
             if char == "(":
-                bracket_index = len(source) - len(line)
-            if unwrapping and depth_total < 0:
-                line += char
-                break
+                depth += 1
+                ## the index is in relation to the current line ##
+                bracket_index = len(line)
+            elif char == ")":
+                depth -= 1
             ## check for unwrapping/updating ##
             if char.isalnum():
                 ## in case of ... ... (otherwise you keep appending the ID) ##
@@ -449,7 +474,12 @@ def unpack(
                         bracket_index,
                         yielding=True,
                     )
-                    ID, prev = "", prev[:-1] + (char,)
+                    ID, prev, bracket_index = "", prev[:-1] + (char,), None
+                    ## since the unwrapping will accumulate up to the next bracket this ##
+                    ## will go unrecorded on this stack frame recieving but recorded and ##
+                    ## garbage collected on the recursed stack frame used on unwrapping ##
+                    depth -= 1
+                    depth_total -= 1
                     continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
                 elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
                     line, lines, final_line, named = update_lines(
@@ -464,29 +494,6 @@ def unpack(
     if line:
         final_line += line
     return lines, final_line, end_index
-
-
-def unpack_fstring(
-    source: str, source_iter: Iterable, start_index: int
-) -> tuple[list[str], str, int]:
-    """detects a value yield then adjusts the line for f-strings"""
-    line, ID, depth, break_check, lines = "", "", 0, 0, []
-    for index, char in source_iter:
-
-        ## may need so that we can detect break_check < 0 to break e.g. } (f-string) ##
-        break_check = update_depth(break_check, char, ("{", "}"))
-        if break_check < 0:
-            break
-        line += char
-        depth = update_depth(depth, char)
-        if char.isalnum():
-            ID += char
-            if char == "yield" and depth == 1:
-                ## value_yield adjust will collect the entire line (f-string in this case) ##
-                return unpack(source[start_index:], source_iter, index, True)
-        else:
-            ID = ""
-    return lines, "", index
 
 
 def collect_definition(
