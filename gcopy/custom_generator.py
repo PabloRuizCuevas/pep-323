@@ -1,990 +1,752 @@
-#################################################
-### cleaning/extracting/adjusting source code ###
-#################################################
-from .utils import *
-from inspect import getsource, findsource
-from typing import Iterable, Any
-from types import GeneratorType, FrameType
+##################################
+### picklable/copyable objects ###
+##################################
+from types import FunctionType, GeneratorType, CodeType
+from inspect import currentframe
+from copy import deepcopy, copy
+from textwrap import dedent
+from gcopy.source_processing import *
+from gcopy.track import offset_adjust
+
+try:
+    from typing import NoReturn
+except:
+    NoReturn = {
+        "NoReturn"
+    }  ## for 3.5 since 3.6.2; there might be alternatives that are better than this for 3.5 ##
 
 
-def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:
-    """Updates the depth of brackets"""
-    if char in selection[0]:
-        depth += 1
-    elif char in selection[1]:
-        depth -= 1
-    return depth
+## minium version supported ##
+if version_info < (3, 5):
+    ## if positions in get_instructions does not happen ##
+    ## for lower versions this will have to be 3.11 ##
+    raise ImportError("Python version 3.5 or above is required")
 
 
-def get_indent(line: str) -> int:
-    """Gets the number of spaces used in an indentation"""
-    count = 0
-    for char in line:
-        if char != " ":
-            break
-        count += 1
-    return count
-
-
-def lineno_adjust(frame: FrameType) -> int:
+class Pickler:
     """
-    unpacks a line of compound statements
-    into lines up to the last instruction
-    that determines the adjustment required
+    class for allowing general copying and pickling of
+    some otherwise uncopyable or unpicklable objects
     """
-    line, current_lineno, instructions = (
-        [],
-        frame.f_lineno,
-        get_instructions(frame.f_code),
+
+    _not_allowed = tuple()
+
+    def _copier(self, FUNC: FunctionType) -> object:
+        """copying will create a new generator object but the copier will determine its depth"""
+        obj = type(self)()
+        obj.__setstate__(obj.__getstate__(FUNC))
+        return obj
+
+    ## for copying ##
+    def __copy__(self) -> object:
+        return self._copier(copy)
+
+    def __deepcopy__(self, memo: dict) -> object:
+        return self._copier(deepcopy)
+
+    ## for pickling ##
+    def __getstate__(self, FUNC: FunctionType = lambda x: x) -> dict:
+        """Serializing pickle (what object you want serialized)"""
+        dct = dict()
+        for attr in self._attrs:
+            if hasattr(self, attr) and not attr in self._not_allowed:
+                dct[attr] = FUNC(getattr(self, attr))
+        return dct
+
+    def __setstate__(self, state: dict) -> None:
+        """Deserializing pickle (returns an instance of the object with state)"""
+        for key, value in state.items():
+            setattr(self, key, value)
+
+
+class code(Pickler):
+    """For pickling and copying code objects"""
+
+    _attrs = code_attrs()
+
+    def __init__(self, code_obj: CodeType = None) -> None:
+        if code_obj:
+            for attr in self._attrs:
+                setattr(self, attr, getattr(code_obj, attr))
+
+    def __bool__(self) -> bool:
+        """Used on i.e. if code_obj:"""
+        return hasattrs(self, self._attrs)
+
+
+class frame(Pickler):
+    """
+    acts as the initial FrameType
+
+    Note: on pickling ensure f_locals
+    and f_back can be pickled
+    """
+
+    _attrs = (
+        "f_back",
+        "f_code",
+        "f_lasti",
+        "f_lineno",
+        "f_locals",
+        "f_trace",
+        "f_trace_lines",
+        "f_trace_opcodes",
     )
-    ## get the instructions at the lineno ##
-    for instruction in instructions:
-        lineno, obj = instruction.positions.lineno, (
-            list(instruction.positions[2:]),
-            instruction.offset,
-        )
-        if not None in obj[0] and lineno == current_lineno:
-            ## exhaust the iter to get all the lines ##
-            line = [obj]
-            for instruction in instructions:
-                lineno, obj = instruction.positions.lineno, (
-                    list(instruction.positions[2:]),
-                    instruction.offset,
-                )
-                if lineno != current_lineno:
-                    break
-                line += [obj]
-            break
-    ## combine the lines until f_lasti is encountered to return how many lines ##
-    ## futher from the current line would the offset be if split up into lines ##
-    if line:
-        index, current, lasti = 0, [0, 0], frame.f_lasti
-        line.sort()
-        for pos, offset in line:
-            if offset == lasti:
-                return index
-            if pos[0] > current[1]:  ## independence ##
-                current = pos
-                index += 1
-            elif pos[1] > current[1]:  ## intersection ##
-                current[1] = pos[1]
-    raise ValueError("f_lasti not encountered")
+    _not_allowed = ("f_globals",)
+    f_locals = {}
+    f_lineno = 1
+    f_globals = globals()
+    f_builtins = __builtins__
+
+    def __init__(self, frame: FrameType = None) -> None:
+        if frame:
+            if hasattr(
+                frame, "f_back"
+            ):  ## make sure all other frames are the custom type as well ##
+                self.f_back = type(self)(frame.f_back)
+            if hasattr(frame, "f_code"):  ## make sure it can be pickled
+                self.f_code = code(frame.f_code)
+            for attr in self._attrs[2:]:
+                setattr(self, attr, getattr(frame, attr))
+
+    def clear(self) -> None:
+        """clears f_locals e.g. 'most references held by the frame'"""
+        self.f_locals = {}
+
+    ## we have to implement this if I'm going to go 'if frame:' (i.e. in frame.__init__) ##
+    def __bool__(self) -> bool:
+        """Used on i.e. if frame:"""
+        return hasattrs(self, ("f_code", "f_lasti", "f_lineno", "f_locals"))
 
 
-def unpack_genexpr(source: str) -> list[str]:
-    """unpacks a generator expressions' for loops into a list of source lines"""
-    lines, line, ID, depth, prev, has_for, has_end_if = (
-        [],
-        "",
-        "",
-        0,
-        (0, 0, ""),
-        False,
-        False,
-    )
-    source_iter = enumerate(source[1:-1])
-    for index, char in source_iter:
-        if char in "\\\n":
-            continue
-        ## collect strings
-        if char == "'" or char == '"':
-            line, prev = string_collector_proxy(index, char, prev, source_iter, line)
-            continue
-        ## we're only interested in when the generator expression ends in terms of the depth ##
-        depth = update_depth(depth, char)
-        ## accumulate the current line
-        line += char
-        ## collect IDs
-        if char.isalnum():
-            ID += char
-        else:
-            ID = ""
-        if depth == 0:
-            if ID == "for" or ID == "if" and next(source_iter)[1] == " ":
-                if ID == "for":
-                    lines += [line[:-3]]
-                    line = line[-3:]  # +" "
-                    if not has_for:
-                        has_for = len(lines)  ## should be 1 anyway
-                elif has_for:
-                    lines += [
-                        line[:-2],
-                        source[index:-1],
-                    ]  ## -1 to remove the end bracket - is this necessary?
-                    has_end_if = True
-                    break
-                else:
-                    lines += [line[:-2]]
-                    line = line[-2:] + " "
-                # ID="" ## isn't necessary because you don't get i.e. 'for for' or 'if if' in python syntax
-    if has_end_if:
-        lines = lines[has_for:-1] + (lines[:has_for] + [lines[-1]])[::-1]
-    else:
-        print("here:", lines)
-        lines = lines[has_for:] + (lines[:has_for])[::-1]
-    ## arrange into lines
-    indent = " " * 4
-    return [indent * index + line for index, line in enumerate(lines, start=1)]
-
-
-def skip_line_continuation(source_iter: Iterable, source: str, index: int) -> None:
-    """skips line continuations in source"""
-    whitespace = get_indent(source[index + 1 :])  ## +1 since 'index:' is inclusive ##
-    ## skip the whitespace after newline ##
-    ## skip the current char, whitespace, newline and whitespace after ##
-    skip(source_iter, whitespace + 1 + get_indent(source[index + 1 + whitespace + 1 :]))
-
-
-def skip_source_definition(source: str) -> str:
-    """Skips the function definition and decorators in the source code"""
-    ID, source_iter = "", enumerate(source)
-    for index, char in source_iter:
-        ## decorators are ignored ##
-        while char == "@":
-            while char != "\n":
-                index, char = next(source_iter)
-            index, char = next(source_iter)
-        if char.isalnum():
-            ID += char
-            if len(ID) == 3:
-                if ID == "def" and next(source_iter)[1] == " ":
-                    while char != "(":
-                        index, char = next(source_iter)
-                    break
-                return source
-        else:
-            ID = ""
-    depth = 1
-    for index, char in source_iter:
-        if char == ":" and depth == 0:
-            return source[index + 1 :]
-        depth = update_depth(depth, char, ("([{", ")]}"))
-    raise SyntaxError("Unexpected format encountered")
-
-
-def collect_string(
-    source_iter: Iterable, reference: str, source: str = None
-) -> tuple[int, str | list[str]]:
+#################
+### Generator ###
+#################
+class Generator(Pickler):
     """
-    Collects strings in an iterable assuming correct
-    python syntax and the char before is a qoutation mark
+    Converts a generator function into a generator
+    function that is copyable (e.g. shallow and deepcopy)
+    and potentially pickle-able
 
-    Note: make sure source_iter is an enumerated type
+    This should be very portable or at least closely so across
+    python implementations ideally.
+
+    The dependencies for this to work only requires that you
+    can retrieve your functions source code as a string via
+    inspect.getsource.
+
+    How it works:
+
+    Basically we emulate the generator process by converting
+    it into an on the fly evaluation iterable thus enabling
+    it to be easily copied (Note: deepcopying assumes the
+    local variables in the frame can also be copied so if
+    you happen to be using a function generator within
+    another function generator then make sure that all
+    function generators (past one iteration) are of the
+    Generator type)
+
+    Note: this class emulates what the GeneratorType
+    could be and therefore is treated as a GeneratorType
+    in terms of its class/type. This means it's type
+    and subclass checked as a Generator or GeneratorType
+
+    The api setup is done via _internals which is a dictionary.
+    Essentially, for the various kinds of generator you could
+    have you want to assign a prefix and a type. The prefix
+    is there to denote i.e. gi_ for Generator, ag_ for
+    AsyncGenerator and cr_ for Coroutine such that it's
+    very easy to integrate across different implementations
+    without losing the familiar api.
     """
-    line, backslash, left_brace, lines = reference, False, 0, []
-    for index, char in source_iter:
-        ## detect f-strings for value yields ##
-        if source and char == "{" or left_brace:
-            if char != "{" and left_brace % 2:
-                ## we could check for yields before unpacking but this is maybe more efficient ##
-                temp_lines, final_line, _ = unpack(char, source_iter, True)
-                # print(f"{line,temp_lines,final_line=}")
-                ## update ##
-                lines += temp_lines
-                line += final_line
-                left_brace = 0
-                continue
-            left_brace += 1
-        if char == reference and not backslash:
+
+    ## Note: by default GeneratorType does not have the  ##
+    ## __bool__ (or __nonzero__ in python 2.x) attribute ##
+    ## so we don't necessarily have to implement one ##
+
+    _internals = {
+        "prefix": "gi_",
+        "type": GeneratorType,
+        "version": "",
+    }  ## for the api setup ##
+    _attrs = ("_internals",)  ## for Pickler ##
+
+    def _custom_adjustment(self, line: str, lineno: int) -> list[str]:
+        """
+        It does the following to the source lines:
+
+        1. replace all lines that start with yields with returns to start with
+        2. make sure the generator is closed on regular returns
+        3. save the iterator from the for loops replacing with a nonlocal variation
+        4. tend to all yield from ... with the same for loop variation
+        5. adjust all value yields either via unwrapping or unpacking
+        """
+        number_of_indents = get_indent(line)
+        temp_line = line[number_of_indents:]
+        indent = " " * number_of_indents
+        result = yield_adjust(temp_line, indent)
+        if result is not None:
+            return result
+        if temp_line.startswith("for ") or temp_line.startswith("while "):
+            self._internals["jump_positions"] += [
+                [lineno, None]
+            ]  ## has to be a list since we're assigning ##
+            self._internals["jump_stack"] += [
+                (number_of_indents, len(self._internals["jump_positions"]) - 1)
+            ]  ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
+            return [line]
+        if temp_line.startswith("return "):
+            ## close the generator then return ##
+            ## have to use a try-finally in case the user returns from the locals ##
+            return [
+                indent + "try:",
+                indent + "    raise StopIteration(" + line[7:] + ")",
+                indent + "finally:",
+                indent + "    currentframe().f_back.f_locals['self'].close()",
+            ]
+        return [line]
+
+    def _update_jump_positions(
+        self, lines: list[str], lineno: int, reference_indent: int = -1
+    ) -> None:
+        """
+        Updates the end jump positions in self._internals["jump_positions"].
+        It may also append the current lines with adjustments if it's a while
+        loop that used a value yield in its condition
+        """
+        if self._internals["jump_stack"]:
+            end_lineno = len(lines) + 1
+            while (
+                self._internals["jump_stack"]
+                and reference_indent <= self._internals["jump_stack"][-1][0]
+            ):  # -1: top of stack, 0: indent
+                index = self._internals["jump_stack"].pop()[1]
+                self._internals["jump_positions"][index][1] = end_lineno
+                if (
+                    self._internals["jump_stack_adjuster"]
+                    and self._internals["jump_positions"][index][0]
+                    == self._internals["jump_stack_adjuster"][-1][0]
+                ):
+                    adjustments = self._internals["jump_stack_adjuster"].pop().pop()
+                    self._internals["linetable"] += [lineno] * len(adjustments)
+                    lines += adjustments
+        return lines
+
+    def _append_line(
+        self,
+        source: str,
+        source_iter: Iterable,
+        running: bool,
+        line: str,
+        lines: list[str],
+        lineno: int,
+        indentation: int,
+    ) -> tuple[int, str, int, list[str], str, bool, int]:
+        ## skip comments ##
+        if char == "#":
+            for index, char in source_iter:
+                if char == "\n":
+                    break
+        ## make sure to include it ##
+        if char == ":":
+            indentation = get_indent(line) + 4  # in case of ';'
             line += char
-            break
-        line += char
-        backslash = False
-        if char == "\\":
-            backslash = True
-    if source:
-        return index, lines + [line]  ## we have to add it for the f-string case ##
-    return index, line
-
-
-def collect_multiline_string(
-    source_iter: Iterable, reference: str, source: str = None
-) -> tuple[int, str | list[str]]:
-    """
-    Collects multiline strings in an iterable assuming
-    correct python syntax and the char before is a
-    qoutation mark
-
-    Note: make sure source_iter is an enumerated type
-
-    if a string starts with 3 qoutations
-    then it's classed as a multistring
-    """
-    line, backslash, prev, count, left_brace, lines = reference, False, -2, 0, 0, []
-    for index, char in source_iter:
-        ## detect f-strings for value yields ##
-        if source and char == "{" or left_brace:
-            if char != "{" and left_brace % 2 == 0:
-                ## we could check for yields before unpacking but this is maybe more efficient ##
-                temp_lines, final_line, _ = unpack(
-                    source_iter=source_iter, unwrapping=True
+        if not line.isspace():  ## empty lines are possible ##
+            reference_indent = get_indent(line)
+            lines = self._update_jump_positions(lines, lineno, reference_indent)
+            ## skip the definitions ##
+            if is_definition(line[reference_indent:]):
+                index, char, lineno, lines = collect_definition(
+                    index, lines, lineno, source, source_iter, reference_indent
                 )
-                ## update ##
-                lines += temp_lines
-                line += final_line
-            left_brace += 1
-        if char == reference and not backslash:
-            if index - prev == 1:
-                count += 1
             else:
-                count = 0
-            prev = index
-            if count == 2:
-                line += char
-                break
-        line += char
-        backslash = False
-        if char == "\\":
-            backslash = True
-    if source:
-        return index, lines + [line]  ## we have to add it for the f-string case ##
-    return index, line
-
-
-def string_collector_proxy(
-    index: int,
-    char: str,
-    prev: tuple[int, int, str],
-    iterable: Iterable,
-    line: str = None,
-    f_string: bool = False,
-) -> tuple[list[str], str, int]:
-    """Proxy function for usage when collecting strings since this block of code gets used repeatedly"""
-    ## get the string collector type ##
-    if prev[0] + 2 == prev[1] + 1 == index and prev[2] == char:
-        string_collector, temp_index = collect_multiline_string, 3
-    else:
-        string_collector, temp_index = collect_string, 1
-    ## determine if we need to look for f-strings in case of value yields ##
-    # print(line,temp_index,char,)
-    source = None
-    if (
-        f_string
-        and version_info >= (3, 6)
-        and len(line) >= temp_index
-        and line[-temp_index] == "f"
-    ):
-        ## use the source to determine the extractions ##
-        ## +1 to move one forwards from the 'f' ##
-        source = line[1 - temp_index :]
-    temp_index, temp_line = string_collector(iterable, char, source)
-    prev = (index, temp_index, char)
-    if f_string:
-        ## lines (adjustments) + line (string collected) ##
-        return temp_line.pop(), prev, temp_line
-    if line is not None:
-        line += temp_line
-    return line, prev
-
-
-def inverse_bracket(bracket: str) -> str:
-    """Gets the inverse of the current bracket"""
-    return {
-        "(": ")",
-        ")": "(",
-        "{": "}",
-        "}": "{",
-        "[": "]",
-        "]": "[",
-    }[bracket]
-
-
-def named_adjust(
-    line: str,
-    lines: list[str],
-    final_line: str,
-    line_iter: Iterable,
-    ID: str,
-) -> tuple[list[str], str, str, int]:
-    """
-    Adjusts the lines and final line for named expressions
-    and named expressions within named expressions
-
-    a = (b:=next(j)) = c
-
-    next(j)
-    b = next(j)
-    """
-    line += ":="
-    ## skip the next iteration to the '=' char ##
-    ## for ':=' you can't have ': =' or ':\=' ##
-    next(line_iter)
-    ## this should mean that we can just unwrap it. ##
-    ## If the named expression is a dictionary then ##
-    ## it will be the last line added to the new lines ##
-    temp = []
-    if ID and lines:
-        temp = [lines.pop()]
-    named = True
-    line, lines, final_line, named = update_lines(
-        line, lines, final_line, named, line_iter
-    )
-    lines += temp
-    return line, lines, final_line, named
-
-
-def unpack_adjust(line: str) -> list[str]:
-    """adjusts the unpacked line for usage and value yields"""
-    if line.startswith("yield "):
-        return yield_adjust(line, "") + ["locals()['.args'] += [locals()['.send']]"]
-    return ["locals()['.args'] += [%s]" % line]
-
-
-operators = ",<=>/|+-*&%@^"
-
-
-def update_lines(
-    line: str,
-    lines: list[str],
-    final_line: str,
-    named: bool = False,
-    unwrap: Iterable | None = None,
-    bracket_index: int = None,
-    operator: str = "",
-    yielding: bool = False,
-) -> tuple[list[str], str]:
-    """
-    adds the current line or the unwrapped line to the lines
-    if it's not a variable or constant otherwise the line is
-    added to the final lines
-    """
-    if not line.isspace():
-        ## unwrapping ##
-        if unwrap:
-            temp_lines, temp_final_line, _ = unpack(
-                source_iter=unwrap, unwrapping=True, named=named
-            )
-            if yielding:
-                temp_final_line = "yield " + temp_final_line[:-1]
-                lines += temp_lines + unpack_adjust(temp_final_line.strip())
-                line = line[:bracket_index] + "locals()['.args'].pop(0)"
-            else:
-                lines += temp_lines
-                line += temp_final_line
-        ## unpacking ##
+                lineno += 1
+                lines += self._custom_adjustment(line, lineno)
+                ## make a linetable if using a running generator ##
+                if running and char == "\n":
+                    self._internals["linetable"] += [lineno]
+        ## start a new line ##
+        if char in ":;":
+            # just in case
+            indented, line = True, " " * indentation
         else:
-            ## variable ##
-            if line.strip().isalnum() or named:
-                final_line += line
-            ## expression ##
-            else:
-                final_line += "locals()['.args'].pop(0)"
-                lines += unpack_adjust(line.strip())
-            line = ""
-    if operator:
-        final_line += operator
-    return line, lines, final_line, named
+            indented, line = False, ""
+        return index, char, lineno, lines, line, indented, indentation
 
+    def _block_adjust(
+        self,
+        current_lines: list[str],
+        new_lines: list[str],
+        final_line: str,
+        lineno: int,
+    ) -> list[str]:
+        """
+        Checks if lines that were adjusted because of value yields
+        were in a block statement and therefore needs adjusting
+        """
+        ## make sure the lines are adjusted properly ##
+        final_lines = [self._custom_adjustment(line, lineno) for line in final_lines]
+        check = final_line[get_indent(final_line) :].startswith
+        ## the end of the loop needs to be appended with the new_lines ##
+        if check("while"):
+            self._internals["jump_stack_adjuster"] += [lineno, new_lines]
+        ## needs to indent itself and all other lines until the end of the block ##
+        elif check("elif"):
+            number_of_indents = get_indent(final_line)
+            final_line = (
+                " " * (number_of_indents + 4)
+                + final_line[
+                    number_of_indents + 2 :
+                ]  ## +4 to encapsulate in an else statement +2 to make it an 'if' statement ##
+            )
+            return (
+                current_lines
+                + [" " * number_of_indents + "else:"]
+                + indent_lines(new_lines)
+                + [final_line]
+            )
+        elif check("except"):
+            return except_adjust(current_lines, new_lines, final_line)
+        return current_lines + new_lines + [final_line]
 
-def unpack(
-    line: str = empty_generator(),
-    source_iter: Iterable = empty_generator(),
-    unwrapping: bool = False,
-    named: bool = False,
-) -> tuple[list[str], str, int]:
-    """
-    Unpacks value yields from a line into a
-    list of lines going towards its right side
-    """
-    line_iter = chain(enumerate(line), source_iter)
-    (
-        depth,
-        depth_total,
-        end_index,
-        space,
-        lines,
-        bracket,
-        ID,
-        line,
-        final_line,
-        prev,
-        indented,
-        operator,
-        bracket_index,
-    ) = (0, 0, 0, 0, [], "", "", "", "", (0, 0, ""), False, 0, None)
-    for end_index, char in line_iter:
-        ## record the source for string_collector_proxy (there might be better ways of doing this) ##
-        ## collect strings and add to the lines ##
-        if char == "'" or char == '"':
-            temp_line, prev, temp_lines = string_collector_proxy(
-                end_index, char, prev, line_iter, line, True
+    def _string_collector_adjust(
+        self,
+        index: int,
+        char: str,
+        prev: tuple[int, int, str],
+        source_iter: Iterable,
+        line: str,
+        source: str,
+        lines: list[str],
+    ) -> tuple[str, int, list[str]]:
+        """Adjust the string collector in case of any value yields in the f-strings"""
+        string_collected, prev, new_lines = string_collector_proxy(
+            index, char, prev, source_iter, line, source
+        )
+        if new_lines:
+            lines_start, line_start, lines_end, line_end = (
+                unpack(line)[:-1],
+                unpack(source_iter=source_iter)[:-1],
             )
-            line += temp_line
-            lines += temp_lines
-        ## makes the line singly spaced while retaining the indentation ##
-        elif char == " ":
-            line, space, indented = singly_space(end_index, char, line, space, indented)
-        ## dictionary assignment ##
-        elif char == "[" and prev[-1] not in (" ", ""):
-            line, lines, final_line, named = update_lines(
-                line + char, lines, final_line, named, line_iter
+            final_lines, final_line = (
+                lines_start + new_lines + lines_end,
+                line_start + string_collected + line_end,
             )
-        elif char == "\\":
-            skip_line_continuation(line_iter, line, end_index)
-            if space + 1 != end_index:
-                line += " "
-                space = end_index
-        ## splitting operators ##
-        elif char in operators:
-            ## since we can have i.e. ** or %= etc. ##
-            if end_index - 1 != operator:
-                line, lines, final_line, named = update_lines(
-                    line, lines, final_line, named, operator=char
+            return "", prev, self._block_adjust(lines, final_lines, final_line)
+        return string_collected, prev, lines
+
+    def _clean_source_lines(self, running: bool = False) -> list[str]:
+        """
+        source: str
+
+        returns source_lines: list[str],return_linenos: list[int]
+
+        1. fixes any indentation issues (when ';' is used) and skips empty lines
+        2. split on "\n", ";", and ":"
+        3. join up the line continuations i.e. "\ ... " will be skipped
+
+        additionally, custom_adjustment will be called on each line formation as well
+
+        Note:
+        jump_positions: are the fixed list of (lineno,end_lineno) for the loops (for and while)
+        jump_stack: jump_positions currently being recorded (gets popped into jump_positions once
+                     the reference indent has been met or lower for the next line that does so)
+                     it records a tuple of (reference_indent,jump_position_index)
+        """
+        ## for loop adjustments ##
+        (
+            self._internals["jump_positions"],
+            self._internals["jump_stack"],
+            self._internals["jump_stack_adjuster"],
+            lineno,
+        ) = (
+            [],
+            [],
+            [],
+            0,
+        )
+        ## setup source as an iterator and making sure the first indentation's correct ##
+        source = skip_source_definition(self._internals["source"])
+        ## we need to make sure the source is saved for skipping for line continuations ##
+        source = source[get_indent(source) :]
+        source_iter = enumerate(source)
+        ID, depth, line, lines, indented, space, indentation, prev = (
+            "",
+            0,
+            " " * 4,
+            [],
+            False,
+            0,
+            4,
+            (0, 0, ""),
+        )
+        ## enumerate since I want the loop to use an iterator but the
+        ## index is needed to retain it for when it's used on get_indent
+        for index, char in source_iter:
+            ## collect strings ##
+            if char == "'" or char == '"':
+                line, prev, lines = self._string_collector_adjust(
+                    index, char, prev, source_iter, line, source, lines
                 )
-            operator = end_index
-        elif depth == 0 and char in "#:;\n":  ## split and break condition ##
-            lines += [line]
-            break
-        elif char == ":":  ## must be a named expression if depth is not zero ##
-            line, lines, final_line, named = named_adjust(
-                line, lines, final_line, line_iter, ID
-            )
-            ## since we're going to skip some chars ##
-            ID, prev = "", prev[:-1] + (char,)
-        else:
-            ## record the current depth ##
-            if char in "([{":
-                depth_total += 1
-                bracket = char
-            elif char in ")}]":
-                depth_total -= 1
-                if unwrapping and depth_total < 0 or char != inverse_bracket(bracket):
-                    line += char
-                    break
-            if char == "(":
-                depth += 1
-                ## the index is in relation to the current line ##
-                bracket_index = len(line)
-            elif char == ")":
-                depth -= 1
-            ## check for unwrapping/updating ##
-            if char.isalnum():
-                ## in case of ... ... (otherwise you keep appending the ID) ##
-                if space + 1 == end_index:
-                    ID = ""
-                ID += char
-                if depth and ID == "yield":  ## unwrapping ##
-                    ## what should happen when we unwrap? ##
-                    ## go from the last bracket onwards for the replacement ##
-                    line, lines, final_line, named = update_lines(
+            ## makes the line singly spaced while retaining the indentation ##
+            elif char == " ":
+                line, space, indented = singly_space(index, char, line, space, indented)
+            ## join everything after the line continuation until the next \n or ; ##
+            elif char == "\\":
+                skip_line_continuation(source_iter, source, index)
+                ## in case of a line continuation without a space before or after ##
+                if space + 1 != index:
+                    line += " "
+                    space = index
+            ## create new line ##
+            elif char in "#\n;:":
+                ## 'space' is important (otherwise we get more indents than necessary) ##
+                space, char, lineno, lines, line, indented, indentation = (
+                    self._append_line(
+                        source,
+                        source_iter,
+                        running,
                         line,
                         lines,
-                        final_line,
-                        named,
-                        line_iter,
-                        bracket_index,
-                        yielding=True,
+                        lineno,
+                        indentation,
                     )
-                    ID, prev, bracket_index = "", prev[:-1] + (char,), None
-                    ## since the unwrapping will accumulate up to the next bracket this ##
-                    ## will go unrecorded on this stack frame recieving but recorded and ##
-                    ## garbage collected on the recursed stack frame used on unwrapping ##
-                    depth -= 1
-                    depth_total -= 1
-                    continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
-                elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
-                    line, lines, final_line, named = update_lines(
-                        line, lines, final_line, named, operator=ID
-                    )
-                    ID, prev = "", prev[:-1] + (char,)
-                    continue
+                )
+                depth, ID = 0, ""
             else:
-                ID = ""
-            line += char
-            prev = prev[:-1] + (char,)
-    if line:
-        final_line += line
-    return lines, final_line, end_index
+                line += char
+                ## detect value yields [yield] and {yield} is not possible only (yield) ##
+                depth = update_depth(depth, char)
+                if char == "=":  ## '... = yield ...' and '... = yield from ...'
+                    depth += 1
+                if depth and char.isalnum():
+                    ## in case of ... ... (otherwise you keep appending the ID) ##
+                    if space + 1 == index:
+                        ID = ""
+                    ID += char
+                    if ID == "yield":
+                        ## how is this getting custom adjusted? - each line has to be checked and adjusted ##
+                        temp, line, lines = (
+                            len(lines),
+                            "",
+                            self._block_adjust(lines, *unpack(line, source_iter)[:-1]),
+                        )
+                        lineno += 1
+                        if running:
+                            self._internals["linetable"] += [lineno] * (
+                                len(lines) - temp
+                            )
+                        depth, ID = 0, ""
+                else:
+                    ID = ""
+        ## in case you get a for loop at the end and you haven't got the end jump_position ##
+        ## then you just pop them all off as being the same end_lineno ##
+        lines = self._update_jump_positions(lines, lineno)
+        ## jump_stack is no longer needed ##
+        del self._internals["jump_stack"], self._internals["jump_stack_adjuster"]
+        return lines
 
+    def _create_state(self) -> None:
+        """
+        creates a section of modified source code to be used in a
+        function to act as a generators state
 
-def collect_definition(
-    start_index: int,
-    lines: list[str],
-    lineno: int,
-    source: str,
-    source_iter: Iterable,
-    reference_indent: int,
-) -> tuple[int, str, int, list[str]]:
-    """
-    Collects a block of code from source, specifically a
-    definition block in the case of this modules use case
-    """
-    indent = reference_indent + 1
-    while reference_indent < indent:
-        ## we're not specific about formatting the definitions ##
-        ## we just need to make sure to include them ##
-        for end_index, char in source_iter:
-            ## newline ##
-            if char == "\n":
-                break
-        ## add the line and get the indentation to check if continuing ##
-        lineno += 1
-        lines += [source[start_index:end_index]]
-        indent = get_indent(source[end_index + 1 :])
-        start_index = end_index + 1
-    if char != "\n":
-        lines[-1] += char
-    ## make sure to return the index and char for the indentation ##
-    return end_index, char, lineno, lines
+        The approach is as follows:
 
+        Use the entire source code, reducing from the last lineno.
+        Adjust the current source code reduction further out of
+        control flow statements, loops, etc. then set the adjusted
+        source code as the generators state
 
-def skip(iter_val: Iterable, n: int) -> None:
-    """Skips the next n iterations in a for loop"""
-    for _ in range(n):
-        next(iter_val)
+        Adjusts source code about control flow statements
+        so that it can be used in a single directional flow
+        as the generators states
 
-
-## Note: line.startswith("except") will need to put a try statement in front (if it's not there e.g. is less than the minimum indent) ##
-## match case default was introduced in python 3.10
-if version_info < (3, 10):
-
-    def is_alternative_statement(line: str) -> bool:
-        return line.startswith("elif") or line.startswith("else")
-
-else:
-
-    def is_alternative_statement(line: str) -> bool:
-        return (
-            line.startswith("elif")
-            or line.startswith("else")
-            or line.startswith("case")
-            or line.startswith("default")
-        )
-
-
-is_alternative_statement.__doc__ = "Checks if a line is an alternative statement"
-
-
-def is_definition(line: str) -> bool:
-    """Checks if a line is a definition"""
-    return (
-        line.startswith("def ")
-        or line.startswith("async def ")
-        or line.startswith("class ")
-        or line.startswith("async class ")
-    )
-
-
-########################
-### code adjustments ###
-########################
-def skip_alternative_statements(
-    line_iter: Iterable, current_min: int
-) -> tuple[int, str, int]:
-    """Skips all alternative statements for the control flow adjustment"""
-    for index, line in line_iter:
-        temp_indent = get_indent(line)
-        temp_line = line[temp_indent:]
-        if temp_indent <= current_min and not is_alternative_statement(temp_line):
-            break
-    return index, line, temp_indent
-
-
-def control_flow_adjust(
-    lines: list[str], indexes: list[int], reference_indent: int = 4
-) -> tuple[list[str], list[int]]:
-    """
-    removes unreachable control flow blocks that
-    will get in the way of the generators state
-
-    Note: it assumes that the line is cleaned,
-    in particular, that it starts with an
-    indentation of 4 (4 because we're in a function)
-
-    It will also add 'try:' when there's an
-    'except' line on the next minimum indent
-    """
-    new_lines, current_min, line_iter = [], get_indent(lines[0]), enumerate(lines)
-    for index, line in line_iter:
-        temp_indent = get_indent(line)
-        temp_line = line[temp_indent:]
-        if temp_indent < current_min:
-            ## skip over all alternative statements until it's not an alternative statement ##
-            ## and the indent is back to the current min ##
-            if is_alternative_statement(temp_line):
-                end_index, line, temp_indent = skip_alternative_statements(
-                    line_iter, temp_indent
-                )
-                ## remove from the linetable and update the index ##
-                del indexes[index:end_index]
-                index = end_index
-            current_min = temp_indent
-            if temp_line.startswith("except"):
-                new_lines = (
-                    [" " * 4 + "try:"]
-                    + indent_lines(new_lines)
-                    + [
-                        line[current_min - 4 :]
-                    ]  ## -4 since we're in a function for the code execution ##
-                )
-                ## add to the linetable ##
-                indexes = [indexes[0]] + indexes
-        ## add the line (adjust if indentation is not reference_indent) ##
-        if current_min != reference_indent:
-            ## adjust using the current_min until it's the same as reference_indent ##
-            new_lines += [line[current_min - 4 :]]
-        else:
-            return (
-                new_lines + indent_lines(lines[index:], 4 - reference_indent),
-                indexes,
+        to handle nesting of loops it will simply join
+        all the loops together and run them where the
+        outermost nesting will be the final section that
+        also contains the rest of the source lines as well
+        """
+        loops = get_loops(self._internals["lineno"], self._internals["jump_positions"])
+        self._internals["loops"] = len(loops)
+        temp_lineno = self._internals["lineno"] - 1  ## for 0 based indexing ##
+        if loops:
+            start_pos, end_pos = loops.pop()
+            ## adjustment ##
+            blocks, indexes = control_flow_adjust(
+                self._internals["source_lines"][temp_lineno:end_pos],
+                list(range(temp_lineno, end_pos)),
+                get_indent(self._internals["source_lines"][start_pos]),
             )
-    return new_lines, indexes
-
-
-def indent_lines(lines: list[str], indent: int = 4) -> list[str]:
-    """indents a list of strings acting as lines"""
-    if indent > 0:
-        return [" " * indent + line for line in lines]
-    if indent < 0:
-        indent = -indent
-        return [line[indent:] for line in lines]
-    return lines
-
-
-def extract_iter(line: str, number_of_indents: int) -> str:
-    """
-    Extracts the iterator from a for loop
-
-    e.g. we extract the second ... in:
-    for ... in ...:
-    """
-    depth, ID, line_iter = 0, "", enumerate(line[number_of_indents:], number_of_indents)
-    for index, char in line_iter:
-        ## the 'in' key word must be avoided in all forms of loop comprehension ##
-        depth = update_depth(depth, char, ("([{", ")]}"))
-        if char.isalnum() and depth == 0:
-            ID += char
-            if ID == "in":
-                if next(line_iter)[1] == " ":
-                    break
-                ID = ""
-        else:
-            ID = ""
-    index += (
-        2  ## adjust by 2 to skip the 'n' and ' ' in 'in ' that would've been deduced ##
-    )
-    iterator = line[index:-1]  ## -1 to remove the end colon ##
-    ## remove the leading and trailing whitespace and then it should be a variable name ##
-    if iterator.strip().isalnum():
-        return line
-    return line[:index] + "locals()['.%s']:" % number_of_indents
-
-
-def iter_adjust(outer_loop: list[str]) -> tuple[bool, list[str]]:
-    """adjust an outer loop with its tracked iterator if it uses one"""
-    flag, line = False, outer_loop[0]
-    number_of_indents = get_indent(line)
-    if line[number_of_indents:].startswith("for "):
-        outer_loop[0] = extract_iter(line, number_of_indents)
-        flag = True
-    return flag, outer_loop
-
-
-def skip_blocks(
-    new_lines: list[str], line_iter: Iterable, index: int, line: str
-) -> None:
-    """
-    Skips over for/while and definition blocks
-    and removes indentation from the line
-    """
-    indent = get_indent(line)
-    temp_line = line[indent:]
-    while (
-        temp_line.startswith("for ")
-        or temp_line.startswith("while ")
-        or is_definition(temp_line)
-    ):
-        for index, line in line_iter:
-            temp_indent = get_indent(line)
-            if temp_indent <= indent:
-                break
-            new_lines += [line]
-        ## continue back ##
-        indent = temp_indent
-        temp_line = line[indent:]
-    return new_lines, temp_line, index
-
-
-def loop_adjust(
-    lines: list[str], indexes: list[int], outer_loop: list[str], *pos: tuple[int, int]
-) -> tuple[list[str], list[int]]:
-    """
-    Formats the current code block
-    being executed such that all the
-    continue -> break;
-    break -> empty the current iter; break;
-
-    This allows us to use the control
-    flow statements by implementing a
-    simple for loop and if statement
-    to finish the current loop
-    """
-    new_lines, flag, line_iter = [], False, enumerate(lines)
-    for index, line in line_iter:
-        ## skip over for/while and definition blocks ##
-        ## since these are complete blocks of their own ##
-        ## and don't need to be adjusted ##
-        new_lines, temp_line, index = skip_blocks(new_lines, line_iter, index, line)
-        ## adjustments ##
-        if temp_line.startswith("continue"):
-            flag = True
-            new_lines += ["break"]
-        elif temp_line.startswith("break"):
-            flag = True
-            new_lines += ["locals()['.continue']=False", "break"]
-            indexes = indexes[index:] + indexes[index] + indexes[:index]
-        else:
-            new_lines += [line]
-    ## adjust it in case it's an iterator ##
-    flag, outer_loop = iter_adjust(
-        outer_loop
-    )  ## why does this get to dicate the 'flag' ?? ##
-    if flag:
-        ## the loop adjust itself ##
-        return [
-            "    locals()['.continue']=True",
-            "    for _ in (None,):",
-        ] + indent_lines(new_lines, 8 - get_indent(new_lines[0])) + [
-            "    if locals()['.continue']:"
-        ] + indent_lines(
-            outer_loop,
-            8
-            - get_indent(
-                outer_loop[0]
-            ),  ## add the outer loop (dedented so that it works) ##
-        ), [
-            indexes[0],
-            indexes[
-                0
-            ],  ## add all the indexes which are also adjusted for the changes ##
-        ] + indexes + [
-            pos[0]
-        ] + list(
-            range(*pos)
+            blocks, indexes = loop_adjust(
+                blocks,
+                indexes,
+                self._internals["source_lines"][start_pos:end_pos],
+                *(start_pos, end_pos)
+            )
+            self._internals["linetable"] = indexes
+            ## add all the outer loops ##
+            for start_pos, end_pos in loops[::-1]:
+                flag, block = iter_adjust(
+                    self._internals["source_lines"][start_pos:end_pos]
+                )
+                blocks += indent_lines(block, 4 - get_indent(block[0]))
+                if flag:
+                    self._internals["linetable"] += [start_pos]
+                self._internals["linetable"] += list(range(start_pos, end_pos))
+            self._internals["state"] = "\n".join(
+                blocks + self._internals["source_lines"][end_pos:]
+            )
+            return
+        block, self._internals["linetable"] = control_flow_adjust(
+            self._internals["source_lines"][temp_lineno:],
+            list(range(temp_lineno, len(self._internals["source_lines"]))),
         )
-    ## If it doesn't need any adjustments e.g. to continue and break statements ##
-    ## then we just dedent the current lines and add the outer loop ##
-    return indent_lines(lines, 4 - get_indent(lines[0])) + indent_lines(
-        outer_loop, 4 - get_indent(outer_loop[0])
-    ), indexes + list(range(*pos))
+        self._internals["state"] = "\n".join(block)
 
+    def _locals(self) -> dict:
+        """
+        proxy to replace locals within 'next_state' within
+        __next__ while still retaining the same functionality
+        """
+        return self._internals["frame"].f_locals
 
-def yield_adjust(temp_line: str, indent: str) -> list[str]:
-    """
-    temp_line: line trimmed at the start by its indent
-    indent: the current indent in string form
-    """
-    if temp_line.startswith("yield from "):
-        return [
-            indent
-            + "locals()['.yieldfrom']="
-            + temp_line[11:],  ## 11 to get past the yield from
-            indent + "for locals()['.i'] in locals()['.yieldfrom']:",
-            indent + "    return locals()['.i']",
-        ]
-    if temp_line.startswith("yield "):
-        return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
-
-
-def get_loops(
-    lineno: int, jump_positions: list[tuple[int, int]]
-) -> list[tuple[int, int]]:
-    """
-    returns a list of tuples (start_lineno,end_lineno) for the loop
-    positions in the source code that encapsulate the current lineno
-    """
-    ## get the outer loops that contian the current lineno ##
-    loops = []
-    ## jump_positions are in the form (start_lineno,end_lineno) ##
-    for pos in jump_positions:
-
-        ## importantly we go from start to finish to capture nesting loops ##
-        ## make sure the lineno is contained within the position for a ##
-        ## loop adjustment and because the jump positions are ordered we ##
-        ## can also break when the start lineno is beyond the current lineno ##
-        if lineno < pos[0]:
-            break
-        if lineno < pos[1]:
-            ## subtract 1 for 0 based indexing; it's only got one specific ##
-            ## use case that requires it to be an array accessor ##
-            loops += [(pos[0] - 1, pos[1] - 1)]
-    return loops
-
-
-def expr_getsource(FUNC: Any) -> str:
-    """
-    Uses co_positions or otherwise goes through the source code
-    extracting expressions until a match is found on a code object
-    basis to get the source
-
-    Note:
-    the extractor should return a string and if using a
-    lambda extractor it will take in a string input but
-    if using a generator expression extractor it will
-    take a list instead
-    """
-    code_obj = getcode(FUNC)
-    if code_obj.co_name == "<lambda>":
-        ## here source is a : str
-        source = getsource(code_obj)
-        extractor = extract_lambda
-    else:
-        lineno = getframe(FUNC).f_lineno - 1
-        ## here source is a : list[str]
-        source = findsource(code_obj)[0][lineno:]
-        extractor = extract_genexpr
-    ## get the rest of the source ##
-    if (3, 11) <= version_info:
-        # start_line, end_line, start_col, end_col
-        positions = code_obj.co_positions()
-        is_source_list = isinstance(source, list)
-        pos = next(positions, (None, None, None))[1:]
-        current_min, current_max = pos[2:]
-        if is_source_list:
-            current_max_lineno = pos[1]
-        for pos in positions:
-            if pos[-2] and pos[-2] < current_min:
-                current_min = pos[-2]
-            if pos[-1] and pos[-1] > current_max:
-                current_min = pos[-1]
-            if is_source_list and pos[1] and pos[1] > current_max_lineno:
-                current_max_lineno = pos[1]
-        if is_source_list:
-            source = "\n".join(source[: current_max_lineno + 1])
-        return source[current_min:current_max]
-    ## otherwise match with generator expressions in the original source to get the source code ##
-    attrs = (
-        "co_freevars",
-        "co_cellvars",
-        "co_firstlineno",
-        "co_nlocals",
-        "co_stacksize",
-        "co_flags",
-        "co_code",
-        "co_consts",
-        "co_names",
-        "co_varnames",
-        "co_name",
-    )
-    if (3, 3) <= version_info:
-        attrs += ("co_qualname",)
-    if isinstance(source, list):
-        source = "\n".join(source)
-    for col_offset, end_col_offset in extractor(source):
-        try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
-            ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
-            temp_code = getcode(eval(source[col_offset:end_col_offset]))
-            if attr_cmp(temp_code, code_obj, attrs):
-                return source
-        except:
-            pass
-    raise Exception("No matches to the original source code found")
-
-
-###############
-### genexpr ###
-###############
-def extract_genexpr(source: str) -> GeneratorType:
-    """Extracts each generator expression from a list of the source code lines"""
-    ID, depth, prev = "", 0, (0, 0, "")
-    source_iter = enumerate(source)
-    for index, char in source_iter:
-        ## skip all strings if not in genexpr
-        if char == "'" or char == '"':
-            _, prev = string_collector_proxy(index, char, prev, source_iter)
-            continue
-        ## detect brackets
-        elif char == "(":
-            temp_col_offset = index
-            depth += 1
-        elif char == ")":
-            if genexpr_depth and depth == genexpr_depth:
-                yield col_offset, index + 1
-                genexpr_depth = None
-            depth -= 1
-            continue
-        if depth and genexpr_depth is not None:
-            ## record ID ##
-            if char.isalnum():
-                ID += char
-                ## detect a for loop
-                if ID == "for":
-                    ID, genexpr_depth, col_offset = "", depth, temp_col_offset
-            else:
-                ID = ""
-
-
-##############
-### lambda ###
-##############
-def extract_lambda(source_code: str) -> GeneratorType:
-    """Extracts each lambda expression from the source code string"""
-    ID, lambda_depth, depth, prev = "", None, 0, (0, 0, "")
-    source_code = enumerate(source_code)
-    for index, char in source_code:
-        ## skip all strings (we only want the offsets)
-        if char == "'" or char == '"':
-            _, prev = string_collector_proxy(index, char, prev, source_code)
-            continue
-        ## detect brackets (lambda can be in all 3 types of brackets) ##
-        depth = update_depth(depth, char, ("([{", ")]}"))
-        ## record source code ##
-        if lambda_depth:
-            # lambda_depth needed in case of brackets; depth+1 since depth would've got reduced by 1
-            if char == "\n;" or depth + 1 == lambda_depth:
-                yield col_offset, index + 1
-                lambda_depth = None
+    def _frame_init(self) -> str:
+        """
+        initializes the frame with the current
+        states variables and the _locals proxy
+        """
+        assign = []
+        for key in self._internals["frame"].f_locals:
+            if isinstance(key, str) and key.isalnum() and key != "locals":
+                assign += [" " * 4 + "%s=locals()[%s]" % (key, key)]
+        if assign:
+            assign = "\n" + "\n".join(assign)
         else:
-            ## record ID ##
-            if char.isalnum():
-                ID += char
-                ## detect a lambda
-                if ID == "lambda" and depth <= 1:
-                    ID, lambda_depth, col_offset = "", depth, index - 6
+            assign = ""
+        ## try not to use variables here (otherwise it can mess with the state) ##
+        return (
+            self._internals["version"]
+            + """def next_state():
+    locals=currentframe().f_back.f_locals['self']._locals%s
+    currentframe().f_back.f_locals['.frame']=currentframe()
+"""
+            % assign
+        )
+
+    def _init_states(self) -> GeneratorType:
+        """Initializes the state generation as a generator"""
+        ## api setup ##
+        prefix = self._internals["prefix"]
+        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+            setattr(self, prefix + key, self._internals[key])
+        del prefix
+        ## since self._internals["state"] starts as 'None' ##
+        yield self._create_state()
+        ## if no state or then it must be EOF, but, if we're in a loop then we need to finish it ##
+        while (
+            self._internals["state"]
+            and self._internals["linetable"] > self._internals["frame"].f_lineno
+        ) or self._internals["loops"]:
+            yield self._create_state()
+
+    def __init__(
+        self,
+        FUNC: FunctionType | GeneratorType | CodeType | str = None,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Takes in a function/generator or its source code as the first arguement
+
+        If FUNC=None it will simply initialize as without any attributes, this
+        is for the __setstate__ method in Pickler._copier use case
+
+        Note:
+         - gi_running: is the generator currently being executed
+         - gi_suspended: is the generator currently paused e.g. state is saved
+
+        Also, all attributes are set internally first and then exposed to the api.
+        The interals are accessible via the _internals dictionary
+        """
+        ## __setstate__ from Pickler._copier ##
+        if FUNC:
+            ## needed to identify certain attributes ##
+            prefix = self._internals["prefix"]
+            ## running generator ##
+            if hasattr(FUNC, prefix + "code"):
+                self._internals["linetable"] = []
+                self._internals["frame"] = frame(getframe(FUNC))
+                ## co_name is readonly e.g. can't be changed by user ##
+                if FUNC.gi_code.co_name == "<genexpr>":
+                    self._internals["source"] = expr_getsource(FUNC)
+                    self._internals["source_lines"] = unpack_genexpr(
+                        self._internals["source"]
+                    )
+                    ## change the offsets into indents ##
+                    self._internals["frame"].f_locals = offset_adjust(
+                        self._internals["frame"].f_locals
+                    )
+                else:
+                    self._internals["source"] = dedent(getsource(getcode(FUNC)))
+                    self._internals["source_lines"] = self._clean_source_lines(True)
+                    self._internals["frame"] = getframe(FUNC)
+                    self._internals["lineno"] = self._internals["linetable"][
+                        self._internals["frame"].f_lineno - 1
+                    ] + lineno_adjust(self._internals["frame"])
+                self._internals["code"] = code(getcode(FUNC))
+                ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
+                if hasattr(FUNC, prefix + "yieldfrom"):
+                    self._internals["yieldfrom"] = getattr(FUNC, prefix + "yieldfrom")
+                else:
+                    self._internals["yieldfrom"] = None
+                self._internals["suspended"] = True
+            ## uninitialized generator ##
             else:
-                ID = ""
-    ## in case of a current match ending ##
-    if lambda_depth:
-        yield col_offset, None
+                ## generator function ##
+                if isinstance(FUNC, FunctionType):
+                    if FUNC.__code__.co_name == "<lambda>":
+                        self._internals["source"] = expr_getsource(FUNC)
+                    else:
+                        self._internals["source"] = dedent(getsource(FUNC))
+                    self._internals["code"] = code(FUNC.__code__)
+                ## source code string ##
+                elif isinstance(FUNC, str):
+                    self._internals["source"] = FUNC
+                    self._internals["code"] = code(compile(FUNC, "", "eval"))
+                ## code object
+                elif isinstance(FUNC, CodeType):
+                    self._internals["source"] = getsource(FUNC)
+                    self._internals["code"] = FUNC
+                else:
+                    raise TypeError(
+                        "type '%s' is an invalid initializer for a Generator"
+                        % type(FUNC)
+                    )
+                ## make sure the source code is standardized and usable by this generator ##
+                self._internals["source_lines"] = self._clean_source_lines()
+                ## create the states ##
+                self._internals["frame"] = frame()
+                self._internals["suspended"] = False
+                self._internals["yieldfrom"] = None
+                ## modified every time __next__ is called; always start at line 1 ##
+                self._internals["lineno"] = 1
+            self._internals["running"] = False
+            self._internals["state"] = None
+            self._internals["state_generator"] = self._init_states()
+            if overwrite:  ## this might not actually work??
+                currentframe().f_back.f_locals[getcode(FUNC).co_name] = self
 
+    def __len__(self) -> int:
+        """
+        Gets the number of states for generators with
+        yield statements indented exactly 4 spaces.
 
-def except_adjust(
-    current_lines: list[str], exception_lines: list[str], final_line: str
-) -> list[str]:
-    """
-    Checks if lines that were adjusted because of value yields
-    were in an except statement and therefore needs adjusting
-    """
-    ## except statement with its adjustments ##
-    indent = " " * 4
-    for index, line in enumerate(current_lines[::-1], start=1):
-        current_lines[-index] = indent + current_lines[-index]
-        reference_indent = get_indent(line)
-        if line[reference_indent].startswith("try"):
-            break
-    number_of_indents = reference_indent + 8
-    current_indent = " " * number_of_indents
-    return (
-        current_lines[:-index]
-        + [" " * reference_indent + "try:"]
-        + current_lines[-index:]
-        + [
-            current_indent[:-4] + "except:",
-            current_indent + "locals()['.error'] = exc_info()[1]",
-        ]
-        + indent_lines(exception_lines, number_of_indents)
-        + [current_indent + "raise locals()['.error']"]
-        + [final_line]
-    )
+        In general, you shouldn't be able to get the length
+        of a generator function, but if it's very predictably
+        defined then you can.
+        """
 
+        def number_of_yields():
+            """Gets the number of yields that are indented exactly 4 spaces"""
+            for line in self._internals["state"]:
+                indents = get_indent(line)
+                temp = line[indents:]
+                if temp.startswith("yield") and not temp.startswith("yield from"):
+                    if indents > 4:
+                        raise TypeError(
+                            "__len__ is only available where all yield statements are indented exactly 4 spaces"
+                        )
+                    yield 1
 
-def singly_space(index: int, char: str, line: str, space: int, indented: bool) -> str:
-    """For ensuring all spaces in a line are single spaces"""
-    if indented:
-        if space + 1 != index:
-            line += char
-    else:
-        line += char
-        if space + 1 != index:
-            indented = True
-    return line, index, indented
+        return sum(number_of_yields())
+
+    def __iter__(self) -> GeneratorType:
+        """Converts the generator function into an iterable"""
+        while True:
+            try:
+                yield next(self)
+            except StopIteration:
+                break
+
+    def __next__(self) -> Any:
+        """updates the current state and returns the result"""
+        # set the next state and setup the function; it will raise a StopIteration for us
+        next(self._internals["state_generator"])
+        ## update with the new state and get the frame ##
+        exec(self._frame_init() + self._internals["state"], globals(), locals())
+        self._internals["running"] = True
+        ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
+        try:
+            return locals()["next_state"]()
+        finally:
+            ## update the line position and frame ##
+            self._internals["running"] = False
+            ## update the frame ##
+            f_back = self._internals["frame"]
+            self._internals["frame"] = locals()[".frame"]
+            if self._internals["frame"]:
+                self._internals["frame"] = frame(self._internals["frame"])
+                ## remove locals from memory since it interferes with pickling ##
+                del self._internals["frame"].f_locals["locals"]
+                self._internals["frame"].f_back = f_back
+                ## update f_locals ##
+                if f_back:
+                    f_back.f_locals.update(self._internals["frame"].f_locals)
+                    self._internals["frame"].f_locals = f_back.f_locals
+                self._internals["frame"].f_locals[".send"] = None
+                self._internals["frame"].f_lineno = self._internals[
+                    "frame"
+                ].f_lineno - self.init.count("\n")
+                if (
+                    len(self._internals["linetable"])
+                    > self._internals["frame"].f_lineno
+                ):
+                    self._internals["lineno"] = (
+                        self._internals["linetable"][self._internals["frame"].f_lineno]
+                        + 1
+                    )  ## +1 to get the next lineno after returning ##
+                else:
+                    ## EOF ##
+                    self._internals["lineno"] = len(self._internals["source_lines"]) + 1
+
+    def send(self, arg: Any) -> Any:
+        """
+        Send takes exactly one arguement 'arg' that
+        is sent to the functions yield variable
+        """
+        if self._internals["lineno"] == 1:
+            raise TypeError("can't send non-None value to a just-started generator")
+        if self._internals["yieldfrom"]:
+            self._internals["yieldfrom"].send(arg)
+        else:
+            self._internals["frame"].f_locals[".send"] = arg
+            return next(self)
+
+    def close(self) -> None:
+        """Closes the generator clearing its frame, state_generator, and yieldfrom"""
+        self._internals.update(
+            {
+                "state_generator": empty_generator(),
+                "frame": None,
+                "running": False,
+                "suspended": False,
+                "yieldfrom": None,
+            }
+        )
+
+    def throw(self, exception: Exception) -> NoReturn:
+        """
+        Raises an exception from the last line in the
+        current state e.g. only from what has been
+        """
+        raise exception
+
+    def __setstate__(self, state: dict) -> None:
+        Pickler.__setstate__(self, state)
+        self._internals["state_generator"] = self.init_states()
+
+    def __instancecheck__(self, instance: object) -> bool:
+        return isinstance(instance, self._internals["type"] | type(self))
+
+    def __subclasscheck__(self, subclass: type) -> bool:
+        return issubclass(subclass, self._internals["type"] | type(self))
