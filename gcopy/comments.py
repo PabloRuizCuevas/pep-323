@@ -4,13 +4,14 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Finish fixing:
-     - Need to deal with value yields in block statements e.g. if, elif, for, while
-     - collect_string and collect_multiline_string for the f-string detection
-     - unpack
+     - unpack - fix ordering of list popping when doing recursion
      - get_instructions .positions needs implementing for versions < 3.11 if possible (might not be)
+     - lineno_adjust
+     - check track_iter and probably add more conditional checks?
 
     Needs checking:
-
+    - check all the documentation + docstrings
+    - f_back on frame needs checking
     - check lineno_adjust to ensure that it's robust, not sure if it works in all cases.
       It relies on a single line containing all the code, it might be possible that you
       can have multiple independent expressions in one line but I haven't checked. -
@@ -26,6 +27,10 @@ TODO:
 
     - check that the returns work now e.g. using next(self) and for i in self: ...
 
+
+    control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
+    need to test what happens when there are no lines e.g. empty lines or no state / EOF
+
     Expansion to other types of generators:
 
      - Add some async features to AsyncGenerator - will need to work out how I want to do the async stuff
@@ -33,10 +38,5 @@ TODO:
      - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
 
      - Maybe need to make an internal generator and then use this generally?
-
-2. write tests
-
-control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
-need to test what happens when there are no lines e.g. empty lines or no state / EOF
 
 """
