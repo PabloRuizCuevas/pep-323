@@ -7,7 +7,7 @@ def assert_cases(FUNC: FunctionType, *args) -> None:
         assert FUNC(arg)
 
 
-def test_depth() -> None:
+def test_update_depth() -> None:
     assert update_depth(0, "(") == 1
     assert update_depth(0, ")") == -1
 
@@ -63,6 +63,14 @@ def test_collect_string() -> None:
     next(source_iter)
     assert collect_string(source_iter, char, source) == (16, ['""'])
 
+    ## f-string ##
+    source = 'f"asdf{(yield 3)}"'
+    source_iter = enumerate(source)
+    next(source_iter)
+    index, char = next(source_iter)
+    # print(collect_string(source_iter, char, source[1:]))
+    # print(source)
+
 
 def test_collect_multiline_string() -> None:
     source = '"""hello world"""'
@@ -72,6 +80,8 @@ def test_collect_multiline_string() -> None:
         len(source) - 1,
         [source],
     )
+
+    ## f-string ##
 
 
 def test_string_collector_proxy(recursion: int = 1) -> None:
@@ -102,71 +112,114 @@ def test_update_lines() -> None:
     update_lines()
 
 
-# def test_unwrap() -> None:
-#     line = "yield ( yield 3+( next(j) ) ) )"
-#     lines, final_line, _, end_index = unwrap("", enumerate(line), [], "")
-#     answer = ["locals()['.args'] += [next(j)]",
-#               "return 3 + locals()['.args'].pop()","locals()['.args'] += [locals()['.send']]",
-#               "return locals()['.args'].pop()","locals()['.args'] += [locals()['.send']]"]
-#     # assert lines == answer
-#     # assert final_line == "locals()['.args'].pop())"
-#     # assert end_index == len(line) - 1
-#     print(lines,final_line,end_index)
-#     print(len(line)-1)
-
-
 def test_named_adjust():
     pass
 
 
 def test_unpack() -> None:
 
-    ## unpacking ##
+    test = lambda line: unpack("", enumerate(line))
 
-    line = "a = yield 3 = 5"
-    # lines, final_line, end_index = unpack("", enumerate(line))
-    # assert lines == [' yield 3 ']
-    assert unpack("", enumerate(line))[1] == "a = locals()['.args'].pop(0) =  5"
-    # assert end_index == len(line) - 1
+    ## unpacking ##
+    
+    # general unpacking #
+    # print(test("a = yield 3 *= 5"))
+    # assert test("a = yield 3 *= 5") == (
+    #     [
+    #         "return 3",
+    #         "locals()['.args'] += [locals()['.send']]"
+    #     ], 
+    #     "a =locals()['.args'].pop(0)= 5", 
+    #     14)
+    
+    # tuple unpacking #
+    assert test("a = (yield 3),(yield 5),(yield 7) = 5") == (
+    [
+     "return  3",
+     "locals()['.args'] += [locals()['.send']]",
+     "locals()['.args'] += [locals()['.args'].pop(0)]",
+     "return  5",
+     "locals()['.args'] += [locals()['.send']]", 
+     "locals()['.args'] += [locals()['.args'].pop(0)]", 
+     "return  7",
+     "locals()['.args'] += [locals()['.send']]",
+     "locals()['.args'] += [locals()['.args'].pop(0)]"
+     ],
+     "a =locals()['.args'].pop(0),locals()['.args'].pop(0),locals()['.args'].pop(0)= 5",
+     36)
 
     ## unwrapping ##
 
-    line = "a = yield    ( yield 3 ) = 5"
+    assert test("(yield 3)") == (['return  3', "locals()['.args'] += [locals()['.send']]"], "locals()['.args'].pop(0)", 5)
 
-    ## with named expression ##
+    assert test("(yield 3,(yield 5))") == (
+        [
+        "return  5",
+        "locals()['.args'] += [locals()['.send']]",
+        "return  3,locals()['.args'].pop(0)",
+        "locals()['.args'] += [locals()['.send']]"
+        ],
+        "locals()['.args'].pop(0)",
+        5)
 
-    line = "a = (b:=(c:=next(j)) ) = 5"
-    assert unpack("", enumerate(line))[1] == "a =  (b:=(c:=next(j)) ) =  5"
-    line = "a = (b:=next(j) ) = 5"
-    assert unpack("", enumerate(line))[1] == "a =  (b:=next(j) ) =  5"
-    line = "a = (b:=(yield 3) +a) = 5"
-    assert (
-        unpack("", enumerate(line))[1]
-        == "a =  (b:=(locals()['.args'].pop(0)  + a) =  5"
-    )
+    assert test("a = yield (     yield    (yield 3 )  ) = 5") == ([
+                "return  3", 
+                "locals()['.args'] += [locals()['.send']]", 
+                "return  locals()['.args'].pop(0)", 
+                "locals()['.args'] += [locals()['.send']]", 
+                "return locals()['.args'].pop(0)", 
+                "locals()['.args'] += [locals()['.send']]"
+                ],
+               "a =locals()['.args'].pop(0)= 5", 
+               41)
 
-    ####################################################
-    ############# works up to here #############
-    ####################################################
-    ## with f-string ##
+    # ## with named expression ##
+    assert test("a = (b:=(c:=next(j)) ) = 5") == ([], 'a = (b:=(c:=next(j)) ) = 5', 6)
+    
+    assert test("a = (b:=next(j) ) = 5") == ([], 'a = (b:=next(j) ) = 5', 20)
 
-    # line = "a = f'hi{yield 3}' = yield 3 = 5 = "
-    # print(unpack("", enumerate(line)))
-    # line = "a = f'hi{(yield 3),(yield (yield 3))}' = yield 3 = 5 = "
-    # print(unpack("", enumerate(line)))
+    assert test("a = (b:=(yield 3) +a) = 5") == (
+        [
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]"
+        ],
+        "a = (b:=locals()['.args'].pop(0) +a) = 5",
+        24)
 
-    # print(unpack("", enumerate(line)))
+    ## f-string ##
+
+    assert test("a = f'hi{(yield 3)}' = yield 3 = 5") == (
+        [
+        "return  3",
+        "locals()['.args'] += [locals()['.send']]",
+        "locals()['.args'] += [f'hi{locals()['.args'].pop(0)}']",
+        "return 3",
+        "locals()['.args'] += [locals()['.send']]"
+        ],
+        "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
+        33)
+    
+    ## needs fixing ##
+    assert test("a = f'hi{(yield 3),(yield (yield 3))}' = yield 3 = 5") == (
+              [
+                'return  3',
+                "locals()['.args'] += [locals()['.send']]",
+                "locals()['.args'] += [locals()['.args'].pop(0)]",
+                'return  3',
+                "locals()['.args'] += [locals()['.send']]",
+                "return  locals()['.args'].pop(0)", ### should be -1 ###
+                "locals()['.args'] += [locals()['.send']]",
+                "locals()['.args'] += [f'hi{locals()['.args'].pop(0),locals()['.args'].pop(0)}']",
+                'return 3', 
+                "locals()['.args'] += [locals()['.send']]"
+                ],
+                "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
+                51)
 
     ## with dictionary assignment ##
 
-    # line = "a = locals()['a'+next(j)] = f'hi{yield 3}' = yield 3 = 5 = "
-    # print(unpack("", enumerate(line)))
-    # line = "a = f'hi{(yield 3),(yield (yield 3))}' = yield 3 = 5 = "
-    # print(unpack("", enumerate(line)))
-
-
-def test_unpack_fstring() -> None:
-    pass
+    ## needs fixing for strings ##
+    # print(test("a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "))
 
 
 def test_collect_definition() -> None:
@@ -377,35 +430,22 @@ def test_singly_space() -> None:
     pass
 
 
-def test_collect_string_with_fstring() -> None:
-    pass
-
-
-def test_collect_multiline_string_with_fstring() -> None:
-    pass
-
-
-def test_string_collector_proxy_with_fstring() -> None:
-    pass
-
-
 ## Note: commented out tests are not working yet ##
 ## normal case tests ##
-test_depth()
+test_update_depth()
 test_get_indent()
 # test_lineno_adjust()
 # test_unpack_genexpr()
 test_skip_line_continuation()
 test_skip_source_definition()
-test_collect_string()
-test_collect_multiline_string()
-test_string_collector_proxy()
+# test_collect_string()
+# test_collect_multiline_string()
+# test_string_collector_proxy()
 # test_unpack_adjust()
 # test_update_lines()
 # test_named_adjust()
 test_unpack()
 # test_unpack_adjust()
-# test_unpack_fstring()
 test_collect_definition()
 test_skip()
 test_is_alternative_statement()
@@ -422,9 +462,5 @@ test_get_loops()
 # test_expr_getsource()
 # test_extract_genexpr()
 # test_extract_lambda()
-# test_singly_space()
 test_except_adjust()
-## special case tests ##
-# test_collect_string_with_fstring()
-# test_collect_multiline_string_with_fstring()
-# test_string_collector_proxy_with_fstring()
+# test_singly_space()
