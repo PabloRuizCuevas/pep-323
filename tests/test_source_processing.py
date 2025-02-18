@@ -117,109 +117,152 @@ def test_named_adjust():
 
 
 def test_unpack() -> None:
+    """
+    Note:
+
+    unpack_adjust
+    update_lines
+    named_adjust
+
+    may not all be separately tested as independent testable
+    units since they are tied closely in with the unpack
+    function using it in recursion, therefore, these will
+    get tested along with the unpack function.
+    """
 
     test = lambda line: unpack("", enumerate(line))
 
     ## unpacking ##
-    
+
     # general unpacking #
-    # print(test("a = yield 3 *= 5"))
-    # assert test("a = yield 3 *= 5") == (
-    #     [
-    #         "return 3",
-    #         "locals()['.args'] += [locals()['.send']]"
-    #     ], 
-    #     "a =locals()['.args'].pop(0)= 5", 
-    #     14)
-    
+    assert test("a = yield 3 *= 5 == 5") == (
+        ["return 3", "locals()['.args'] += [locals()['.send']]"],
+        "a =locals()['.args'].pop(0)*= 5 == 5",
+        20,
+    )
+
     # tuple unpacking #
     assert test("a = (yield 3),(yield 5),(yield 7) = 5") == (
-    [
-     "return  3",
-     "locals()['.args'] += [locals()['.send']]",
-     "locals()['.args'] += [locals()['.args'].pop(0)]",
-     "return  5",
-     "locals()['.args'] += [locals()['.send']]", 
-     "locals()['.args'] += [locals()['.args'].pop(0)]", 
-     "return  7",
-     "locals()['.args'] += [locals()['.send']]",
-     "locals()['.args'] += [locals()['.args'].pop(0)]"
-     ],
-     "a =locals()['.args'].pop(0),locals()['.args'].pop(0),locals()['.args'].pop(0)= 5",
-     36)
+        [
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "return  5",
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "return  7",
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [locals()['.args'].pop(0)]",
+        ],
+        "a =locals()['.args'].pop(0),locals()['.args'].pop(0),locals()['.args'].pop(0)= 5",
+        36,
+    )
 
     ## unwrapping ##
 
-    assert test("(yield 3)") == (['return  3', "locals()['.args'] += [locals()['.send']]"], "locals()['.args'].pop(0)", 5)
+    assert test("(yield 3)") == (
+        ["return  3", "locals()['.args'] += [locals()['.send']]"],
+        "locals()['.args'].pop(0)",
+        5,
+    )
 
     assert test("(yield 3,(yield 5))") == (
         [
-        "return  5",
-        "locals()['.args'] += [locals()['.send']]",
-        "return  3,locals()['.args'].pop(0)",
-        "locals()['.args'] += [locals()['.send']]"
+            "return  5",
+            "locals()['.args'] += [locals()['.send']]",
+            "return  3,locals()['.args'].pop(0)",
+            "locals()['.args'] += [locals()['.send']]",
         ],
         "locals()['.args'].pop(0)",
-        5)
+        5,
+    )
 
-    assert test("a = yield (     yield    (yield 3 )  ) = 5") == ([
-                "return  3", 
-                "locals()['.args'] += [locals()['.send']]", 
-                "return  locals()['.args'].pop(0)", 
-                "locals()['.args'] += [locals()['.send']]", 
-                "return locals()['.args'].pop(0)", 
-                "locals()['.args'] += [locals()['.send']]"
-                ],
-               "a =locals()['.args'].pop(0)= 5", 
-               41)
-
-    # ## with named expression ##
-    assert test("a = (b:=(c:=next(j)) ) = 5") == ([], 'a = (b:=(c:=next(j)) ) = 5', 6)
-    
-    assert test("a = (b:=next(j) ) = 5") == ([], 'a = (b:=next(j) ) = 5', 20)
-
-    assert test("a = (b:=(yield 3) +a) = 5") == (
+    assert test("a = yield (     yield    (yield 3 )  ) = 5") == (
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]"
+            "locals()['.args'] += [locals()['.send']]",
+            "return  locals()['.args'].pop(0)",
+            "locals()['.args'] += [locals()['.send']]",
+            "return locals()['.args'].pop(0)",
+            "locals()['.args'] += [locals()['.send']]",
         ],
+        "a =locals()['.args'].pop(0)= 5",
+        41,
+    )
+
+    assert test("(yield 3),(yield (yield 3))") == (
+        [
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "return  locals()['.args'].pop(0)",  ## should be -1 ##
+            "locals()['.args'] += [locals()['.send']]",
+        ],
+        "locals()['.args'].pop(0),locals()['.args'].pop(0)",
+        15,
+    )
+
+    ## with named expression ##
+
+    assert test("a = (b:=(c:=next(j)) ) = 5") == ([], "a = (b:=(c:=next(j)) ) = 5", 6)
+
+    assert test("a = (b:=next(j) ) = 5") == ([], "a = (b:=next(j) ) = 5", 20)
+
+    assert test("a = (b:=(yield 3) +a) = 5") == (
+        ["return  3", "locals()['.args'] += [locals()['.send']]"],
         "a = (b:=locals()['.args'].pop(0) +a) = 5",
-        24)
+        24,
+    )
 
     ## f-string ##
 
     assert test("a = f'hi{(yield 3)}' = yield 3 = 5") == (
         [
-        "return  3",
-        "locals()['.args'] += [locals()['.send']]",
-        "locals()['.args'] += [f'hi{locals()['.args'].pop(0)}']",
-        "return 3",
-        "locals()['.args'] += [locals()['.send']]"
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [f'hi{locals()['.args'].pop(0)}']",
+            "return 3",
+            "locals()['.args'] += [locals()['.send']]",
         ],
         "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
-        33)
-    
+        33,
+    )
+
     ## needs fixing ##
     assert test("a = f'hi{(yield 3),(yield (yield 3))}' = yield 3 = 5") == (
-              [
-                'return  3',
-                "locals()['.args'] += [locals()['.send']]",
-                "locals()['.args'] += [locals()['.args'].pop(0)]",
-                'return  3',
-                "locals()['.args'] += [locals()['.send']]",
-                "return  locals()['.args'].pop(0)", ### should be -1 ###
-                "locals()['.args'] += [locals()['.send']]",
-                "locals()['.args'] += [f'hi{locals()['.args'].pop(0),locals()['.args'].pop(0)}']",
-                'return 3', 
-                "locals()['.args'] += [locals()['.send']]"
-                ],
-                "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
-                51)
+        [
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "return  locals()['.args'].pop(0)",  ### should be -1 ###
+            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.args'] += [f'hi{locals()['.args'].pop(0),locals()['.args'].pop(0)}']",
+            "return 3",
+            "locals()['.args'] += [locals()['.send']]",
+        ],
+        "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
+        51,
+    )
 
     ## with dictionary assignment ##
-
-    ## needs fixing for strings ##
-    # print(test("a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "))
+    assert test(
+        "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
+    ) == (
+        [
+            "locals()['.args'] += ['a']",
+            "locals()['.args'] += [locals()[locals()['.args'].pop(0)+next(j)]]",
+            "locals()['.args'] += ['hi ']",
+            "locals()['.args'] += ['hi{(yield 3)} (yield 3)']",
+            "return 3",
+            "locals()['.args'] += [locals()['.send']]",
+        ],
+        "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)+locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5 = ",
+        75,
+    )
 
 
 def test_collect_definition() -> None:
@@ -441,11 +484,7 @@ test_skip_source_definition()
 # test_collect_string()
 # test_collect_multiline_string()
 # test_string_collector_proxy()
-# test_unpack_adjust()
-# test_update_lines()
-# test_named_adjust()
 test_unpack()
-# test_unpack_adjust()
 test_collect_definition()
 test_skip()
 test_is_alternative_statement()
