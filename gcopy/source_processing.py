@@ -163,7 +163,7 @@ def skip_source_definition(source: str) -> str:
 
 
 def collect_string(
-    source_iter: Iterable, reference: str, source: str = False
+    source_iter: Iterable, reference: str, source: str = None
 ) -> tuple[int, str | list[str]]:
     """
     Collects strings in an iterable assuming correct
@@ -198,7 +198,7 @@ def collect_string(
 
 
 def collect_multiline_string(
-    source_iter: Iterable, reference: str, source: str = False
+    source_iter: Iterable, reference: str, source: str = None
 ) -> tuple[int, str | list[str]]:
     """
     Collects multiline strings in an iterable assuming
@@ -247,21 +247,29 @@ def string_collector_proxy(
     prev: tuple[int, int, str],
     iterable: Iterable,
     line: str = None,
-    source: str = None,
+    f_string: bool = False,
 ) -> tuple[list[str], str, int]:
     """Proxy function for usage when collecting strings since this block of code gets used repeatedly"""
-    # get the string collector type ##
+    ## get the string collector type ##
     if prev[0] + 2 == prev[1] + 1 == index and prev[2] == char:
         string_collector, temp_index = collect_multiline_string, 3
     else:
         string_collector, temp_index = collect_string, 1
     ## determine if we need to look for f-strings in case of value yields ##
-    f_string = False
-    if source and version_info >= (3, 6) and source[index - temp_index] == "f":
-        f_string = source[index:]  ## use the source to determine the extractions ##
-    temp_index, temp_line = string_collector(iterable, char, f_string)
+    # print(line,temp_index,char,)
+    source = None
+    if (
+        f_string
+        and version_info >= (3, 6)
+        and len(line) >= temp_index
+        and line[-temp_index] == "f"
+    ):
+        ## use the source to determine the extractions ##
+        ## +1 to move one forwards from the 'f' ##
+        source = line[1 - temp_index :]
+    temp_index, temp_line = string_collector(iterable, char, source)
     prev = (index, temp_index, char)
-    if source:
+    if f_string:
         ## lines (adjustments) + line (string collected) ##
         return temp_line.pop(), prev, temp_line
     if line is not None:
@@ -278,7 +286,7 @@ def inverse_bracket(bracket: str) -> str:
         "}": "{",
         "[": "]",
         "]": "[",
-    }.get(bracket, None)
+    }[bracket]
 
 
 def named_adjust(
@@ -349,8 +357,7 @@ def update_lines(
             if yielding:
                 temp_final_line = "yield " + temp_final_line[:-1]
                 lines += temp_lines + unpack_adjust(temp_final_line.strip())
-                line = line[:bracket_index]
-                line += "locals()['.args'].pop(0) "
+                line = line[:bracket_index] + "locals()['.args'].pop(0)"
             else:
                 lines += temp_lines
                 line += temp_final_line
@@ -361,11 +368,11 @@ def update_lines(
                 final_line += line
             ## expression ##
             else:
-                final_line += "locals()['.args'].pop(0) "
+                final_line += "locals()['.args'].pop(0)"
                 lines += unpack_adjust(line.strip())
             line = ""
     if operator:
-        final_line += operator + " "
+        final_line += operator
     return line, lines, final_line, named
 
 
@@ -386,7 +393,6 @@ def unpack(
         end_index,
         space,
         lines,
-        source,
         bracket,
         ID,
         line,
@@ -395,19 +401,16 @@ def unpack(
         indented,
         operator,
         bracket_index,
-    ) = (0, 0, 0, 0, [], "", "", "", "", "", (0, 0, ""), False, 0, None)
+    ) = (0, 0, 0, 0, [], "", "", "", "", (0, 0, ""), False, 0, None)
     for end_index, char in line_iter:
         ## record the source for string_collector_proxy (there might be better ways of doing this) ##
-        source += char
         ## collect strings and add to the lines ##
         if char == "'" or char == '"':
-            ## it should unpack f-strings as well ##
-            line, prev, temp_lines = string_collector_proxy(
-                end_index, char, prev, line_iter, source, source  ## is this correct??
+            temp_line, prev, temp_lines = string_collector_proxy(
+                end_index, char, prev, line_iter, line, True
             )
+            line += temp_line
             lines += temp_lines
-            ## make sure the length of the source is corrected ##
-            source += " " * (prev[1] - prev[0])
         ## makes the line singly spaced while retaining the indentation ##
         elif char == " ":
             line, space, indented = singly_space(end_index, char, line, space, indented)
@@ -428,8 +431,6 @@ def unpack(
                 line, lines, final_line, named = update_lines(
                     line, lines, final_line, named, operator=char
                 )
-            if unwrapping:
-                break
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
             lines += [line]
