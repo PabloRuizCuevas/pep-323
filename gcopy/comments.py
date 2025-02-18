@@ -7,7 +7,7 @@ TODO:
         Priority:
          tests and fixing code e.g. source_processing + custom_generator:
          Extracting source is not a major priority e.g. get the Generator working first
-         e.g. all the code adjusters are the priorty essentially
+         e.g. all the code adjusters are the priority essentially
     
         Needs checking:
     
@@ -42,6 +42,8 @@ TODO:
     Expansion to other types of generators:
 
      - Add some async features to AsyncGenerator - will need to work out how I want to do the async stuff
+       async has renamings of the dunders as well i.e. methods of interest are __iter__ is __aiter__, __next__ 
+       is __anext__, and it will probably need an __await__ implementation.
 
      - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
 
