@@ -270,8 +270,10 @@ def string_collector_proxy(
     temp_index, temp_line = string_collector(iterable, char, source)
     prev = (index, temp_index, char)
     if f_string:
-        ## lines (adjustments) + line (string collected) ##
-        return temp_line.pop(), prev, temp_line
+        if source:
+            ## lines (adjustments) + line (string collected) ##
+            return temp_line.pop(), prev, temp_line
+        return temp_line, prev, []
     if line is not None:
         line += temp_line
     return line, prev
@@ -431,6 +433,8 @@ def unpack(
                 line, lines, final_line, named = update_lines(
                     line, lines, final_line, named, operator=char
                 )
+            else:
+                final_line += char
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
             lines += [line]
