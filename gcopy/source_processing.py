@@ -666,13 +666,18 @@ def indent_lines(lines: list[str], indent: int = 4) -> list[str]:
 
 def iter_adjust(line: str, number_of_indents: int) -> str:
     """
-    Extracts and replaces the iterator from a for loop
+    Replaces the iterator of a for loop
     with an adjusted version (for tracking iterators)
 
     e.g. we extract the second ... in:
     for ... in ...:
     """
-    depth, ID, line_iter = 0, "", enumerate(line[number_of_indents:], number_of_indents)
+    index, depth, ID, line_iter = (
+        0,
+        0,
+        "",
+        enumerate(line[number_of_indents:], number_of_indents),
+    )
     for index, char in line_iter:
         ## the 'in' key word must be avoided in all forms of loop comprehension ##
         depth = update_depth(depth, char, ("([{", ")]}"))
@@ -693,18 +698,26 @@ def iter_adjust(line: str, number_of_indents: int) -> str:
     return line[:index] + "locals()['.%s']:" % number_of_indents
 
 
-def iter_adjust_proxy(outer_loop: list[str]) -> tuple[bool, list[str]]:
-    """adjust an outer loop with its tracked iterator if it uses one"""
-    flag, line = False, outer_loop[0]
-    number_of_indents = get_indent(line)
-    if line[number_of_indents:].startswith("for "):
-        outer_loop[0] = iter_adjust(line, number_of_indents)
-        flag = True
-    return flag, outer_loop
+def is_statement(line: str, statement: str) -> bool:
+    """To make sure the line is a statement with more accuracy and efficiency"""
+    ## check that they're the same ##
+    for index, (char1, char2) in enumerate(zip(line, statement)):
+        if char1 != char2:
+            break
+    index += 1
+    if index != len(statement):
+        return False
+    ## check it's not a variable ##
+    line = line[index:]
+    if line:
+        if line[0] in " ;\n":
+            return True
+        return False
+    return True
 
 
 def skip_blocks(
-    new_lines: list[str], indexes: list[int], line_iter: Iterable, index: int, line: str
+    new_lines: list[str], line_iter: Iterable, index: int, line: str
 ) -> tuple[list[str], str, int]:
     """
     Skips over for/while, definition blocks,
@@ -719,19 +732,18 @@ def skip_blocks(
     )
     if check(temp_line):
         while check(temp_line):
-            new_lines += [line]
-            indexes += [index]
+            new_lines += [line[indent:]]
+            temp_indent = None
             for index, line in line_iter:
                 temp_indent = get_indent(line)
                 if temp_indent <= indent:
                     break
-                new_lines += [line]
-                indexes += [index]
+                new_lines += [line[indent:]]
             ## continue back ##
             indent = temp_indent
             temp_line = line[indent:]
-        return new_lines, indexes, None, None
-    return new_lines, indexes, temp_line, index
+        return new_lines, None, None
+    return new_lines, temp_line, index
 
 
 def loop_adjust(
@@ -748,32 +760,30 @@ def loop_adjust(
     simple for loop and if statement
     to finish the current loop
     """
-    new_lines, indexes, flag, line_iter = [], [], False, enumerate(lines)
+    ## flag determines if we need to complete a sliced loop or simply dedent its complete form ##
+    new_lines, flag, line_iter = [], False, enumerate(lines)
     for index, line in line_iter:
         ## skip over for/while and definition blocks ##
         ## since these are complete blocks of their own ##
         ## and don't need to be adjusted ##
-        new_lines, indexes, temp_line, index = skip_blocks(
-            new_lines, indexes, line_iter, index, line
-        )
+        new_lines, temp_line, index = skip_blocks(new_lines, line_iter, index, line)
         if index is None:
             continue
         ## adjustments ##
-        if temp_line.startswith("continue") and (
-            len(temp_line) > 8 and temp_line[8] in " ;\n"
-        ):
+        if is_statement(temp_line, "continue"):
             flag = True
             new_lines += ["break"]
-        elif temp_line.startswith("break") and (
-            len(temp_line) > 5 and temp_line[5] in " ;\n"
-        ):
+        elif is_statement(temp_line, "break"):
             flag = True
             new_lines += ["locals()['.continue']=False", "break"]
-            indexes = indexes[index:] + indexes[index] + indexes[:index]
+            indexes = indexes[index:] + [indexes[index]] + indexes[:index]
         else:
-            new_lines += [line]
-    ## adjust the outer loops iterator in case it's an iterator that needs ... ##
-    flag, outer_loop = iter_adjust_proxy(outer_loop)
+            new_lines += [temp_line]
+    ## adjust the outer loops iterator in case it's an iterator that needs its tracked version ##
+    temp_line = outer_loop[0]
+    number_of_indents = get_indent(temp_line)
+    if temp_line[number_of_indents:].startswith("for "):
+        outer_loop[0] = iter_adjust(temp_line, number_of_indents)
     if flag:
         ## the loop adjust itself ##
         return [
@@ -781,17 +791,13 @@ def loop_adjust(
             "    for _ in (None,):",
         ] + indent_lines(new_lines, 8 - get_indent(new_lines[0])) + [
             "    if locals()['.continue']:"
+            ## add the outer loop (dedented so that it works) ##
         ] + indent_lines(
-            outer_loop,
-            8
-            - get_indent(
-                outer_loop[0]
-            ),  ## add the outer loop (dedented so that it works) ##
+            outer_loop, 8 - get_indent(outer_loop[0])
         ), [
+            ## add all the indexes which are also adjusted for the changes ##
             indexes[0],
-            indexes[
-                0
-            ],  ## add all the indexes which are also adjusted for the changes ##
+            indexes[0],
         ] + indexes + [
             pos[0]
         ] + list(
