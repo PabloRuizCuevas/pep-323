@@ -112,13 +112,12 @@ def update_line(
 
 def unpack_genexpr(source: str) -> list[str]:
     """unpacks a generator expressions' for loops into a list of source lines"""
-    lines, line, ID, depth, prev, has_for = (
+    lines, line, ID, depth, prev = (
         [],
         "",
         "",
         0,
         (0, 0, ""),
-        False,
     )
     source_iter = enumerate(source[1:-1])
     for index, char in source_iter:
@@ -563,23 +562,10 @@ def skip(iter_val: Iterable, n: int) -> None:
 
 ## Note: line.startswith("except") will need to put a try statement in front (if it's not there e.g. is less than the minimum indent) ##
 ## match case default was introduced in python 3.10
-if version_info < (3, 10):
 
-    def is_alternative_statement(line: str) -> bool:
-        return line.startswith("elif") or line.startswith("else")
-
-else:
-
-    def is_alternative_statement(line: str) -> bool:
-        return (
-            line.startswith("elif")
-            or line.startswith("else")
-            or line.startswith("case")
-            or line.startswith("default")
-        )
-
-
-is_alternative_statement.__doc__ = "Checks if a line is an alternative statement"
+def is_alternative_statement(line: str) -> bool:
+    """Checks if a line is an alternative statement"""
+    return (line.startswith("elif") or line.startswith("else") or line.startswith("case") and line[4] in " :") or (line.startswith("default") and line[7] in " :")
 
 
 def is_definition(line: str) -> bool:
@@ -621,7 +607,7 @@ def control_flow_adjust(
     It will also add 'try:' when there's an
     'except' line on the next minimum indent
     """
-    new_lines, current_min, line_iter = [], get_indent(lines[0]), enumerate(lines)
+    new_lines, current_min, line_iter, end = [], get_indent(lines[0]), enumerate(lines), len(lines) - 1
     for index, line in line_iter:
         temp_indent = get_indent(line)
         temp_line = line[temp_indent:]
@@ -635,15 +621,14 @@ def control_flow_adjust(
                 ## remove from the linetable and update the index ##
                 del indexes[index:end_index]
                 index = end_index
+                if end_index == end:
+                    break
             current_min = temp_indent
-            if temp_line.startswith("except"):
-                new_lines = (
-                    [" " * 4 + "try:"]
-                    + indent_lines(new_lines)
-                    + [
-                        line[current_min - 4 :]
-                    ]  ## -4 since we're in a function for the code execution ##
-                )
+            ## we have to adjust in case of except but not match ##
+            ## (since if you're in a match you're being adjusted in which ever case you're in) ##
+            if temp_line.startswith("except") and temp_line[6] in " :":
+                ## temp_line gets added after ##
+                new_lines = [" " * 4 + "try:"]+ indent_lines(new_lines)
                 ## add to the linetable ##
                 indexes = [indexes[0]] + indexes
         ## add the line (adjust if indentation is not reference_indent) ##
@@ -668,9 +653,10 @@ def indent_lines(lines: list[str], indent: int = 4) -> list[str]:
     return lines
 
 
-def extract_iter(line: str, number_of_indents: int) -> str:
+def iter_adjust(line: str, number_of_indents: int) -> str:
     """
-    Extracts the iterator from a for loop
+    Extracts and replaces the iterator from a for loop
+    with an adjusted version (for tracking iterators)
 
     e.g. we extract the second ... in:
     for ... in ...:
@@ -687,9 +673,8 @@ def extract_iter(line: str, number_of_indents: int) -> str:
                 ID = ""
         else:
             ID = ""
-    index += (
-        2  ## adjust by 2 to skip the 'n' and ' ' in 'in ' that would've been deduced ##
-    )
+    ## adjust by 2 to skip the 'n' and ' ' in 'in ' that would've been deduced ##
+    index += 2
     iterator = line[index:-1]  ## -1 to remove the end colon ##
     ## remove the leading and trailing whitespace and then it should be a variable name ##
     if iterator.strip().isalnum():
@@ -697,39 +682,41 @@ def extract_iter(line: str, number_of_indents: int) -> str:
     return line[:index] + "locals()['.%s']:" % number_of_indents
 
 
-def iter_adjust(outer_loop: list[str]) -> tuple[bool, list[str]]:
+def iter_adjust_proxy(outer_loop: list[str]) -> tuple[bool, list[str]]:
     """adjust an outer loop with its tracked iterator if it uses one"""
     flag, line = False, outer_loop[0]
     number_of_indents = get_indent(line)
     if line[number_of_indents:].startswith("for "):
-        outer_loop[0] = extract_iter(line, number_of_indents)
+        outer_loop[0] = iter_adjust(line, number_of_indents)
         flag = True
     return flag, outer_loop
 
 
 def skip_blocks(
-    new_lines: list[str], line_iter: Iterable, index: int, line: str
-) -> None:
+    new_lines: list[str], indexes: list[int], line_iter: Iterable, index: int, line: str
+) -> tuple[list[str], str, int]:
     """
-    Skips over for/while and definition blocks
+    Skips over for/while, definition blocks,
     and removes indentation from the line
     """
     indent = get_indent(line)
     temp_line = line[indent:]
-    while (
-        temp_line.startswith("for ")
-        or temp_line.startswith("while ")
-        or is_definition(temp_line)
-    ):
-        for index, line in line_iter:
-            temp_indent = get_indent(line)
-            if temp_indent <= indent:
-                break
+    check = lambda temp_line: temp_line.startswith("for ") or temp_line.startswith("while ") or is_definition(temp_line)
+    if check(temp_line):
+        while check(temp_line):
             new_lines += [line]
-        ## continue back ##
-        indent = temp_indent
-        temp_line = line[indent:]
-    return new_lines, temp_line, index
+            indexes += [index]
+            for index, line in line_iter:
+                temp_indent = get_indent(line)
+                if temp_indent <= indent:
+                    break
+                new_lines += [line]
+                indexes += [index]
+            ## continue back ##
+            indent = temp_indent
+            temp_line = line[indent:]
+        return new_lines, indexes, None, None
+    return new_lines, indexes, temp_line, index
 
 
 def loop_adjust(
@@ -746,26 +733,26 @@ def loop_adjust(
     simple for loop and if statement
     to finish the current loop
     """
-    new_lines, flag, line_iter = [], False, enumerate(lines)
+    new_lines, indexes, flag, line_iter = [], [], False, enumerate(lines)
     for index, line in line_iter:
         ## skip over for/while and definition blocks ##
         ## since these are complete blocks of their own ##
         ## and don't need to be adjusted ##
-        new_lines, temp_line, index = skip_blocks(new_lines, line_iter, index, line)
+        new_lines, indexes, temp_line, index = skip_blocks(new_lines, indexes, line_iter, index, line)
+        if index is None:
+            continue
         ## adjustments ##
-        if temp_line.startswith("continue"):
+        if temp_line.startswith("continue") and (len(temp_line) > 8 and temp_line[8] in " ;\n"):
             flag = True
             new_lines += ["break"]
-        elif temp_line.startswith("break"):
+        elif temp_line.startswith("break") and (len(temp_line) > 5 and temp_line[5] in " ;\n"):
             flag = True
             new_lines += ["locals()['.continue']=False", "break"]
             indexes = indexes[index:] + indexes[index] + indexes[:index]
         else:
             new_lines += [line]
-    ## adjust it in case it's an iterator ##
-    flag, outer_loop = iter_adjust(
-        outer_loop
-    )  ## why does this get to dicate the 'flag' ?? ##
+    ## adjust the outer loops iterator in case it's an iterator that needs ... ##
+    flag, outer_loop = iter_adjust_proxy(outer_loop)
     if flag:
         ## the loop adjust itself ##
         return [
