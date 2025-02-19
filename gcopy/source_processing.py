@@ -71,60 +71,85 @@ def lineno_adjust(frame: FrameType) -> int:
     raise ValueError("f_lasti not encountered")
 
 
+def line_adjust(line: str, lines: list[str], adjust: bool = True) -> str:
+    """Adds indentation to the lines and colon for statements"""
+    if line.startswith("if"):
+        index = 2
+    else:
+        index = 3
+    indent, temp_line = " " * 4, ""
+    if adjust:
+        temp_line, line = line[-index:] + " ", line[:-index]
+    line = line.strip()
+    if line.startswith("for") or line.startswith("if"):
+        line += ":"
+    lines += [indent * len(lines) + line]
+    return lines, temp_line
+
+
+def update_line(
+    index: int,
+    char: str,
+    line: str,
+    source_iter: Iterable,
+    prev: tuple[int, int, str],
+    depth: int,
+) -> tuple[str, int, tuple[int, int, str]]:
+    if char == "\\":
+        line += " "  ## incase it doesn't have any gap ##
+    if char in "\\\n":
+        return
+    ## collect strings
+    if char == "'" or char == '"':
+        line, prev = string_collector_proxy(index, char, prev, source_iter, line)
+        return
+    ## we're only interested in when the generator expression ends in terms of the depth ##
+    depth = update_depth(depth, char)
+    ## accumulate the current line
+    line += char
+    return line, depth, prev
+
+
 def unpack_genexpr(source: str) -> list[str]:
     """unpacks a generator expressions' for loops into a list of source lines"""
-    lines, line, ID, depth, prev, has_for, has_end_if = (
+    lines, line, ID, depth, prev, has_for = (
         [],
         "",
         "",
         0,
         (0, 0, ""),
         False,
-        False,
     )
     source_iter = enumerate(source[1:-1])
     for index, char in source_iter:
-        if char in "\\\n":
+        args = update_line(index, char, line, source_iter, prev, depth)
+        if args is None:
             continue
-        ## collect strings
-        if char == "'" or char == '"':
-            line, prev = string_collector_proxy(index, char, prev, source_iter, line)
-            continue
-        ## we're only interested in when the generator expression ends in terms of the depth ##
-        depth = update_depth(depth, char)
-        ## accumulate the current line
-        line += char
-        ## collect IDs
-        if char.isalnum():
-            ID += char
-        else:
-            ID = ""
+        line, depth, prev = args
         if depth == 0:
-            if ID == "for" or ID == "if" and next(source_iter)[1] == " ":
-                if ID == "for":
-                    lines += [line[:-3]]
-                    line = line[-3:]  # +" "
-                    if not has_for:
-                        has_for = len(lines)  ## should be 1 anyway
-                elif has_for:
-                    lines += [
-                        line[:-2],
-                        source[index:-1],
-                    ]  ## -1 to remove the end bracket - is this necessary?
-                    has_end_if = True
-                    break
-                else:
-                    lines += [line[:-2]]
-                    line = line[-2:] + " "
-                # ID="" ## isn't necessary because you don't get i.e. 'for for' or 'if if' in python syntax
-    if has_end_if:
-        lines = lines[has_for:-1] + (lines[:has_for] + [lines[-1]])[::-1]
-    else:
-        print("here:", lines)
-        lines = lines[has_for:] + (lines[:has_for])[::-1]
-    ## arrange into lines
-    indent = " " * 4
-    return [indent * index + line for index, line in enumerate(lines, start=1)]
+            ## collect IDs
+            if char.isalnum():
+                ID += char
+                if ID == "for" or ID == "if":
+                    try:
+                        temp = next(source_iter)[1]
+                    ## it's not possible to have i.e. ( ... if char == if) ##
+                    except StopIteration:
+                        raise SyntaxError("Unexpected format encountered")
+                    if temp == "\\":
+                        temp = " "
+                    if temp == " ":
+                        lines, line = line_adjust(line, lines)
+                    else:
+                        args = update_line(index, char, line, source_iter, prev, depth)
+                        if args is None:
+                            continue
+                        line, depth, prev = args
+                        ID = ""
+            else:
+                ID = ""
+    lines, _ = line_adjust(line, lines, False)
+    return lines[1:] + [" " * (4 * len(lines)) + "return " + lines[0]]
 
 
 def skip_line_continuation(source_iter: Iterable, source: str, index: int) -> None:
@@ -400,10 +425,9 @@ def unpack(
         line,
         final_line,
         prev,
-        indented,
         operator,
         bracket_index,
-    ) = (0, 0, 0, 0, [], "", "", "", "", (0, 0, ""), False, 0, None)
+    ) = (0, 0, 0, -2, [], "", "", "", "", (0, 0, ""), 0, None)
     for end_index, char in line_iter:
         ## record the source for string_collector_proxy (there might be better ways of doing this) ##
         ## collect strings and add to the lines ##
@@ -413,9 +437,8 @@ def unpack(
             )
             line += temp_line
             lines += temp_lines
-        ## makes the line singly spaced while retaining the indentation ##
         elif char == " ":
-            line, space, indented = singly_space(end_index, char, line, space, indented)
+            line, space, _ = singly_space(end_index, char, line, space, True)
         ## dictionary assignment ##
         elif char == "[" and prev[-1] not in (" ", ""):
             line, lines, final_line, named = update_lines(
@@ -982,7 +1005,9 @@ def except_adjust(
     )
 
 
-def singly_space(index: int, char: str, line: str, space: int, indented: bool) -> str:
+def singly_space(
+    index: int, char: str, line: str, space: int, indented: bool
+) -> tuple[str, int, bool]:
     """For ensuring all spaces in a line are single spaces"""
     if indented:
         if space + 1 != index:
