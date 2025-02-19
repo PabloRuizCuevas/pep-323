@@ -353,11 +353,6 @@ def test_skip_alternative_statements() -> None:
         )
 
 
-"""
-why is the last line recorded?
-"""
-
-
 def test_control_flow_adjust() -> None:
     ## you need to test for if/elif/else/try/except/match/case/default and when these are sliced ##
     ## and what the resulting index changes are ##
@@ -405,29 +400,16 @@ def test_indent_lines() -> None:
 
 
 def test_iter_adjust() -> None:
-    ## Note: test cases are clean e.g. we expect: for ... in ... :
-    number_of_indents = 4
-    test_case = " " * number_of_indents + "for ... in ...:"
-    assert (
-        iter_adjust(test_case, number_of_indents)
-        == test_case[:-4] + "locals()['.%s']:" % number_of_indents
-    )
-
-
-def test_iter_adjust_proxy() -> None:
     indents = 4
-    create_case = lambda test_case: [
-        " " * indents + "%s i in range(3):" % test_case,
-        " " * (indents + 4) + "return i",
-    ]
-    assert iter_adjust_proxy(create_case("for")) == (
-        True,
-        [
-            " " * indents + "%s i in locals()['.%s']:" % ("for", indents),
-            " " * (indents + 4) + "return i",
-        ],
-    )
-    assert iter_adjust_proxy(create_case("while")) == (False, create_case("while"))
+    test = lambda test_case: (" " * indents + "%s i in range(3):" % test_case, indents)
+    assert iter_adjust(*test("for")) == "    for i in locals()['.4']:"
+    assert iter_adjust(*test("while")) == "    while i in locals()['.4']:"
+
+
+def test_is_statement() -> None:
+    assert is_statement("continue", "continue")
+    assert is_statement("continue\\", "continue") == False
+    assert is_statement("continued", "continue") == False
 
 
 def test_skip_blocks() -> None:
@@ -449,16 +431,56 @@ def test_skip_blocks() -> None:
     for shift in range(0, length, 2):
         line_iter = enumerate(blocks[shift:])
         index, line = next(line_iter)
-        assert skip_blocks([], [], line_iter, index, line) == (
-            blocks[shift:],
-            list(range(length - shift)),
+        assert skip_blocks([], line_iter, index, line) == (
+            indent_lines(blocks[shift:], -4),
             None,
             None,
         )
 
 
 def test_loop_adjust() -> None:
-    pass
+    block = [
+        "    for i in range(3):",
+        "        for j in range(5):",
+        "            continue",
+        "            break",
+        "            while True:",
+        "                pass",
+        "            def func():",
+        "                pass",
+        "            for k in range(7):",
+        "                pass",
+        "            print('hi')",
+    ]
+    length = len(block)
+    indexes = list(range(1, length + 1))
+    assert loop_adjust(block[2:], indexes, block[1:], *(1, length)) == (
+        [
+            "    locals()['.continue']=True",
+            "    for _ in (None,):",
+            "        break",
+            "        locals()['.continue']=False",
+            "        break",
+            "        while True:",
+            "            pass",
+            "        def func():",
+            "            pass",
+            "        for k in range(7):",
+            "            pass",
+            "    if locals()['.continue']:",
+            "        for j in locals()['.8']:",
+            "            continue",
+            "            break",
+            "            while True:",
+            "                pass",
+            "            def func():",
+            "                pass",
+            "            for k in range(7):",
+            "                pass",
+            "            print('hi')",
+        ],
+        [2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 2, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    )
 
 
 def test_yield_adjust() -> None:
@@ -543,9 +565,9 @@ test_skip_alternative_statements()
 test_control_flow_adjust()
 test_indent_lines()
 test_iter_adjust()
-test_iter_adjust_proxy()
+test_is_statement()
 test_skip_blocks()
-# test_loop_adjust()
+test_loop_adjust() ## need to check indexes ##
 test_yield_adjust()
 test_get_loops()
 # test_expr_getsource()
