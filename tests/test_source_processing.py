@@ -294,9 +294,9 @@ def test_skip() -> None:
 
 
 def test_is_alternative_statement() -> None:
-    assert_cases(is_alternative_statement, "elif", "else")
+    assert_cases(is_alternative_statement, "elif:", "else:")
     if (3, 10) <= version_info:
-        assert_cases(is_alternative_statement, "case", "default")
+        assert_cases(is_alternative_statement, "case:", "default:")
 
 
 def test_is_definition() -> None:
@@ -354,7 +354,6 @@ def test_skip_alternative_statements() -> None:
 
 
 """
-Add match if the first line is a case
 why is the last line recorded?
 """
 
@@ -363,37 +362,38 @@ def test_control_flow_adjust() -> None:
     ## you need to test for if/elif/else/try/except/match/case/default and when these are sliced ##
     ## and what the resulting index changes are ##
     blocks = [
-        "    if True:",
-        "        pass",
-        "    else:",
-        "        pass",
+        "    match ...:",
+        "        case ...:",
+        "            if True:",
+        "                0",
+        "            elif True:",
+        "                1",
+        "            else:",
+        "                2",
+        "            try:",
+        "                3",
+        "            except:",
+        "                4",
+        "        case ...:",
+        "            5",
+        "        default:",
+        "            6",
     ]
-    # blocks = [
-    #     "match ...:",
-    #     "    case ...:",
-    #     "        if True:",
-    #     "            pass",
-    #     "        else:",
-    #     "            pass",
-    #     "       try:",
-    #     "           pass",
-    #     "       except:",
-    #     "           pass",
-    #     "    case ...:",
-    #     "        pass",
-    #     "    default:",
-    #     "        pass",
-    # ]
-    source_lines = ["for i in range(3):"] + blocks
     ## the loop ##
     end_pos = len(blocks)
     test = lambda start_pos: control_flow_adjust(
-        blocks[start_pos:],
-        list(range(start_pos + 1, end_pos)),
-        get_indent(blocks[start_pos]),
+        blocks[start_pos:], list(range(start_pos + 1, end_pos))
     )
-    print("\n".join(test(2)[0]))
-    # print(test(1))
+    assert test(0) == (blocks, list(range(1, end_pos)))
+    assert test(2) == (indent_lines(blocks[2:12], -8), list(range(3, 13)))
+    temp = lambda index: (
+        [blocks[index][12:]] + indent_lines(blocks[8:12], -8),
+        [index + 1] + list(range(9, 16)),
+    )
+    for i in range(3, 13, 2):
+        assert test(3) == temp(3)
+    assert test(13) == ([blocks[13][8:]], [13 + 1])
+    assert test(15) == ([blocks[15][8:]], [])
 
 
 def test_indent_lines() -> None:
@@ -404,49 +404,57 @@ def test_indent_lines() -> None:
     assert indent_lines(lines, 0) == lines
 
 
-def test_extract_iter() -> None:
+def test_iter_adjust() -> None:
     ## Note: test cases are clean e.g. we expect: for ... in ... :
     number_of_indents = 4
     test_case = " " * number_of_indents + "for ... in ...:"
     assert (
-        extract_iter(test_case, number_of_indents)
+        iter_adjust(test_case, number_of_indents)
         == test_case[:-4] + "locals()['.%s']:" % number_of_indents
     )
 
 
-def test_iter_adjust() -> None:
+def test_iter_adjust_proxy() -> None:
     indents = 4
     create_case = lambda test_case: [
         " " * indents + "%s i in range(3):" % test_case,
         " " * (indents + 4) + "return i",
     ]
-    assert iter_adjust(create_case("for")) == (
+    assert iter_adjust_proxy(create_case("for")) == (
         True,
         [
             " " * indents + "%s i in locals()['.%s']:" % ("for", indents),
             " " * (indents + 4) + "return i",
         ],
     )
-    assert iter_adjust(create_case("while")) == (False, create_case("while"))
+    assert iter_adjust_proxy(create_case("while")) == (False, create_case("while"))
 
 
 def test_skip_blocks() -> None:
     blocks = [
-        "    if True:",
-        "        return 1",
-        "    elif True:",
-        "        return 2",
-        "    else:",
-        "        return 3",
         "    for i in range(3):",
-        "        return 4",
+        "        0",
         "    while True:",
-        "        return 5",
-        "    print('hi')",
+        "        1",
+        "    def func():",
+        "        2",
+        "    async def func():",
+        "        3",
+        "    class func:",
+        "        4",
+        "    async class func:",
+        "        5",
     ]
-    for shift in range(6, len(blocks)):
+    length = len(blocks)
+    for shift in range(0, length, 2):
         line_iter = enumerate(blocks[shift:])
-        print(skip_blocks([], line_iter, shift, blocks[shift]))
+        index, line = next(line_iter)
+        assert skip_blocks([], [], line_iter, index, line) == (
+            blocks[shift:],
+            list(range(length - shift)),
+            None,
+            None,
+        )
 
 
 def test_loop_adjust() -> None:
@@ -517,7 +525,6 @@ def test_singly_space() -> None:
 
 
 ## Note: commented out tests are not working yet ##
-## normal case tests ##
 test_update_depth()
 test_get_indent()
 # test_lineno_adjust()
@@ -533,11 +540,11 @@ test_skip()
 test_is_alternative_statement()
 test_is_definition()
 test_skip_alternative_statements()
-# test_control_flow_adjust()
+test_control_flow_adjust()
 test_indent_lines()
-test_extract_iter()
 test_iter_adjust()
-# test_skip_blocks()
+test_iter_adjust_proxy()
+test_skip_blocks()
 # test_loop_adjust()
 test_yield_adjust()
 test_get_loops()
