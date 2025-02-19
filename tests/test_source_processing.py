@@ -30,11 +30,20 @@ def test_lineno_adjust() -> None:
 
 
 def test_unpack_genexpr() -> None:
-    assert unpack_genexpr("(i for i in range(3))") == ["for i in range(3)", "    i"]
-    assert unpack_genexpr("(i for i in range(3) if i==True)") == [
-        " " * 4 + "for i in range(3):",
-        " " * 8 + "if i==True:",
-        " " * 12 + "i",
+    assert unpack_genexpr("(i for\\i in range(3))") == [
+        "    for i in range(3):",
+        "        return i",
+    ]
+    assert unpack_genexpr("(i for i in range(3) for j in range(5))") == [
+        "    for i in range(3):",
+        "        for j in range(5):",
+        "            return i",
+    ]
+    assert unpack_genexpr("(i for i in range(3) for j in range(5) if i==True)") == [
+        "    for i in range(3):",
+        "        for j in range(5):",
+        "            if i==True:",
+        "                return i",
     ]
 
 
@@ -344,6 +353,12 @@ def test_skip_alternative_statements() -> None:
         )
 
 
+"""
+Add match if the first line is a case
+why is the last line recorded?
+"""
+
+
 def test_control_flow_adjust() -> None:
     ## you need to test for if/elif/else/try/except/match/case/default and when these are sliced ##
     ## and what the resulting index changes are ##
@@ -352,20 +367,33 @@ def test_control_flow_adjust() -> None:
         "        pass",
         "    else:",
         "        pass",
-        "try:",
-        "    pass",
-        "except:",
-        "    pass",
     ]
+    # blocks = [
+    #     "match ...:",
+    #     "    case ...:",
+    #     "        if True:",
+    #     "            pass",
+    #     "        else:",
+    #     "            pass",
+    #     "       try:",
+    #     "           pass",
+    #     "       except:",
+    #     "           pass",
+    #     "    case ...:",
+    #     "        pass",
+    #     "    default:",
+    #     "        pass",
+    # ]
     source_lines = ["for i in range(3):"] + blocks
     ## the loop ##
-    start_pos, end_pos = 1, len(blocks)
-    temp_lineno = 2
-    control_flow_adjust(
-        blocks,
-        list(range(temp_lineno, end_pos)),
-        get_indent(source_lines[start_pos]),
+    end_pos = len(blocks)
+    test = lambda start_pos: control_flow_adjust(
+        blocks[start_pos:],
+        list(range(start_pos + 1, end_pos)),
+        get_indent(blocks[start_pos]),
     )
+    print("\n".join(test(2)[0]))
+    # print(test(1))
 
 
 def test_indent_lines() -> None:
@@ -425,8 +453,15 @@ def test_loop_adjust() -> None:
     pass
 
 
-def yield_adjust() -> None:
-    pass
+def test_yield_adjust() -> None:
+
+    assert yield_adjust("yield 3", "") == ["return 3"]
+
+    assert yield_adjust("yield from range(3)", "") == [
+        "locals()['.yieldfrom']=range(3)",
+        "for locals()['.i'] in locals()['.yieldfrom']:",
+        "    return locals()['.i']",
+    ]
 
 
 def test_get_loops() -> None:
@@ -470,7 +505,15 @@ except locals()['.args'].pop():"""
 
 
 def test_singly_space() -> None:
-    pass
+    line, source, indented, space = "    for i in [1    , 3  , 5]:  ", "", False, -1
+    for index, char in enumerate(line):
+        if char == " ":
+            source, index, indented = singly_space(index, char, source, space, indented)
+            space = index
+        else:
+            source += char
+
+    assert source == "    for i in [1 , 3 , 5]: "
 
 
 ## Note: commented out tests are not working yet ##
@@ -478,12 +521,12 @@ def test_singly_space() -> None:
 test_update_depth()
 test_get_indent()
 # test_lineno_adjust()
-# test_unpack_genexpr()
+test_unpack_genexpr()
 test_skip_line_continuation()
 test_skip_source_definition()
-# test_collect_string()
-# test_collect_multiline_string()
-# test_string_collector_proxy()
+test_collect_string()
+test_collect_multiline_string()
+test_string_collector_proxy()
 test_unpack()
 test_collect_definition()
 test_skip()
@@ -496,10 +539,10 @@ test_extract_iter()
 test_iter_adjust()
 # test_skip_blocks()
 # test_loop_adjust()
-# yield_adjust()
+test_yield_adjust()
 test_get_loops()
 # test_expr_getsource()
 # test_extract_genexpr()
 # test_extract_lambda()
 test_except_adjust()
-# test_singly_space()
+test_singly_space()
