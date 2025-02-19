@@ -563,9 +563,15 @@ def skip(iter_val: Iterable, n: int) -> None:
 ## Note: line.startswith("except") will need to put a try statement in front (if it's not there e.g. is less than the minimum indent) ##
 ## match case default was introduced in python 3.10
 
+
 def is_alternative_statement(line: str) -> bool:
     """Checks if a line is an alternative statement"""
-    return (line.startswith("elif") or line.startswith("else") or line.startswith("case") and line[4] in " :") or (line.startswith("default") and line[7] in " :")
+    return (
+        line.startswith("elif")
+        or line.startswith("else")
+        or line.startswith("case")
+        and line[4] in " :"
+    ) or (line.startswith("default") and line[7] in " :")
 
 
 def is_definition(line: str) -> bool:
@@ -607,7 +613,12 @@ def control_flow_adjust(
     It will also add 'try:' when there's an
     'except' line on the next minimum indent
     """
-    new_lines, current_min, line_iter, end = [], get_indent(lines[0]), enumerate(lines), len(lines) - 1
+    new_lines, current_min, line_iter, end = (
+        [],
+        get_indent(lines[0]),
+        enumerate(lines),
+        len(lines) - 1,
+    )
     for index, line in line_iter:
         temp_indent = get_indent(line)
         temp_line = line[temp_indent:]
@@ -628,7 +639,7 @@ def control_flow_adjust(
             ## (since if you're in a match you're being adjusted in which ever case you're in) ##
             if temp_line.startswith("except") and temp_line[6] in " :":
                 ## temp_line gets added after ##
-                new_lines = [" " * 4 + "try:"]+ indent_lines(new_lines)
+                new_lines = [" " * 4 + "try:"] + indent_lines(new_lines)
                 ## add to the linetable ##
                 indexes = [indexes[0]] + indexes
         ## add the line (adjust if indentation is not reference_indent) ##
@@ -701,7 +712,11 @@ def skip_blocks(
     """
     indent = get_indent(line)
     temp_line = line[indent:]
-    check = lambda temp_line: temp_line.startswith("for ") or temp_line.startswith("while ") or is_definition(temp_line)
+    check = (
+        lambda temp_line: temp_line.startswith("for ")
+        or temp_line.startswith("while ")
+        or is_definition(temp_line)
+    )
     if check(temp_line):
         while check(temp_line):
             new_lines += [line]
@@ -738,14 +753,20 @@ def loop_adjust(
         ## skip over for/while and definition blocks ##
         ## since these are complete blocks of their own ##
         ## and don't need to be adjusted ##
-        new_lines, indexes, temp_line, index = skip_blocks(new_lines, indexes, line_iter, index, line)
+        new_lines, indexes, temp_line, index = skip_blocks(
+            new_lines, indexes, line_iter, index, line
+        )
         if index is None:
             continue
         ## adjustments ##
-        if temp_line.startswith("continue") and (len(temp_line) > 8 and temp_line[8] in " ;\n"):
+        if temp_line.startswith("continue") and (
+            len(temp_line) > 8 and temp_line[8] in " ;\n"
+        ):
             flag = True
             new_lines += ["break"]
-        elif temp_line.startswith("break") and (len(temp_line) > 5 and temp_line[5] in " ;\n"):
+        elif temp_line.startswith("break") and (
+            len(temp_line) > 5 and temp_line[5] in " ;\n"
+        ):
             flag = True
             new_lines += ["locals()['.continue']=False", "break"]
             indexes = indexes[index:] + indexes[index] + indexes[:index]
