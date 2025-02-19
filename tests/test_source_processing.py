@@ -454,6 +454,7 @@ def test_loop_adjust() -> None:
     ]
     length = len(block)
     indexes = list(range(1, length + 1))
+    ## adjustments ##
     assert loop_adjust(block[2:], indexes, block[1:], *(1, length)) == (
         [
             "    locals()['.continue']=True",
@@ -480,6 +481,27 @@ def test_loop_adjust() -> None:
             "            print('hi')",
         ],
         [2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 2, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    )
+    ## no adjustments ##
+    assert loop_adjust(block[6:], indexes, block[1:], *(1, length)) == (
+        [
+            "    def func():",
+            "        pass",
+            "    for k in range(7):",
+            "        pass",
+            "    print('hi')",
+            "    for j in locals()['.8']:",
+            "        continue",
+            "        break",
+            "        while True:",
+            "            pass",
+            "        def func():",
+            "            pass",
+            "        for k in range(7):",
+            "            pass",
+            "        print('hi')",
+        ],
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     )
 
 
@@ -567,7 +589,7 @@ test_indent_lines()
 test_iter_adjust()
 test_is_statement()
 test_skip_blocks()
-test_loop_adjust() ## need to check indexes ##
+test_loop_adjust()  ## need to check indexes ##
 test_yield_adjust()
 test_get_loops()
 # test_expr_getsource()
