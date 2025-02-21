@@ -287,12 +287,6 @@ def test_collect_definition() -> None:
     assert lines == source.split("\n")
 
 
-def test_skip() -> None:
-    i = iter(range(3))
-    skip(i, 2)
-    assert next(i) == 2
-
-
 def test_is_alternative_statement() -> None:
     assert_cases(is_alternative_statement, "elif:", "else:")
     if (3, 10) <= version_info:
@@ -520,21 +514,50 @@ def test_get_loops() -> None:
     assert get_loops(3, [(1, 5), (2, 4), (6, 8)]) == [(0, 4), (1, 3)]
 
 
+def test_extract_source_from_positions() -> None:
+    ## genexpr extractor ##
+    code_obj = eval("(i for i \\\n   in range(3))").gi_code
+    source = "iter1, iter2 = (i for i in range(3)), (j for j in (i for i in range(5)) if j in (i for i in range(2)) )"
+    assert extract_source_from_positions(code_obj, source) == "(i for i in range(3))"
+    ## lambda extractor ##
+    code_obj = eval("lambda x: print('hi')").__code__
+    source = "lambda x:x,lambda y:lambda z:z, lambda a:a, lambda x: print('hi')"
+    assert extract_source_from_positions(code_obj, source) == "lambda x: print('hi')"
+
+
+def test_extract_source_from_comparison() -> None:
+    ## genexpr extractor ##
+    code_obj = eval("(i for i \\\n   in range(3))").gi_code
+    source = "iter1, iter2 = (i for i in range(3)), (j for j in (i for i in range(5)) if j in (i for i in range(2)) )"
+    assert (
+        extract_source_from_comparison(code_obj, source, extract_genexpr)
+        == "(i for i in range(3))"
+    )
+    ## lambda extractor ##
+    code_obj = eval("lambda x: print('hi')").__code__
+    source = "lambda x:x,lambda y:lambda z:z, lambda a:a, lambda x: print('hi')"
+    assert (
+        extract_source_from_comparison(code_obj, source, extract_lambda)
+        == "lambda x: print('hi')"
+    )
+
+
 def test_expr_getsource() -> None:
-    pass
+    for FUNC in (eval("(i for i \\\n   in range(3))"), eval("lambda x: print('hi')")):
+        print(expr_getsource(FUNC))
 
 
 def test_extract_genexpr() -> None:
-    source = "iter1, iter2 = (i for i in range(3)), (j for j in (i for i in range(3)) if j in (i for i in range(3)) )"
-    pos = [(15, 36), (38, None)]
+    source = "iter1, iter2 = (i for i in range(3)), (j for j in (i for i in range(5)) if j in (i for i in range(2)) )"
+    pos = [(15, 36), (50, 71), (80, 101), (38, 103)]
     for offsets in extract_genexpr(source):
         assert offsets == pos.pop(0)
 
 
 def test_extract_lambda() -> None:
-    source = "iter1, iter2 = (lambda : (i for i in range(3))), (lambda : (j for j in (i for i in range(3)) if j in (i for i in range(3)) ) )"
-    pos = [(15, 36), (38, None)]
-    for offsets in extract_genexpr(source):
+    source = "lambda x:x,lambda y:lambda z:z, lambda a:a"
+    pos = [(0, 10), (20, 30), (11, 30), (32, None)]
+    for offsets in extract_lambda(source):
         assert offsets == pos.pop(0)
 
 
@@ -580,7 +603,6 @@ test_collect_multiline_string()
 test_string_collector_proxy()
 test_unpack()
 test_collect_definition()
-test_skip()
 test_is_alternative_statement()
 test_is_definition()
 test_skip_alternative_statements()
@@ -592,8 +614,10 @@ test_skip_blocks()
 test_loop_adjust()  ## need to check indexes ##
 test_yield_adjust()
 test_get_loops()
+# test_extract_source_from_positions()
+test_extract_source_from_comparison()
 # test_expr_getsource()
-# test_extract_genexpr()
-# test_extract_lambda()
+test_extract_genexpr()
+test_extract_lambda()
 test_except_adjust()
 test_singly_space()
