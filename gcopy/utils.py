@@ -1,6 +1,6 @@
 from sys import version_info
 from inspect import getframeinfo
-from readline import get_history_item
+from readline import get_history_item, get_current_history_length
 from dis import get_instructions
 from types import FrameType, GeneratorType, CodeType
 from typing import Iterable, Any
@@ -13,6 +13,18 @@ def is_cli() -> bool:
         return True
     except IndexError:
         return False
+
+
+def cli_findsource():
+    """Finds the source assuming CLI"""
+    length = get_current_history_length()
+    return [get_history_item(-i) for i in range(length - 1, 0, -1)]
+
+
+def skip(iter_val: Iterable, n: int) -> None:
+    """Skips the next n iterations in a for loop"""
+    for _ in range(n):
+        next(iter_val)
 
 
 def get_col_offset(frame: FrameType) -> int:
