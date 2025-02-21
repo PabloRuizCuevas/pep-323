@@ -101,7 +101,7 @@ def test_chain() -> None:
         assert i == ls.pop(0)
 
 
-# test_is_cli()
+test_is_cli()
 test_cli_findsource()
 test_skip()
 test_get_col_offset()
