@@ -1,6 +1,17 @@
 from gcopy.utils import *
 
 
+def test_cli_findsource() -> None:
+    if is_cli():
+        pass
+
+
+def test_skip() -> None:
+    i = iter(range(3))
+    skip(i, 2)
+    assert next(i) == 2
+
+
 def test_is_cli() -> None:
     is_cli()  ## run it to make sure no errors ##
 
@@ -90,7 +101,9 @@ def test_chain() -> None:
         assert i == ls.pop(0)
 
 
-test_is_cli()
+# test_is_cli()
+test_cli_findsource()
+test_skip()
 test_get_col_offset()
 test_empty_generator()
 test_code_attrs()
