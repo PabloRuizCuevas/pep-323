@@ -4,7 +4,7 @@
 from .utils import *
 from inspect import getsource, findsource
 from typing import Iterable, Any
-from types import GeneratorType, FrameType
+from types import GeneratorType, FrameType, FunctionType
 
 
 def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:
@@ -554,12 +554,6 @@ def collect_definition(
     return end_index, char, lineno, lines
 
 
-def skip(iter_val: Iterable, n: int) -> None:
-    """Skips the next n iterations in a for loop"""
-    for _ in range(n):
-        next(iter_val)
-
-
 ## Note: line.startswith("except") will need to put a try statement in front (if it's not there e.g. is less than the minimum indent) ##
 ## match case default was introduced in python 3.10
 
@@ -852,48 +846,38 @@ def get_loops(
     return loops
 
 
-def expr_getsource(FUNC: Any) -> str:
+def extract_source_from_positions(code_obj: CodeType, source: str) -> str:
     """
-    Uses co_positions or otherwise goes through the source code
-    extracting expressions until a match is found on a code object
-    basis to get the source
-
-    Note:
-    the extractor should return a string and if using a
-    lambda extractor it will take in a string input but
-    if using a generator expression extractor it will
-    take a list instead
+    Uses co_positions from version 3.11
+    to extract the correct source code
     """
-    code_obj = getcode(FUNC)
-    if code_obj.co_name == "<lambda>":
-        ## here source is a : str
-        source = getsource(code_obj)
-        extractor = extract_lambda
-    else:
-        lineno = getframe(FUNC).f_lineno - 1
-        ## here source is a : list[str]
-        source = findsource(code_obj)[0][lineno:]
-        extractor = extract_genexpr
-    ## get the rest of the source ##
-    if (3, 11) <= version_info:
-        # start_line, end_line, start_col, end_col
-        positions = code_obj.co_positions()
-        is_source_list = isinstance(source, list)
-        pos = next(positions, (None, None, None))[1:]
-        current_min, current_max = pos[2:]
-        if is_source_list:
+    # start_line, end_line, start_col, end_col
+    positions = code_obj.co_positions()
+    is_source_list = isinstance(source, list)
+    pos = next(positions, (None, None, None, None))[1:]
+    current_min, current_max = pos[1:]
+    if is_source_list:
+        current_max_lineno = pos[1]
+    for pos in positions:
+        if pos[-2] and pos[-2] < current_min:
+            current_min = pos[-2]
+        if pos[-1] and pos[-1] > current_max:
+            current_min = pos[-1]
+        if is_source_list and pos[1] and pos[1] > current_max_lineno:
             current_max_lineno = pos[1]
-        for pos in positions:
-            if pos[-2] and pos[-2] < current_min:
-                current_min = pos[-2]
-            if pos[-1] and pos[-1] > current_max:
-                current_min = pos[-1]
-            if is_source_list and pos[1] and pos[1] > current_max_lineno:
-                current_max_lineno = pos[1]
-        if is_source_list:
-            source = "\n".join(source[: current_max_lineno + 1])
-        return source[current_min:current_max]
-    ## otherwise match with generator expressions in the original source to get the source code ##
+    if is_source_list:
+        source = "\n".join(source[: current_max_lineno + 1])
+    return source[current_min:current_max]
+
+
+def extract_source_from_comparison(
+    code_obj: CodeType, source: str, extractor: FunctionType
+) -> str:
+    """
+    Extracts source via a comparison of
+    extracted source codes code object
+    and the current code object
+    """
     attrs = (
         "co_freevars",
         "co_cellvars",
@@ -914,78 +898,131 @@ def expr_getsource(FUNC: Any) -> str:
     for col_offset, end_col_offset in extractor(source):
         try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
-            temp_code = getcode(eval(source[col_offset:end_col_offset]))
+            temp_source = source[col_offset:end_col_offset]
+            temp_code = getcode(eval(temp_source))
             if attr_cmp(temp_code, code_obj, attrs):
-                return source
-        except:
+                return temp_source
+        except SyntaxError:
             pass
     raise Exception("No matches to the original source code found")
+
+
+def expr_getsource(FUNC: Any) -> str:
+    """
+    Uses co_positions or otherwise goes through the source code
+    extracting expressions until a match is found on a code object
+    basis to get the source
+
+    Note:
+    the extractor should return a string and if using a
+    lambda extractor it will take in a string input but
+    if using a generator expression extractor it will
+    take a list instead
+    """
+    code_obj = getcode(FUNC)
+    if code_obj.co_name == "<lambda>":
+        ## here source is a : str
+        if is_cli():
+            source = cli_findsource()
+        else:
+            source = getsource(code_obj)
+        extractor = extract_lambda
+    else:
+        ## here source is a : list[str]
+        if is_cli():
+            source = cli_findsource()
+        else:
+            lineno = getframe(FUNC).f_lineno - 1
+            source = findsource(code_obj)[0][lineno:]
+        extractor = extract_genexpr
+    ## get the rest of the source ##
+    if (3, 11) <= version_info and not is_cli():
+        return extract_source_from_positions(code_obj, source)
+    ## otherwise match with generator expressions in the original source to get the source code ##
+    return extract_source_from_comparison(code_obj, source, extractor)
 
 
 ###############
 ### genexpr ###
 ###############
-def extract_genexpr(source: str) -> GeneratorType:
+def extract_genexpr(source: str, recursion: bool = False) -> GeneratorType:
     """Extracts each generator expression from a list of the source code lines"""
-    ID, depth, prev = "", 0, (0, 0, "")
+    ID, depth, prev, genexpr_depth = (
+        "",
+        0,
+        (0, 0, ""),
+        None,
+    )
     source_iter = enumerate(source)
     for index, char in source_iter:
         ## skip all strings if not in genexpr
         if char == "'" or char == '"':
             _, prev = string_collector_proxy(index, char, prev, source_iter)
-            continue
+        elif char == " " and ID == "for":
+            if genexpr_depth and depth > genexpr_depth:
+                temp_source = source[temp_col_offset:]
+                for offsets in extract_genexpr(temp_source, recursion=True):
+                    yield temp_col_offset + offsets[0], temp_col_offset + offsets[1]
+            else:
+                genexpr_depth, col_offset = depth, temp_col_offset
+            ID = ""
         ## detect brackets
         elif char == "(":
             temp_col_offset = index
             depth += 1
         elif char == ")":
-            if genexpr_depth and depth == genexpr_depth:
+            if depth == genexpr_depth:
                 yield col_offset, index + 1
+                if recursion:
+                    return
                 genexpr_depth = None
             depth -= 1
-            continue
-        if depth and genexpr_depth is not None:
+        elif depth:
             ## record ID ##
             if char.isalnum():
                 ID += char
-                ## detect a for loop
-                if ID == "for":
-                    ID, genexpr_depth, col_offset = "", depth, temp_col_offset
             else:
                 ID = ""
 
 
-##############
-### lambda ###
-##############
-def extract_lambda(source_code: str) -> GeneratorType:
+def extract_lambda(source_code: str, recursion: bool = False) -> GeneratorType:
     """Extracts each lambda expression from the source code string"""
     ID, lambda_depth, depth, prev = "", None, 0, (0, 0, "")
-    source_code = enumerate(source_code)
-    for index, char in source_code:
+    source_iter = enumerate(source_code)
+    for index, char in source_iter:
         ## skip all strings (we only want the offsets)
         if char == "'" or char == '"':
-            _, prev = string_collector_proxy(index, char, prev, source_code)
-            continue
-        ## detect brackets (lambda can be in all 3 types of brackets) ##
-        depth = update_depth(depth, char, ("([{", ")]}"))
-        ## record source code ##
-        if lambda_depth:
-            # lambda_depth needed in case of brackets; depth+1 since depth would've got reduced by 1
-            if char == "\n;" or depth + 1 == lambda_depth:
-                yield col_offset, index + 1
-                lambda_depth = None
-        else:
-            ## record ID ##
-            if char.isalnum():
-                ID += char
-                ## detect a lambda
-                if ID == "lambda" and depth <= 1:
-                    ID, lambda_depth, col_offset = "", depth, index - 6
+            _, prev = string_collector_proxy(index, char, prev, source_iter)
+        elif lambda_depth is not None and (char in "\n;," or depth + 1 == lambda_depth):
+            # lambda_depth needed in case of brackets; depth + 1 since depth would've got reduced by 1
+            yield col_offset, index
+            if recursion:
+                return
+            ## clear the ID since the next index could be the start of a lambda
+            ID, lambda_depth = "", None
+        elif char == " " and ID == "lambda":
+            # print("detected a lambda!!!","index:",index,"lambda_depth:",lambda_depth)
+            if lambda_depth is not None:
+                temp_source = source_code[index - 6 :]
+                for offsets in extract_lambda(temp_source, recursion=True):
+                    yield index - 6 + offsets[0], index - 6 + offsets[1]
             else:
-                ID = ""
+                lambda_depth, col_offset = depth, index - 6
+            ID = ""
+        ## needs to be skipped this way in case of '\n' (since this is considered an end col_offset)
+        elif char == "\\":
+            skip_line_continuation(source_iter, source_code, index)
+        ## detect brackets (lambda can be in all 3 types of brackets) ##
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char.isalnum():
+            ID += char
+        else:
+            ID = ""
     ## in case of a current match ending ##
-    if lambda_depth:
+    if lambda_depth is not None:
         yield col_offset, None
 
 
