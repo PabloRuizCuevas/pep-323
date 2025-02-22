@@ -72,19 +72,24 @@ def lineno_adjust(frame: FrameType) -> int:
 
 
 def line_adjust(line: str, lines: list[str], adjust: bool = True) -> str:
-    """Adds indentation to the lines and colon for statements"""
-    if line.startswith("if"):
-        index = 2
-    else:
-        index = 3
-    indent, temp_line = " " * 4, ""
+    """
+    Adds indentation to the lines and colon for statements
+
+    Specific to the unpack_genexpr function where the lines
+    will start with 'for' or 'if' when separated
+    """
+    indent, new_line = " " * 4, ""
     if adjust:
-        temp_line, line = line[-index:] + " ", line[:-index]
+        if line.startswith("if"):
+            index = 2
+        else:
+            index = 3
+        new_line, line = line[-index:] + " ", line[:-index]
     line = line.strip()
+    ## needed for the first segment that will have no for/if ##
     if line.startswith("for") or line.startswith("if"):
         line += ":"
-    lines += [indent * len(lines) + line]
-    return lines, temp_line
+    return new_line, lines + [indent * len(lines) + line]
 
 
 def update_line(
@@ -112,12 +117,13 @@ def update_line(
 
 def unpack_genexpr(source: str) -> list[str]:
     """unpacks a generator expressions' for loops into a list of source lines"""
-    lines, line, ID, depth, prev = (
+    lines, line, ID, depth, prev, passed_first_for = (
         [],
         "",
         "",
         0,
         (0, 0, ""),
+        False,
     )
     source_iter = enumerate(source[1:-1])
     for index, char in source_iter:
@@ -129,16 +135,18 @@ def unpack_genexpr(source: str) -> list[str]:
             ## collect IDs
             if char.isalnum():
                 ID += char
-                if ID == "for" or ID == "if":
+                if ID == "for" or (ID == "if" and passed_first_for):
                     try:
                         temp = next(source_iter)[1]
                     ## it's not possible to have i.e. ( ... if char == if) ##
                     except StopIteration:
                         raise SyntaxError("Unexpected format encountered")
-                    if temp == "\\":
-                        temp = " "
-                    if temp == " ":
-                        lines, line = line_adjust(line, lines)
+                    ## adjusts and adds the line to lines ##
+                    if temp in "\\ ":
+                        line, lines = line_adjust(line, lines)
+                        if not passed_first_for and lines:
+                            passed_first_for = True
+                    ## otherwise adds to the current line ##
                     else:
                         args = update_line(index, char, line, source_iter, prev, depth)
                         if args is None:
@@ -147,7 +155,7 @@ def unpack_genexpr(source: str) -> list[str]:
                         ID = ""
             else:
                 ID = ""
-    lines, _ = line_adjust(line, lines, False)
+    _, lines = line_adjust(line, lines, False)
     return lines[1:] + [" " * (4 * len(lines)) + "return " + lines[0]]
 
 
@@ -201,11 +209,11 @@ def collect_string(
         if source and char == "{" or left_brace:
             if char != "{" and left_brace % 2:
                 ## we could check for yields before unpacking but this is maybe more efficient ##
-                temp_lines, final_line, _ = unpack(char, source_iter, True)
-                # print(f"{line,temp_lines,final_line=}")
+                adjustments, f_string_contents, _ = unpack(char, source_iter, True)
+                # print(f"{line,adjustments,f_string_contents=}")
                 ## update ##
-                lines += temp_lines
-                line += final_line
+                lines += adjustments
+                line += f_string_contents
                 left_brace = 0
                 continue
             left_brace += 1
@@ -238,14 +246,16 @@ def collect_multiline_string(
     for index, char in source_iter:
         ## detect f-strings for value yields ##
         if source and char == "{" or left_brace:
-            if char != "{" and left_brace % 2 == 0:
+            if char != "{" and left_brace % 2:
                 ## we could check for yields before unpacking but this is maybe more efficient ##
-                temp_lines, final_line, _ = unpack(
+                adjustments, f_string_contents, _ = unpack(
                     source_iter=source_iter, unwrapping=True
                 )
                 ## update ##
-                lines += temp_lines
-                line += final_line
+                lines += adjustments
+                line += f_string_contents
+                left_brace = 0
+                continue
             left_brace += 1
         if char == reference and not backslash:
             if index - prev == 1:
@@ -568,6 +578,11 @@ def is_alternative_statement(line: str) -> bool:
     ) or (line.startswith("default") and line[7] in " :")
 
 
+def is_loop(line: str) -> bool:
+    """Checks if a line is a loop"""
+    return line.startswith("for ") or line.startswith("while ")
+
+
 def is_definition(line: str) -> bool:
     """Checks if a line is a definition"""
     return (
@@ -719,11 +734,7 @@ def skip_blocks(
     """
     indent = get_indent(line)
     temp_line = line[indent:]
-    check = (
-        lambda temp_line: temp_line.startswith("for ")
-        or temp_line.startswith("while ")
-        or is_definition(temp_line)
-    )
+    check = lambda temp_line: is_loop(temp_line) or is_definition(temp_line)
     if check(temp_line):
         while check(temp_line):
             new_lines += [line[indent:]]
@@ -936,15 +947,13 @@ def expr_getsource(FUNC: Any) -> str:
             source = findsource(code_obj)[0][lineno:]
         extractor = extract_genexpr
     ## get the rest of the source ##
-    if (3, 11) <= version_info and not is_cli():
-        return extract_source_from_positions(code_obj, source)
+    if False:
+        if (3, 11) <= version_info and not is_cli():
+            return extract_source_from_positions(code_obj, source)
     ## otherwise match with generator expressions in the original source to get the source code ##
     return extract_source_from_comparison(code_obj, source, extractor)
 
 
-###############
-### genexpr ###
-###############
 def extract_genexpr(source: str, recursion: bool = False) -> GeneratorType:
     """Extracts each generator expression from a list of the source code lines"""
     ID, depth, prev, genexpr_depth = (
@@ -1001,7 +1010,6 @@ def extract_lambda(source_code: str, recursion: bool = False) -> GeneratorType:
             ## clear the ID since the next index could be the start of a lambda
             ID, lambda_depth = "", None
         elif char == " " and ID == "lambda":
-            # print("detected a lambda!!!","index:",index,"lambda_depth:",lambda_depth)
             if lambda_depth is not None:
                 temp_source = source_code[index - 6 :]
                 for offsets in extract_lambda(temp_source, recursion=True):
@@ -1038,7 +1046,7 @@ def except_adjust(
     for index, line in enumerate(current_lines[::-1], start=1):
         current_lines[-index] = indent + current_lines[-index]
         reference_indent = get_indent(line)
-        if line[reference_indent].startswith("try"):
+        if line[reference_indent:].startswith("try"):
             break
     number_of_indents = reference_indent + 8
     current_indent = " " * number_of_indents
