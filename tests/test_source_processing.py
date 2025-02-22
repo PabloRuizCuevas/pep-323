@@ -2,7 +2,11 @@ from gcopy.source_processing import *
 from types import FunctionType
 
 
-def assert_cases(FUNC: FunctionType, *args) -> None:
+def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:
+    if compare:
+        for arg in args:
+            assert FUNC(arg) == compare.pop(0)
+        return
     for arg in args:
         assert FUNC(arg)
 
@@ -29,7 +33,19 @@ def test_lineno_adjust() -> None:
     # print(lineno_adjust(frame))
 
 
+def test_line_adjust() -> None:
+    ## adjusted ##
+    assert line_adjust("for i in ... if ...", []) == ("... ", ["for i in ... if:"])
+    ## not adjusted ##
+    assert line_adjust("i if ... else ...", [], False) == ("", ["i if ... else ..."])
+    assert line_adjust(" ...", [], False) == ("", ["..."])
+
+
 def test_unpack_genexpr() -> None:
+    """
+    Note: line_adjust is tested within this test
+    """
+
     assert unpack_genexpr("(i for\\i in range(3))") == [
         "    for i in range(3):",
         "        return i",
@@ -117,12 +133,9 @@ def test_string_collector_proxy(recursion: int = 1) -> None:
         test_string_collector_proxy(0)
 
 
-def test_update_lines() -> None:
-    update_lines()
-
-
-def test_named_adjust():
-    pass
+def test_inverse_bracket():
+    compare = list("([{}])")
+    assert_cases(inverse_bracket, *compare[:3], compare=compare[3:][::-1])
 
 
 def test_unpack() -> None:
@@ -285,6 +298,10 @@ def test_collect_definition() -> None:
     assert char == ")"
     assert lineno == 3
     assert lines == source.split("\n")
+
+
+def test_is_loop() -> None:
+    assert_cases(is_loop, "for ", "while ")
 
 
 def test_is_alternative_statement() -> None:
@@ -594,16 +611,21 @@ def test_singly_space() -> None:
 ## Note: commented out tests are not working yet ##
 test_update_depth()
 test_get_indent()
-# test_lineno_adjust()
+# test_lineno_adjust()            ## needs checking ##
+test_line_adjust()
+## is tested in unpack_genexpr: update_line
 test_unpack_genexpr()
 test_skip_line_continuation()
 test_skip_source_definition()
-test_collect_string()
-test_collect_multiline_string()
+test_collect_string()  ## test for f-strings ##
+test_collect_multiline_string()  ## test for f-strings ##
 test_string_collector_proxy()
-test_unpack()
+test_inverse_bracket()
+## are tested in test_unpack: named_adjust, unpack_adjust, update_lines
+test_unpack()  ## need to fix the ordering of popping ##
 test_collect_definition()
 test_is_alternative_statement()
+test_is_loop()
 test_is_definition()
 test_skip_alternative_statements()
 test_control_flow_adjust()
