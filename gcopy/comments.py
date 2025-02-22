@@ -4,10 +4,29 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Finish fixing:
-        Priority:
-         tests and fixing code e.g. source_processing + custom_generator:
-         Extracting source is not a major priority e.g. get the Generator working first
-         e.g. all the code adjusters are the priority essentially
+        Priority (in order):
+        --------------------
+        - custom_generator -
+        --------------------
+          _custom_adjust
+          _frame_init
+          _record_jumps
+          --------------------------------
+          string_collector_proxy (f-strings)
+          _block_adjust
+          _update_jump_positions
+          _string_collector_adjust
+          _append_line
+          ----------------------------------------
+          _create_state
+          _init_states
+          _update
+          __next__
+          __iter__
+          send
+          throw
+          ----------------------------------------
+          __init__
     
         Needs checking:
     
