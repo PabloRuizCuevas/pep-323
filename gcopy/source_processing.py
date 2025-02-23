@@ -248,9 +248,7 @@ def collect_multiline_string(
         if source and char == "{" or left_brace:
             if char != "{" and left_brace % 2:
                 ## we could check for yields before unpacking but this is maybe more efficient ##
-                adjustments, f_string_contents, _ = unpack(
-                    source_iter=source_iter, unwrapping=True
-                )
+                adjustments, f_string_contents, _ = unpack(char, source_iter, True)
                 ## update ##
                 lines += adjustments
                 line += f_string_contents
@@ -423,6 +421,7 @@ def unpack(
     list of lines going towards its right side
     """
     line_iter = chain(enumerate(line), source_iter)
+    ## make sure 'space' == -1 for indentation ##
     (
         depth,
         depth_total,
@@ -436,7 +435,10 @@ def unpack(
         prev,
         operator,
         bracket_index,
-    ) = (0, 0, 0, -2, [], "", "", "", "", (0, 0, ""), 0, None)
+    ) = (0, 0, 0, -1, [], "", "", "", "", (0, 0, ""), 0, None)
+    indented = True
+    if not unwrapping:
+        indented = False
     for end_index, char in line_iter:
         ## record the source for string_collector_proxy (there might be better ways of doing this) ##
         ## collect strings and add to the lines ##
@@ -447,7 +449,7 @@ def unpack(
             line += temp_line
             lines += temp_lines
         elif char == " ":
-            line, space, _ = singly_space(end_index, char, line, space, True)
+            line, space, indented = singly_space(end_index, char, line, space, indented)
         ## dictionary assignment ##
         elif char == "[" and prev[-1] not in (" ", ""):
             line, lines, final_line, named = update_lines(
@@ -469,7 +471,11 @@ def unpack(
                 final_line += char
             operator = end_index
         elif depth == 0 and char in "#:;\n":  ## split and break condition ##
-            lines += [line]
+            if char == ":":
+                line += ":"
+            ## not sure if this is needed or not yet ... ##
+            # if lines:
+            #     lines += [line]
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
             line, lines, final_line, named = named_adjust(
@@ -1043,6 +1049,8 @@ def except_adjust(
     """
     ## except statement with its adjustments ##
     indent = " " * 4
+    reference_indent = get_indent(final_line)
+    index = 0
     for index, line in enumerate(current_lines[::-1], start=1):
         current_lines[-index] = indent + current_lines[-index]
         reference_indent = get_indent(line)
