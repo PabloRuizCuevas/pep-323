@@ -1,5 +1,6 @@
 from gcopy.custom_generator import *
 import pickle
+from types import NoneType
 
 
 ## classes need to be globally defined for it to be picklable ##
@@ -73,17 +74,19 @@ def test_generator_custom_adjustment() -> None:
     ]
 
 
-def test_generator_update_jump_positions() -> None:
-    def setup() -> Generator:
-        gen = Generator()
-        gen._internals["jump_positions"], gen._internals["jump_stack"] = [
-            [1, None],
-            [1, None],
-        ], [(0, 0), (0, 1)]
-        gen._internals["jump_stack_adjuster"], gen._internals["linetable"] = [], []
-        gen._internals["lineno"] = 1
-        return gen
+def setup() -> Generator:
+    """setup used for jump_positions"""
+    gen = Generator()
+    gen._internals["jump_positions"], gen._internals["jump_stack"] = [
+        [1, None],
+        [1, None],
+    ], [(0, 0), (0, 1)]
+    gen._internals["jump_stack_adjuster"], gen._internals["linetable"] = [], []
+    gen._internals["lineno"] = 1
+    return gen
 
+
+def test_generator_update_jump_positions() -> None:
     gen = setup()
     ## only positions ##
     # with reference indent #
@@ -107,7 +110,55 @@ def test_generator_update_jump_positions() -> None:
 
 
 def test_generator_append_line() -> None:
-    pass
+    # index: int,
+    # char: str,
+    # source: str,
+    # source_iter: Iterable,
+    # running: bool,
+    # line: str,
+    # lines: list[str],
+    # indentation: int
+
+    def test(start: int, indentation: int = 0) -> None:
+        source = "    print('hi')\n    print('hi');print('hi')\n    def hi():\n        print('hi')\n print() ## comment\n    if True:"
+        line = source[: start + 1].split("\n")[-1]
+        return gen._append_line(
+            start,
+            source[start],
+            source,
+            enumerate(source[start + 1 :], start=start + 1),
+            True,
+            line,
+            [],
+            indentation,
+        )
+
+    ## empty line ##
+
+    gen = setup()
+    assert gen._append_line(0, "", "", "", "", "", [], 0) == (0, "", [], "", True, 0)
+    assert gen._append_line(0, "", "", "", "", "         ", [], 0) == (
+        0,
+        "",
+        [],
+        "",
+        True,
+        0,
+    )
+
+    ## normal line ##
+
+    test(15)
+
+    ## skip definitions ##
+
+    test(15)
+
+    ## comments ##
+
+    ## statements/colon ##
+
+    ## semi-colon ##
 
 
 def test_generator_block_adjust() -> None:
@@ -164,10 +215,49 @@ def test_generator_block_adjust() -> None:
 
 
 def test_generator_string_collector_adjust() -> None:
-    pass
+    gen = Generator()
+    source = "    print('hi')\n    print(f'hello {(yield 3)}')\n"
+    gen._internals["lineno"] = 1
+
+    def test(
+        line_start: int, start: int, *answer: tuple[str, tuple[int, int, str], list]
+    ) -> tuple[Iterable, int, str]:
+        line = source[line_start:start]
+        source_iter = enumerate(source[start:], start=start)
+        assert (
+            gen._string_collector_adjust(
+                *next(source_iter), (0, 0, ""), source_iter, line, source, []
+            )
+            == answer
+        )
+
+    ## string collection ##
+    test(None, 10, *("'hi'", (10, 13, "'"), []))
+    ## f-string ##
+    test(
+        16,
+        27,
+        *(
+            "",
+            (27, 45, "'"),
+            [
+                "    return  3",
+                "    locals()['.args'] += [locals()['.send']]",
+                "    print(f'hello {locals()['.args'].pop(0)}')",
+            ],
+        )
+    )
 
 
 def test_generator_clean_source_lines() -> None:
+    ## value yields ##
+    ## comments ##
+    ## definitions ##
+    ## statements ##
+    ## named expressions ##
+    ## strings ##
+    ## f-strings ##
+    ## returns - if you have more than one return statement then return ##
     pass
 
 
@@ -180,7 +270,56 @@ def test_generator_init_states() -> None:
 
 
 def test_generator__init__() -> None:
-    pass
+    def func():
+        yield 1
+        yield 2
+        yield 3
+
+    def check(FUNC: Any) -> None:
+        """
+        Does two checks:
+        1. has the attrs
+        2. the attrs values are of the correct type
+        """
+        gen = Generator(FUNC)
+        for key, value in {
+            "state": NoneType,
+            "source": str,
+            "linetable": int,
+            "yieldfrom": NoneType | Iterable | GeneratorType,
+            "version": str,
+            "jump_positions": int,
+            "suspended": bool,
+            "prefix": str,
+            "lineno": int,
+            "code": code,
+            "state_generator": GeneratorType,
+            "running": bool,
+            "source_lines": str,
+            "type": type,
+            "frame": frame,
+        }.items():
+            try:
+                obj = gen._internals[key]
+            except KeyError:
+                if key != "linetable":
+                    raise AssertionError("Missing key: %s" % key)
+                continue
+            if isinstance(obj, list):
+                if obj:
+                    assert isinstance(obj[0], value)
+            else:
+                assert isinstance(obj, value)
+
+    ## function generator ##
+    # uninitilized #
+    check(func)
+    # initilized #
+    check(func())
+    ## generator expression ##
+    # check((i for i in range(3)))
+    ## string ##
+    check("(i for i in range(3))")
 
 
 def test_generator_frame_init() -> None:
@@ -209,7 +348,20 @@ def test_generator_frame_init() -> None:
 
 
 def test_generator_update() -> None:
-    pass
+    gen = Generator()
+    (
+        gen._internals["frame"],
+        gen._internals["linetable"],
+        gen._internals["source_lines"],
+    ) = (frame(), [], [])
+    _frame = currentframe()
+    _frame.f_locals["locals"] = None
+    gen._update(_frame, gen._frame_init())
+    assert isinstance(gen._internals["frame"], frame)
+    assert isinstance(gen._internals["frame"].f_back, frame)
+    assert "locals" not in gen._internals["frame"].f_locals
+    print(gen._internals["frame"].f_lineno)
+    # assert gen._internals["frame"].f_lineno == 0
 
 
 def test_generator__next___() -> None:
@@ -256,21 +408,21 @@ def test_generator__len___() -> None:
     pass
 
 
-## tests are for Cleaning + adjusting + pickling ##
+## tests are for cleaning + adjusting + pickling ##
 test_Pickler()
 # test_picklers()
 # record_jumps is tested in test_custom_adjustment
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
-# test_generator_append_line()
+test_generator_append_line()
 test_generator_block_adjust()
-# test_generator_string_collector_adjust()
+test_generator_string_collector_adjust()
 # test_generator_clean_source_lines()
 # test_generator_create_state()
 # test_generator_init_states()
-# test_generator__init__()
+test_generator__init__()
 test_generator_frame_init()
-# test_generator_update()
+test_generator_update()
 # test_generator__next___()
 # test_generator__iter___()
 test_generator_close()
