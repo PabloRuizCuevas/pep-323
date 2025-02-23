@@ -213,32 +213,50 @@ class Generator(Pickler):
         loop that used a value yield in its condition
         """
         if self._internals["jump_stack"]:
-            end_lineno = len(lines) + 1
+            end_lineno = self._internals["lineno"] + 1
             while (
                 self._internals["jump_stack"]
                 and reference_indent <= self._internals["jump_stack"][-1][0]
             ):  # -1: top of stack, 0: indent
                 index = self._internals["jump_stack"].pop()[1]
                 self._internals["jump_positions"][index][1] = end_lineno
+                ## add the adjustments
                 if (
                     self._internals["jump_stack_adjuster"]
+                    ## check if they're the same lineno ##
                     and self._internals["jump_positions"][index][0]
-                    == self._internals["jump_stack_adjuster"][-1][
-                        0
-                    ]  ## check if they're the same lineno ##
+                    == self._internals["jump_stack_adjuster"][-1][0]
                 ):
                     adjustments = self._internals["jump_stack_adjuster"].pop().pop()
-                    ## make sure any loops are recorded ##
+                    ## add the adjustments ##
+                    lines += adjustments
+                    ## make sure with the adjustments that have loops ##
+                    ## that the loops are recorded and the lineno is adjusted ##
+                    count = 0
                     for self._internals["lineno"], line in enumerate(
-                        adjustments, start=self._internals["lineno"] + 1
+                        ## temporarily add an additional adjustment to make ##
+                        ## sure the loop positions are recorded properly ##
+                        adjustments + [""],
+                        start=self._internals["lineno"] + 1,
                     ):
                         number_of_indents = get_indent(line)
                         if is_loop(line[number_of_indents:]):
-                            self._record_jumps(
-                                self._internals["lineno"], number_of_indents
+                            count += 1
+                            self._record_jumps(number_of_indents)
+                        ## we can use -1 since all the loops should be complete ##
+                        elif (
+                            count
+                            and number_of_indents
+                            <= self._internals["jump_stack"][-1][0]
+                        ):
+                            index = self._internals["jump_stack"].pop()[1]
+                            self._internals["jump_positions"][index][1] = (
+                                self._internals["lineno"] + 1
                             )
                         self._internals["linetable"] += [self._internals["lineno"]]
-                    lines += adjustments
+                    ## since we temporarily increased the number of adjustments ##
+                    self._internals["lineno"] -= 1
+                    self._internals["linetable"].pop()
         return lines
 
     def _append_line(
@@ -295,6 +313,9 @@ class Generator(Pickler):
         """
         Checks if lines that were adjusted because of value yields
         were in a block statement and therefore needs adjusting
+
+        Also, the new_lines do need to be indented accordingly
+        e.g. to the final_line or specfic adjustment
         """
         ## make sure any loops are recorded ##
         for self._internals["lineno"], line in enumerate(
@@ -314,9 +335,11 @@ class Generator(Pickler):
             ##     ...
             ##     locals()[".args"] += next(...)
             self._internals["jump_stack_adjuster"] += [
-                self._internals["lineno"]
-            ] + indent_lines(new_lines, number_of_indents + 4)
+                [self._internals["lineno"]]
+                + indent_lines(new_lines, number_of_indents + 4)
+            ]
         ## needs to indent itself and all other lines until the end of the block ##
+        ## Note: only elif since if statements should be fine ##
         elif check("elif"):
             ## +4 to encapsulate in an else statement +2 to make it an 'if' statement ##
             final_line = (
@@ -325,12 +348,13 @@ class Generator(Pickler):
             return (
                 current_lines
                 + [" " * number_of_indents + "else:"]
-                + indent_lines(new_lines)
+                + indent_lines(new_lines, number_of_indents + 4)
                 + [final_line]
             )
         elif check("except"):
             return except_adjust(current_lines, new_lines, final_line)
-        return current_lines + new_lines + [final_line]
+        self._internals["lineno"] += 1
+        return current_lines + indent_lines(new_lines, number_of_indents) + [final_line]
 
     def _string_collector_adjust(
         self,
@@ -446,13 +470,12 @@ class Generator(Pickler):
                         ID = ""
                     ID += char
                     if ID == "yield":
-                        ## how is this getting custom adjusted? - each line has to be checked and adjusted ##
+                        ## isn't temp == self._internals["lineno"]? ##
                         temp, line, lines = (
                             len(lines),
                             "",
                             self._block_adjust(lines, *unpack(line, source_iter)[:-1]),
                         )
-                        self._internals["lineno"] += 1
                         if running:
                             self._internals["linetable"] += [
                                 self._internals["lineno"]
@@ -543,6 +566,9 @@ class Generator(Pickler):
         for key in self._internals["frame"].f_locals:
             if isinstance(key, str) and key.isalnum() and key != "locals":
                 assign += [" " * 4 + "%s=locals()[%s]" % (key, key)]
+        ## needs to be added if not already there so it can be appended to ##
+        if '".args"' not in self._internals["frame"].f_locals:
+            assign += [" " * 4 + 'locals()[".args"] = []']
         if assign:
             assign = "\n" + "\n".join(assign)
         else:
