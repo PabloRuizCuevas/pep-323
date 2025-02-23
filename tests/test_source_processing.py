@@ -78,10 +78,19 @@ def function():pass"""
     assert skip_source_definition(source) == "pass"
 
 
-def test_collect_string() -> None:
-    source = '"""hello world"""'
+def test(source: str, f_string: bool = False) -> tuple[Iterable, str, str]:
+    """for setting up the string collector tests"""
     source_iter = enumerate(source)
-    index, char = next(source_iter)
+    for i in range(1 + f_string):
+        index, char = next(source_iter)
+    return source_iter, char, source
+
+
+def test_collect_string() -> None:
+
+    ## normal string ##
+
+    source_iter, char, source = test('"""hello world"""')
     assert collect_string(source_iter, char, source) == (1, ['""'])
     next(source_iter)
     assert collect_string(source_iter, char, source) == (14, ['"hello world"'])
@@ -89,24 +98,47 @@ def test_collect_string() -> None:
     assert collect_string(source_iter, char, source) == (16, ['""'])
 
     ## f-string ##
-    source = 'f"asdf{(yield 3)}"'
-    source_iter = enumerate(source)
-    next(source_iter)
-    index, char = next(source_iter)
-    # print(collect_string(source_iter, char, source[1:]))
-    # print(source)
+
+    # single bracket #
+    source_iter, char, source = test('f"asdf{(yield 3)}" -----', True)
+    assert collect_string(source_iter, char, source) == (
+        17,
+        [
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            "\"asdf{locals()['.args'].pop(0)}\"",
+        ],
+    )
+    # double bracket #
+    source_iter, char, source = test('f"asdf{{(yield 3)}}"', True)
+    assert collect_string(source_iter, char, source) == (19, ['"asdf{{(yield 3)}}"'])
 
 
 def test_collect_multiline_string() -> None:
-    source = '"""hello world"""'
-    source_iter = enumerate(source)
-    index, char = next(source_iter)
+    source_iter, char, source = test('"""hello world"""')
     assert collect_multiline_string(source_iter, char, source) == (
         len(source) - 1,
         [source],
     )
 
     ## f-string ##
+
+    # single bracket #
+    source_iter, char, source = test('f"""hello {(yield 3)} world"""', True)
+    assert collect_multiline_string(source_iter, char, source) == (
+        29,
+        [
+            "return  3",
+            "locals()['.args'] += [locals()['.send']]",
+            '"""hello {locals()[\'.args\'].pop(0)} world"""',
+        ],
+    )
+    # double bracket #
+    source_iter, char, source = test('f"""hello {{(yield 3)}} world"""', True)
+    assert collect_multiline_string(source_iter, char, source) == (
+        31,
+        ['"""hello {{(yield 3)}} world"""'],
+    )
 
 
 def test_string_collector_proxy(recursion: int = 1) -> None:
@@ -617,8 +649,8 @@ test_line_adjust()
 test_unpack_genexpr()
 test_skip_line_continuation()
 test_skip_source_definition()
-test_collect_string()  ## test for f-strings ##
-test_collect_multiline_string()  ## test for f-strings ##
+test_collect_string()
+test_collect_multiline_string()
 test_string_collector_proxy()
 test_inverse_bracket()
 ## are tested in test_unpack: named_adjust, unpack_adjust, update_lines
