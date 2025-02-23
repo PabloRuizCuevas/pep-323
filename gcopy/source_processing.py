@@ -313,6 +313,7 @@ def string_collector_proxy(
 
 def inverse_bracket(bracket: str) -> str:
     """Gets the inverse of the current bracket"""
+    ## use .get(..., None) since char == '' is possible ##
     return {
         "(": ")",
         ")": "(",
@@ -320,7 +321,7 @@ def inverse_bracket(bracket: str) -> str:
         "}": "{",
         "[": "]",
         "]": "[",
-    }[bracket]
+    }.get(bracket, None)
 
 
 def named_adjust(
