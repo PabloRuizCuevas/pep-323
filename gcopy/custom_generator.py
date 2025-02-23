@@ -167,12 +167,12 @@ class Generator(Pickler):
     _attrs = ("_internals",)  ## for Pickler ##
 
     def _record_jumps(self, number_of_indents: int) -> None:
-        self._internals["jump_positions"] += [
-            [self._internals["lineno"], None]
-        ]  ## has to be a list since we're assigning ##
+        """Records the jump positions for the loops (for and while) to help with code adjustments"""
+        ## has to be a list since we're assigning ##
+        self._internals["jump_positions"] += [[self._internals["lineno"], None]]
         self._internals["jump_stack"] += [
             (number_of_indents, len(self._internals["jump_positions"]) - 1)
-        ]  ## doesn't have to be a list since it'll get popped e.g. it's not really meant to be modified as is ##
+        ]
 
     def _custom_adjustment(self, line: str) -> list[str]:
         """
@@ -261,6 +261,8 @@ class Generator(Pickler):
 
     def _append_line(
         self,
+        index: int,
+        char: str,
         source: str,
         source_iter: Iterable,
         running: bool,
@@ -277,7 +279,7 @@ class Generator(Pickler):
         if char == ":":
             indentation = get_indent(line) + 4  # in case of ';'
             line += char
-        if not line.isspace():  ## empty lines are possible ##
+        if line and not line.isspace():  ## empty lines are possible ##
             reference_indent = get_indent(line)
             lines = self._update_jump_positions(lines, reference_indent)
             ## skip the definitions ##
@@ -372,7 +374,7 @@ class Generator(Pickler):
         )
         if adjustments:
             ## since we have adjustments we need to adjust the chars before it ##
-            adjustments_start, line_start, adjustments_end, line_end = (
+            (adjustments_start, line_start), (adjustments_end, line_end) = (
                 unpack(line)[:-1],
                 unpack(source_iter=source_iter)[:-1],
             )
@@ -450,6 +452,8 @@ class Generator(Pickler):
             elif char in "#\n;:":
                 ## 'space' is important (otherwise we get more indents than necessary) ##
                 space, char, lines, line, indented, indentation = self._append_line(
+                    index,
+                    char,
                     source,
                     source_iter,
                     running,
@@ -487,7 +491,7 @@ class Generator(Pickler):
         ## then you just pop them all off as being the same end_lineno ##
         ## note: we don't need a reference indent since the line is over e.g. ##
         ## the jump_stack will be popped if it exists ##
-        lines, _ = self._update_jump_positions(lines)
+        lines = self._update_jump_positions(lines)
         ## jump_stack is no longer needed ##
         del self._internals["jump_stack"], self._internals["jump_stack_adjuster"]
         return lines
@@ -595,9 +599,17 @@ class Generator(Pickler):
         ## if no state or then it must be EOF, but, if we're in a loop then we need to finish it ##
         while (
             self._internals["state"]
-            and self._internals["linetable"] > self._internals["frame"].f_lineno
+            and len(self._internals["linetable"]) > self._internals["frame"].f_lineno
         ) or self._internals["loops"]:
             yield self._create_state()
+
+    def _api_setup(self) -> None:
+        """sets up the api; subclasses should override this method for alternate api setup"""
+        self._internals = {
+            "prefix": "gi_",
+            "type": GeneratorType,
+            "version": "",  ## specific to 'async ' Generators for _frame_init ##
+        }
 
     def __init__(
         self,
@@ -618,11 +630,7 @@ class Generator(Pickler):
         The interals are accessible via the _internals dictionary
         """
         ## for the api setup ##
-        self._internals = {
-            "prefix": "gi_",
-            "type": GeneratorType,
-            "version": "",
-        }
+        self._api_setup()
         ## __setstate__ from Pickler._copier ##
         if FUNC:
             ## needed to identify certain attributes ##
@@ -631,6 +639,7 @@ class Generator(Pickler):
             if hasattr(FUNC, prefix + "code"):
                 self._internals["linetable"] = []
                 self._internals["frame"] = frame(getframe(FUNC))
+                self._internals["code"] = code(getcode(FUNC))
                 ## co_name is readonly e.g. can't be changed by user ##
                 if FUNC.gi_code.co_name == "<genexpr>":
                     self._internals["source"] = expr_getsource(FUNC)
@@ -641,14 +650,14 @@ class Generator(Pickler):
                     self._internals["frame"].f_locals = offset_adjust(
                         self._internals["frame"].f_locals
                     )
+                    self._internals["lineno"] = len(self._internals["source_lines"])
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     self._internals["source_lines"] = self._clean_source_lines(True)
-                    self._internals["frame"] = getframe(FUNC)
                     self._internals["lineno"] = self._internals["linetable"][
-                        self._internals["frame"].f_lineno - 1
-                    ] + lineno_adjust(self._internals["frame"])
-                self._internals["code"] = code(getcode(FUNC))
+                        self._internals["frame"].f_lineno
+                        - self._internals["code"].co_firstlineno
+                    ]  # + lineno_adjust(self._internals["frame"])
                 ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
                 if hasattr(FUNC, prefix + "yieldfrom"):
                     self._internals["yieldfrom"] = getattr(FUNC, prefix + "yieldfrom")
@@ -659,26 +668,26 @@ class Generator(Pickler):
             else:
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
+                    self._internals["code"] = code(FUNC.__code__)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
+                        ## proably need something that locates its source better for other cases ##
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
-                    self._internals["code"] = code(FUNC.__code__)
+                        self._internals["source_lines"] = self._clean_source_lines()
                 ## source code string ##
                 elif isinstance(FUNC, str):
                     self._internals["source"] = FUNC
-                    self._internals["code"] = code(compile(FUNC, "", "eval"))
-                ## code object
-                elif isinstance(FUNC, CodeType):
-                    self._internals["source"] = getsource(FUNC)
-                    self._internals["code"] = FUNC
+                    self._internals["source_lines"] = self._clean_source_lines()
+                    self._internals["code"] = code(
+                        compile(FUNC, currentframe().f_code.co_filename, "exec")
+                    )
+                ## code object - use a decompilation library and send in as a string ##
                 else:
                     raise TypeError(
                         "type '%s' is an invalid initializer for a Generator"
                         % type(FUNC)
                     )
-                ## make sure the source code is standardized and usable by this generator ##
-                self._internals["source_lines"] = self._clean_source_lines()
                 ## create the states ##
                 self._internals["frame"] = frame()
                 self._internals["suspended"] = False
