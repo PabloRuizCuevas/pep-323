@@ -8,41 +8,19 @@ TODO:
         --------------------
         - custom_generator -
         --------------------
-          _custom_adjust
-          _frame_init
-          _record_jumps
-          --------------------------------
-          string_collector_proxy (f-strings)
-          _block_adjust
-          _update_jump_positions
-          _string_collector_adjust
           _append_line
+          _clean_source_lines
           ----------------------------------------
           _create_state
           _init_states
-          _update
           __next__
           __iter__
-          send
-          throw
           ----------------------------------------
           __init__
-    
-        Needs checking:
-    
-        - check overwrite in __init__
-    
-        - check __init__ on string and code object initialisation options
-        
-        - check .send on generator expressions and in general for those that don't use it
-    
-        - check throw
-    
-        - check that the returns work now e.g. using next(self) and for i in self: ...
 
+          
+        When do i.e. gi_running and gi_suspended change?
 
-        control_flow_adjust - test to see if except does get included as a first line of a state (it shouldn't)
-        need to test what happens when there are no lines e.g. empty lines or no state / EOF
     
         Do after:
         - unpack - fix ordering of list popping when doing recursion
@@ -57,6 +35,8 @@ TODO:
           It relies on a single line containing all the code, it might be possible that you
           can have multiple independent expressions in one line but I haven't checked. -
           This function is only to help with users that choose to use compound statements.
+        - check expr_getsource on lambda expresssions since you can have i.e. encapsulation
+        - check the use of f_lineno on __init__ is correct since you need to adjust for first lineno
 
     Expansion to other types of generators:
 
