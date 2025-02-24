@@ -51,7 +51,10 @@ def test_generator_custom_adjustment() -> None:
     assert test("yield from ... ") == [
         "locals()['.yieldfrom']=... ",
         "for locals()['.i'] in locals()['.yieldfrom']:",
-        "    return locals()['.i']",
+        "    if locals()['.send']:",
+        "        return locals()['.i'].send(locals()['.send'])",
+        "    else:",
+        "        return locals()['.i']",
     ]
     ## for/while positions + default case return ##
     gen._internals["jump_positions"], gen._internals["jump_stack"] = [], []
@@ -68,7 +71,7 @@ def test_generator_custom_adjustment() -> None:
     ## return ##
     assert test("return ... ") == [
         "try:",
-        "    raise StopIteration(... )",
+        "    return EOF('... ')",
         "finally:",
         "    currentframe().f_back.f_locals['self'].close()",
     ]
@@ -266,15 +269,21 @@ def test_generator_create_state() -> None:
 
 
 def test_generator_init_states() -> None:
-    pass
+    gen = Generator(simple_generator())
+    ## show the state_generator is dependent on external variables ##
+    assert next(gen._internals["state_generator"]) == next(
+        gen._internals["state_generator"]
+    )
+    ## change external variables ##
+
+
+def simple_generator() -> GeneratorType:
+    yield 1
+    yield 2
+    yield 3
 
 
 def test_generator__init__() -> None:
-    def func():
-        yield 1
-        yield 2
-        yield 3
-
     def check(FUNC: Any) -> None:
         """
         Does two checks:
@@ -311,11 +320,13 @@ def test_generator__init__() -> None:
             else:
                 assert isinstance(obj, value)
 
+    ## check overwrite in __init__; do we want overwrite? ##
+
     ## function generator ##
     # uninitilized #
-    check(func)
+    check(simple_generator)
     # initilized #
-    check(func())
+    check(simple_generator())
     ## generator expression ##
     # check((i for i in range(3)))
     ## string ##
@@ -360,22 +371,22 @@ def test_generator_update() -> None:
     assert isinstance(gen._internals["frame"], frame)
     assert isinstance(gen._internals["frame"].f_back, frame)
     assert "locals" not in gen._internals["frame"].f_locals
-    print(gen._internals["frame"].f_lineno)
+    # print(gen._internals["frame"].f_lineno)
     # assert gen._internals["frame"].f_lineno == 0
 
 
 def test_generator__next___() -> None:
-    pass
+    assert next(Generator(simple_generator())) == 1
 
 
 def test_generator__iter___() -> None:
-    pass
+    assert [i for i in Generator(simple_generator())] == [1, 2, 3]
 
 
-def test_generator_close() -> None:
+def test_generator__close() -> None:
     gen = Generator()
     gen._internals = {}
-    assert gen.close() is None
+    assert gen._close() is None
     for key, value in {
         "frame": None,
         "running": False,
@@ -410,23 +421,24 @@ def test_generator__len___() -> None:
 
 ## tests are for cleaning + adjusting + pickling ##
 test_Pickler()
-# test_picklers()
+# test_picklers() ## check Generator
 # record_jumps is tested in test_custom_adjustment
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
-test_generator_append_line()
+test_generator_append_line()  ## needs more work
 test_generator_block_adjust()
 test_generator_string_collector_adjust()
-# test_generator_clean_source_lines()
+# test_generator_clean_source_lines() ## needs more work
 # test_generator_create_state()
-# test_generator_init_states()
-test_generator__init__()
-test_generator_frame_init()
-test_generator_update()
-# test_generator__next___()
-# test_generator__iter___()
-test_generator_close()
+# test_generator_init_states() ## change the external variables
+test_generator__init__()  ## uncomment out the line after expr_getsource is ready + check overwrite
+test_generator_frame_init()  ## needs more
+test_generator_update()  ## needs more
+test_generator__next___()
+test_generator__iter___()
+test_generator__close()
+# test_generator_close()
 # test_generator_send()
 # test_generator_throw()
 test_generator_type_checking()
-# test_generator__len__()
+# test_generator__len__() ## might just remove
