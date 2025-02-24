@@ -555,7 +555,10 @@ def test_yield_adjust() -> None:
     assert yield_adjust("yield from range(3)", "") == [
         "locals()['.yieldfrom']=range(3)",
         "for locals()['.i'] in locals()['.yieldfrom']:",
-        "    return locals()['.i']",
+        "    if locals()['.send']:",
+        "        return locals()['.i'].send(locals()['.send'])",
+        "    else:",
+        "        return locals()['.i']",
     ]
 
 
@@ -640,6 +643,11 @@ def test_singly_space() -> None:
     assert source == "    for i in [1 , 3 , 5]: "
 
 
+def test_exit_adjust() -> None:
+    case = "return   ...\nreturn    EOF(...)"
+    assert exit_adjust(case) == "return 1\nreturn"
+
+
 ## Note: commented out tests are not working yet ##
 test_update_depth()
 test_get_indent()
@@ -675,3 +683,4 @@ test_extract_genexpr()
 test_extract_lambda()
 test_except_adjust()
 test_singly_space()
+test_exit_adjust()
