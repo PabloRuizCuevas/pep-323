@@ -829,11 +829,13 @@ def yield_adjust(temp_line: str, indent: str) -> list[str]:
     """
     if temp_line.startswith("yield from "):
         return [
-            indent
-            + "locals()['.yieldfrom']="
-            + temp_line[11:],  ## 11 to get past the yield from
+            ## 11 to get past the yield from
+            indent + "locals()['.yieldfrom']=" + temp_line[11:],
             indent + "for locals()['.i'] in locals()['.yieldfrom']:",
-            indent + "    return locals()['.i']",
+            indent + "    if locals()['.send']:",
+            indent + "        return locals()['.i'].send(locals()['.send'])",
+            indent + "    else:",
+            indent + "        return locals()['.i']",
         ]
     if temp_line.startswith("yield "):
         return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
@@ -1085,3 +1087,21 @@ def singly_space(
         if space + 1 != index:
             indented = True
     return line, index, indented
+
+
+def exit_adjust(state: str) -> str:
+    """
+    Adjusts the source code for the generator exit
+    e.g. replaces all 'return ...' with
+    raise RuntimeError("generator ignored GeneratorExit")
+    """
+    state = state.split("\n")
+    for index, line in enumerate(state):
+        number_of_indents = get_indent(line)
+        temp = line[number_of_indents:]
+        if temp == "return" or temp.startswith("return "):
+            line = " " * number_of_indents + "return"
+            if not temp[7:].lstrip().startswith("EOF("):
+                line += " 1"
+        state[index] = line
+    return "\n".join(state)
