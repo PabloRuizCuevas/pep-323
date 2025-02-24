@@ -119,6 +119,21 @@ class frame(Pickler):
         return hasattrs(self, ("f_code", "f_lasti", "f_lineno", "f_locals"))
 
 
+class EOF(StopIteration):
+    """Custom exception to exit out of the generator on return statements"""
+
+    pass
+
+
+def generator(FUNC: FunctionType) -> FunctionType:
+    """Decorator of Generator class"""
+
+    def proxy(*args, **kwargs) -> Generator:
+        return Generator(FUNC(*args, **kwargs))
+
+    return proxy
+
+
 #################
 ### Generator ###
 #################
@@ -193,12 +208,12 @@ class Generator(Pickler):
         if is_loop(temp_line):
             self._record_jumps(number_of_indents)
             return [line]
-        if temp_line.startswith("return "):
+        if temp_line == "return" or temp_line.startswith("return "):
             ## close the generator then return ##
             ## have to use a try-finally in case the user returns from the locals ##
             return [
                 indent + "try:",
-                indent + "    raise StopIteration(" + line[7:] + ")",
+                indent + "    return EOF('" + line[7:] + "')",
                 indent + "finally:",
                 indent + "    currentframe().f_back.f_locals['self'].close()",
             ]
@@ -732,17 +747,22 @@ class Generator(Pickler):
             except StopIteration:
                 break
 
-    def __next__(self) -> Any:
+    def __next__(self, exception: str = "", close: bool = False) -> Any:
         """updates the current state and returns the result"""
         # set the next state and setup the function; it will raise a StopIteration for us
         next(self._internals["state_generator"])
+        if close:
+            self._internals["state"] = exit_adjust(self._internals["state"])
         ## update with the new state and get the frame ##
-        init = self._frame_init()
+        init = self._frame_init() + exception
         exec(init + self._internals["state"], globals(), locals())
         self._internals["running"] = True
-        ## if an error does occur it will be formatted correctly in cpython (just incorrect frame and line number) ##
         try:
-            return locals()["next_state"]()
+            result = locals()["next_state"]()
+            if isinstance(result, EOF):
+                self._close()
+                raise result
+            return result
         finally:
             self._update(locals()[".frame"], init)
 
@@ -778,16 +798,12 @@ class Generator(Pickler):
         Send takes exactly one arguement 'arg' that
         is sent to the functions yield variable
         """
-        if self._internals["lineno"] == 1:
+        if arg is not None and self._internals["lineno"] == 1:
             raise TypeError("can't send non-None value to a just-started generator")
-        if self._internals["yieldfrom"]:
-            self._internals["yieldfrom"].send(arg)
-        else:
-            self._internals["frame"].f_locals[".send"] = arg
-            return next(self)
+        self._internals["frame"].f_locals[".send"] = arg
+        return next(self)
 
-    def close(self) -> None:
-        """Closes the generator clearing its frame, state_generator, and yieldfrom"""
+    def _close(self) -> None:
         self._internals.update(
             {
                 "state_generator": empty_generator(),
@@ -798,12 +814,26 @@ class Generator(Pickler):
             }
         )
 
+    def close(self) -> None:
+        """
+        Throws a GeneratorExit and closes the generator clearing its
+        frame, state_generator, and yieldfrom
+
+        return = EOF('...')
+        yield  = return 1
+        """
+        try:
+            if self.__next__("GeneratorExit()", True):
+                raise RuntimeError("generator ignored GeneratorExit")
+        finally:
+            self._close()
+
     def throw(self, exception: Exception) -> NoReturn:
         """
         Raises an exception from the last line in the
         current state e.g. only from what has been
         """
-        raise exception
+        return self.__next__(repr(exception))
 
     def __setstate__(self, state: dict) -> None:
         Pickler.__setstate__(self, state)
