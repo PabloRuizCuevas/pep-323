@@ -10,33 +10,24 @@ TODO:
         --------------------
           _append_line
           _clean_source_lines
-          ----------------------------------------
+        ----------------------------------------
           _create_state
           _init_states
           __next__
           __iter__
-          ----------------------------------------
+        ----------------------------------------
           __init__
-
-          
-        When do i.e. gi_running and gi_suspended change?
 
     
         Do after:
         - unpack - fix ordering of list popping when doing recursion
-        - lineno_adjust can be done later with track_iter.
         
         Non-priority (at the moment) but will be needed later:
-        - get_instructions .positions needs implementing for versions < 3.11 if possible (might not be)
-        - check track_iter and probably add more conditional checks?
+        - When do i.e. gi_running and gi_suspended change?
         - check all the documentation + docstrings
         - f_back on frame needs checking
-        - check lineno_adjust to ensure that it's robust, not sure if it works in all cases.
-          It relies on a single line containing all the code, it might be possible that you
-          can have multiple independent expressions in one line but I haven't checked. -
-          This function is only to help with users that choose to use compound statements.
-        - check expr_getsource on lambda expresssions since you can have i.e. encapsulation
-        - check the use of f_lineno on __init__ is correct since you need to adjust for first lineno
+        - get_instructions .positions needs implementing for versions < 3.11 if possible
+          (only used for track_iter for generator/lambda expressions)
 
     Expansion to other types of generators:
 
