@@ -1,7 +1,7 @@
 ################
 ### tracking ###
 ################
-from .source_processing import is_definition, lineno_adjust, get_indent
+from .source_processing import get_indent  # , is_definition, lineno_adjust
 from .utils import is_cli, get_history_item, get_col_offset
 from inspect import currentframe, getframeinfo
 
@@ -44,6 +44,7 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
         key = get_indent(code_context)
         ## won't work for compound statements that are in block statements ##
         ## therefore, we check for a block statement and add 4 if so ##
+        ## e.g. if iter(k): iter(j); iter(f) e.g. how to get j and f set correctly ##
         temp = code_context[key:]
         ## needs fixing e.g. lineno_adjust somewhere ##
         ## also why does it not have other block conditions?? e.g. except, elif,case,default etc. ##
