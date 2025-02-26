@@ -559,7 +559,7 @@ class Generator(Pickler):
                 if flag:
                     self._internals["linetable"] += [start_pos]
                 self._internals["linetable"] += list(range(start_pos, end_pos))
-            self._internals["state"] = "\n".join(
+            self._internals["state"] = (
                 blocks + self._internals["source_lines"][end_pos:]
             )
             return
@@ -567,7 +567,7 @@ class Generator(Pickler):
             self._internals["source_lines"][temp_lineno:],
             list(range(temp_lineno, len(self._internals["source_lines"]))),
         )
-        self._internals["state"] = "\n".join(block)
+        self._internals["state"] = block
 
     def _locals(self) -> dict:
         """
@@ -576,31 +576,42 @@ class Generator(Pickler):
         """
         return self._internals["frame"].f_locals
 
-    def _frame_init(self) -> str:
+    def _frame_init(
+        self, exception: str = "", close: bool = False
+    ) -> tuple[str, FunctionType]:
         """
         initializes the frame with the current
         states variables and the _locals proxy
+        but also adjusts the current state
         """
-        assign = []
+        # set the next state and setup the function; it will raise a StopIteration for us
+        next(self._internals["state_generator"])
+        ## adjust the current state ##
+        if close:
+            self._internals["state"] = exit_adjust(self._internals["state"])
+        temp = get_indent(self._internals["state"][0])
+        if exception and self._internals["state"][0][temp:].startswith("try:"):
+            self._internals["state"] = (
+                self._internals["state"][0]
+                + [" " * (temp + 4) + exception]
+                + self._internals["state"][1:]
+            )
+        ## adjust the initializers ##
+        init = [
+            self._internals["version"] + "def next_state():",
+            " " * 4 + "locals=currentframe().f_back.f_locals['self']._locals",
+        ]
         for key in self._internals["frame"].f_locals:
             if isinstance(key, str) and key.isalnum() and key != "locals":
-                assign += [" " * 4 + "%s=locals()[%s]" % (key, key)]
+                init += [" " * 4 + "%s=locals()[%s]" % (key, key)]
         ## needs to be added if not already there so it can be appended to ##
         if '".args"' not in self._internals["frame"].f_locals:
-            assign += [" " * 4 + 'locals()[".args"] = []']
-        if assign:
-            assign = "\n" + "\n".join(assign)
-        else:
-            assign = ""
+            init += [" " * 4 + 'locals()[".args"] = []']
+        init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
         ## try not to use variables here (otherwise it can mess with the state) ##
-        return (
-            self._internals["version"]
-            + """def next_state():
-    locals=currentframe().f_back.f_locals['self']._locals%s
-    currentframe().f_back.f_locals['.frame']=currentframe()
-"""
-            % assign
-        )
+        exec("\n".join(init + self._internals["state"]), globals(), locals())
+        self._internals["running"] = True
+        return init, locals()["next_state"]
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
@@ -628,8 +639,7 @@ class Generator(Pickler):
 
     def __init__(
         self,
-        FUNC: FunctionType | GeneratorType | CodeType | str = None,
-        overwrite: bool = False,
+        FUNC: FunctionType | GeneratorType | str = None,
     ) -> None:
         """
         Takes in a function/generator or its source code as the first arguement
@@ -669,10 +679,15 @@ class Generator(Pickler):
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     self._internals["source_lines"] = self._clean_source_lines(True)
-                    self._internals["lineno"] = self._internals["linetable"][
+                    self._internals["lineno"] = (
                         self._internals["frame"].f_lineno
                         - self._internals["code"].co_firstlineno
-                    ]  # + lineno_adjust(self._internals["frame"])
+                    )
+                    ## Might implement at another time but this is just for compound statements ##
+                    ## and therefore not strictly necessary from the standpoint of the style guide ##
+                    # self._internals["lineno"] = self._internals["linetable"][
+                    #     self._internals["frame"].f_lineno - self._internals["code"].co_firstlineno
+                    # ]  + lineno_adjust(self._internals["frame"])
                 ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
                 if hasattr(FUNC, prefix + "yieldfrom"):
                     self._internals["yieldfrom"] = getattr(FUNC, prefix + "yieldfrom")
@@ -712,32 +727,6 @@ class Generator(Pickler):
             self._internals["running"] = False
             self._internals["state"] = None
             self._internals["state_generator"] = self._init_states()
-            if overwrite:  ## this might not actually work??
-                currentframe().f_back.f_locals[getcode(FUNC).co_name] = self
-
-    def __len__(self) -> int:
-        """
-        Gets the number of states for generators with
-        yield statements indented exactly 4 spaces.
-
-        In general, you shouldn't be able to get the length
-        of a generator function, but if it's very predictably
-        defined then you can.
-        """
-
-        def number_of_yields():
-            """Gets the number of yields that are indented exactly 4 spaces"""
-            for line in self._internals["state"]:
-                indents = get_indent(line)
-                temp = line[indents:]
-                if temp.startswith("yield") and not temp.startswith("yield from"):
-                    if indents > 4:
-                        raise TypeError(
-                            "__len__ is only available where all yield statements are indented exactly 4 spaces"
-                        )
-                    yield 1
-
-        return sum(number_of_yields())
 
     def __iter__(self) -> GeneratorType:
         """Converts the generator function into an iterable"""
@@ -749,16 +738,10 @@ class Generator(Pickler):
 
     def __next__(self, exception: str = "", close: bool = False) -> Any:
         """updates the current state and returns the result"""
-        # set the next state and setup the function; it will raise a StopIteration for us
-        next(self._internals["state_generator"])
-        if close:
-            self._internals["state"] = exit_adjust(self._internals["state"])
         ## update with the new state and get the frame ##
-        init = self._frame_init() + exception
-        exec(init + self._internals["state"], globals(), locals())
-        self._internals["running"] = True
+        init, next_state = self._frame_init(exception, close)
         try:
-            result = locals()["next_state"]()
+            result = next_state()
             if isinstance(result, EOF):
                 self._close()
                 raise result
