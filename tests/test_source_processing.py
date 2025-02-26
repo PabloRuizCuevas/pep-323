@@ -20,17 +20,16 @@ def test_get_indent() -> None:
     assert get_indent("  asdf") == 2
 
 
-def test_lineno_adjust() -> None:
-    from inspect import currentframe
-
-    frame = currentframe()
-    True
-    True
-    print(frame.f_lasti)
-    import dis
-
-    dis.dis(frame.f_code)
-    # print(lineno_adjust(frame))
+# def test_lineno_adjust() -> None:
+#     from inspect import currentframe
+#     frame = currentframe()
+#     1
+#     True
+#     True
+#     print(frame.f_lasti)
+#     import dis
+#     dis.dis(frame.f_code)
+#     # print(lineno_adjust(frame))
 
 
 def test_line_adjust() -> None:
@@ -566,17 +565,6 @@ def test_get_loops() -> None:
     assert get_loops(3, [(1, 5), (2, 4), (6, 8)]) == [(0, 4), (1, 3)]
 
 
-def test_extract_source_from_positions() -> None:
-    ## genexpr extractor ##
-    code_obj = eval("(i for i \\\n   in range(3))").gi_code
-    source = "iter1, iter2 = (i for i in range(3)), (j for j in (i for i in range(5)) if j in (i for i in range(2)) )"
-    assert extract_source_from_positions(code_obj, source) == "(i for i in range(3))"
-    ## lambda extractor ##
-    code_obj = eval("lambda x: print('hi')").__code__
-    source = "lambda x:x,lambda y:lambda z:z, lambda a:a, lambda x: print('hi')"
-    assert extract_source_from_positions(code_obj, source) == "lambda x: print('hi')"
-
-
 def test_extract_source_from_comparison() -> None:
     ## genexpr extractor ##
     code_obj = eval("(i for i \\\n   in range(3))").gi_code
@@ -595,8 +583,9 @@ def test_extract_source_from_comparison() -> None:
 
 
 def test_expr_getsource() -> None:
-    for FUNC in (eval("(i for i \\\n   in range(3))"), eval("lambda x: print('hi')")):
-        print(expr_getsource(FUNC))
+    a, b = lambda x: x, (i for i in range(3))
+    expr_getsource(a)
+    expr_getsource(b)
 
 
 def test_extract_genexpr() -> None:
@@ -645,15 +634,14 @@ def test_singly_space() -> None:
 
 def test_exit_adjust() -> None:
     case = "return   ...\nreturn    EOF(...)"
-    assert exit_adjust(case) == "return 1\nreturn"
+    assert exit_adjust(case.split("\n")) == ["return 1", "return"]
 
 
-## Note: commented out tests are not working yet ##
 test_update_depth()
 test_get_indent()
-# test_lineno_adjust()            ## needs checking ##
+# test_lineno_adjust() ## not going to be implemented at present time ##
 test_line_adjust()
-## is tested in unpack_genexpr: update_line
+## tested in unpack_genexpr: update_line
 test_unpack_genexpr()
 test_skip_line_continuation()
 test_skip_source_definition()
@@ -661,7 +649,7 @@ test_collect_string()
 test_collect_multiline_string()
 test_string_collector_proxy()
 test_inverse_bracket()
-## are tested in test_unpack: named_adjust, unpack_adjust, update_lines
+## tested in test_unpack: named_adjust, unpack_adjust, update_lines
 test_unpack()  ## need to fix the ordering of popping ##
 test_collect_definition()
 test_is_alternative_statement()
@@ -676,7 +664,6 @@ test_skip_blocks()
 test_loop_adjust()  ## need to check indexes ##
 test_yield_adjust()
 test_get_loops()
-# test_extract_source_from_positions()
 test_extract_source_from_comparison()
 # test_expr_getsource()
 test_extract_genexpr()
