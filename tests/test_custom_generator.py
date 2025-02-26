@@ -405,7 +405,8 @@ def test_generator_send() -> None:
 
 
 def test_generator_throw() -> None:
-    pass
+    gen = Generator((i for i in range(3)))
+    gen.throw()
 
 
 def test_generator_type_checking() -> None:
@@ -413,10 +414,6 @@ def test_generator_type_checking() -> None:
     assert isinstance(gen, (GeneratorType, Generator)) and issubclass(
         type(gen), (GeneratorType, Generator)
     )
-
-
-def test_generator__len___() -> None:
-    pass
 
 
 ## tests are for cleaning + adjusting + pickling ##
@@ -441,4 +438,3 @@ test_generator__close()
 # test_generator_send()
 # test_generator_throw()
 test_generator_type_checking()
-# test_generator__len__() ## might just remove
