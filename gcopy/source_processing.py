@@ -26,49 +26,50 @@ def get_indent(line: str) -> int:
     return count
 
 
-def lineno_adjust(frame: FrameType) -> int:
-    """
-    unpacks a line of compound statements
-    into lines up to the last instruction
-    that determines the adjustment required
-    """
-    line, current_lineno, instructions = (
-        [],
-        frame.f_lineno,
-        get_instructions(frame.f_code),
-    )
-    ## get the instructions at the lineno ##
-    for instruction in instructions:
-        lineno, obj = instruction.positions.lineno, (
-            list(instruction.positions[2:]),
-            instruction.offset,
-        )
-        if not None in obj[0] and lineno == current_lineno:
-            ## exhaust the iter to get all the lines ##
-            line = [obj]
-            for instruction in instructions:
-                lineno, obj = instruction.positions.lineno, (
-                    list(instruction.positions[2:]),
-                    instruction.offset,
-                )
-                if lineno != current_lineno:
-                    break
-                line += [obj]
-            break
-    ## combine the lines until f_lasti is encountered to return how many lines ##
-    ## futher from the current line would the offset be if split up into lines ##
-    if line:
-        index, current, lasti = 0, [0, 0], frame.f_lasti
-        line.sort()
-        for pos, offset in line:
-            if offset == lasti:
-                return index
-            if pos[0] > current[1]:  ## independence ##
-                current = pos
-                index += 1
-            elif pos[1] > current[1]:  ## intersection ##
-                current[1] = pos[1]
-    raise ValueError("f_lasti not encountered")
+## only required when using compound statements ##
+# def lineno_adjust(frame: FrameType) -> int:
+#     """
+#     unpacks a line of compound statements
+#     into lines up to the last instruction
+#     that determines the adjustment required
+#     """
+#     line, current_lineno, instructions = (
+#         [],
+#         frame.f_lineno,
+#         get_instructions(frame.f_code),
+#     )
+#     ## get the instructions at the lineno ##
+#     for instruction in instructions:
+#         lineno, obj = instruction.positions.lineno, (
+#             list(instruction.positions[2:]),
+#             instruction.offset,
+#         )
+#         if not None in obj[0] and lineno == current_lineno:
+#             ## exhaust the iter to get all the lines ##
+#             line = [obj]
+#             for instruction in instructions:
+#                 lineno, obj = instruction.positions.lineno, (
+#                     list(instruction.positions[2:]),
+#                     instruction.offset,
+#                 )
+#                 if lineno != current_lineno:
+#                     break
+#                 line += [obj]
+#             break
+#     ## combine the lines until f_lasti is encountered to return how many lines ##
+#     ## futher from the current line would the offset be if split up into lines ##
+#     if line:
+#         index, current, lasti = 0, [0, 0], frame.f_lasti
+#         line.sort()
+#         for pos, offset in line:
+#             if offset == lasti:
+#                 return index
+#             if pos[0] > current[1]:  ## independence ##
+#                 current = pos
+#                 index += 1
+#             elif pos[1] > current[1]:  ## intersection ##
+#                 current[1] = pos[1]
+#     raise ValueError("f_lasti not encountered")
 
 
 def line_adjust(line: str, lines: list[str], adjust: bool = True) -> str:
@@ -866,30 +867,6 @@ def get_loops(
     return loops
 
 
-def extract_source_from_positions(code_obj: CodeType, source: str) -> str:
-    """
-    Uses co_positions from version 3.11
-    to extract the correct source code
-    """
-    # start_line, end_line, start_col, end_col
-    positions = code_obj.co_positions()
-    is_source_list = isinstance(source, list)
-    pos = next(positions, (None, None, None, None))[1:]
-    current_min, current_max = pos[1:]
-    if is_source_list:
-        current_max_lineno = pos[1]
-    for pos in positions:
-        if pos[-2] and pos[-2] < current_min:
-            current_min = pos[-2]
-        if pos[-1] and pos[-1] > current_max:
-            current_min = pos[-1]
-        if is_source_list and pos[1] and pos[1] > current_max_lineno:
-            current_max_lineno = pos[1]
-    if is_source_list:
-        source = "\n".join(source[: current_max_lineno + 1])
-    return source[current_min:current_max]
-
-
 def extract_source_from_comparison(
     code_obj: CodeType, source: str, extractor: FunctionType
 ) -> str:
@@ -914,7 +891,7 @@ def extract_source_from_comparison(
     if (3, 3) <= version_info:
         attrs += ("co_qualname",)
     if isinstance(source, list):
-        source = "\n".join(source)
+        source = "".join(source)
     for col_offset, end_col_offset in extractor(source):
         try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
@@ -929,9 +906,10 @@ def extract_source_from_comparison(
 
 def expr_getsource(FUNC: Any) -> str:
     """
-    Uses co_positions or otherwise goes through the source code
-    extracting expressions until a match is found on a code object
-    basis to get the source
+    Uses the source code extracting expressions until a
+    match is found on a code object basis to get the source
+
+    You can also to some extent use co_positions as well
 
     Note:
     the extractor should return a string and if using a
@@ -955,11 +933,6 @@ def expr_getsource(FUNC: Any) -> str:
             lineno = getframe(FUNC).f_lineno - 1
             source = findsource(code_obj)[0][lineno:]
         extractor = extract_genexpr
-    ## get the rest of the source ##
-    if False:
-        if (3, 11) <= version_info and not is_cli():
-            return extract_source_from_positions(code_obj, source)
-    ## otherwise match with generator expressions in the original source to get the source code ##
     return extract_source_from_comparison(code_obj, source, extractor)
 
 
@@ -1095,7 +1068,6 @@ def exit_adjust(state: str) -> str:
     e.g. replaces all 'return ...' with
     raise RuntimeError("generator ignored GeneratorExit")
     """
-    state = state.split("\n")
     for index, line in enumerate(state):
         number_of_indents = get_indent(line)
         temp = line[number_of_indents:]
@@ -1104,4 +1076,4 @@ def exit_adjust(state: str) -> str:
             if not temp[7:].lstrip().startswith("EOF("):
                 line += " 1"
         state[index] = line
-    return "\n".join(state)
+    return state
