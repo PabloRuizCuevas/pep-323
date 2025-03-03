@@ -289,25 +289,130 @@ def test_generator_create_state() -> None:
         "jump_positions": [],
         "source_lines": [
             "    return 1",
-            "    if True:" "        return 2",
+            "    if True:",
+            "        return 2",
             "    else:",
             "        return 3",
             "    return 4",
         ],
     }
-    gen._internals["lineno"] = 3  ## doesn't work?
-    gen._create_state()
-    # assert gen._internals["state"]
-    print(gen._internals["state"])
+
+    def test(lineno: int) -> tuple[list[str], list[int]]:
+        gen._internals["lineno"] = lineno
+        gen._create_state()
+        return gen._internals["state"], gen._internals["linetable"]
+
+    ## control_flow_adjust e.g. no loops ##
+
+    assert test(3) == (["    return 2", "    return 4"], [2, 5])
+    assert test(5) == (["    return 3", "    return 4"], [4, 5])
+
+    ## with loops ##
+    gen._internals["source_lines"] = [
+        "    for i in range(3):",
+        "        print(i)",
+        "        for j in range(4):",
+        "            print(j)",
+        "            for k in range(4):",
+        "               return 1",
+        "               if True:",
+        "                   return 2",
+        "               else:",
+        "                   return 3",
+        "               return 4",
+        "            print(j)",
+        "        print(i)",
+    ]
+    start_indexes = [0, 2, 4]
+    end_indexes = [11, 12, 13]
+    ## they get reduced by one in get_loops and originally they are linenos ##
+    gen._internals["jump_positions"] = [
+        (pos[0] + 1, pos[1] + 1) for pos in zip(start_indexes, end_indexes)
+    ]
+    assert test(8) == (
+        [
+            "    return 2",
+            "    return 4",
+            "    for k in locals()['.12']:",
+            "       return 1",
+            "       if True:",
+            "           return 2",
+            "       else:",
+            "           return 3",
+            "       return 4",
+            "    for j in locals()['.8']:",
+            "        print(j)",
+            "        for k in range(4):",
+            "           return 1",
+            "           if True:",
+            "               return 2",
+            "           else:",
+            "               return 3",
+            "           return 4",
+            "        print(j)",
+            "    for i in locals()['.4']:",
+            "        print(i)",
+            "        for j in range(4):",
+            "            print(j)",
+            "            for k in range(4):",
+            "               return 1",
+            "               if True:",
+            "                   return 2",
+            "               else:",
+            "                   return 3",
+            "               return 4",
+            "            print(j)",
+            "        print(i)",
+        ],
+        [
+            7,
+            10,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+        ],
+    )
 
 
 def test_generator_init_states() -> None:
     gen = Generator(simple_generator())
+    ## show the api is setup correctly ##
+    for key in dir(gen):
+        if key.startswith("gi_"):
+            assert getattr(gen, key) is gen._internals[key[3:]]
+    assert gen._internals["state"] is None
     ## show the state_generator is dependent on external variables ##
-    assert next(gen._internals["state_generator"]) == next(
-        gen._internals["state_generator"]
-    )
-    ## change external variables ##
+    for _ in range(2):
+        next(gen._internals["state_generator"])
+        assert gen._internals["state"] == gen._internals["source_lines"]
+    ## EOF ##
+    gen._internals["state"] = None
+    assert next(gen._internals["state_generator"], True)
 
 
 def simple_generator() -> GeneratorType:
@@ -368,45 +473,111 @@ def test_generator__init__() -> None:
 
 
 def test_generator_frame_init() -> None:
-    gen = Generator()
-    gen._internals["frame"] = frame()
-    assert (
-        gen._frame_init()
-        == """def next_state():
-    locals=currentframe().f_back.f_locals['self']._locals
-    locals()[".args"] = []
-    currentframe().f_back.f_locals['.frame']=currentframe()
-"""
-    )
+    gen = Generator(simple_generator())
+    ### state adjustments ###
+    ## close/exit ##
+    gen._frame_init(close=True)
+    assert gen._internals["state"] == ["    return 1" for _ in range(3)]
+    ## exception ##
+    gen._frame_init("Exception")
+    gen._internals["state"] == [
+        "    Exception",
+        "    return 1",
+        "    return 2",
+        "    return 3",
+    ]
+
+    ## exception with try block ##
+    def test():
+        try:
+            yield 3
+        except:
+            pass
+
+    gen2 = Generator(test())
+    gen2._frame_init("Exception")
+    assert gen2._internals["state"] == [
+        "    try:",
+        "        Exception",
+        "        return 3",
+        "    except:",
+        "        pass",
+    ]
+    ### frame adjustments ###
+    ## no local variables stored ##
+    init, _ = gen._frame_init()
+    assert init == [
+        "def next_state():",
+        "    locals=currentframe().f_back.f_locals['self']._locals",
+        '    locals()[".args"] = []',
+        "    currentframe().f_back.f_locals['.frame']=currentframe()",
+    ]
+    ## with local variables stored ##
     gen._internals["frame"].f_locals.update({"a": 3, "b": 2, "c": 1})
-    assert (
-        gen._frame_init()
-        == """def next_state():
-    locals=currentframe().f_back.f_locals['self']._locals
-    a=locals()[a]
-    b=locals()[b]
-    c=locals()[c]
-    locals()[".args"] = []
-    currentframe().f_back.f_locals['.frame']=currentframe()
-"""
-    )
+    init, _ = gen._frame_init()
+    assert init == [
+        "def next_state():",
+        "    locals=currentframe().f_back.f_locals['self']._locals",
+        "    a=locals()[a]",
+        "    b=locals()[b]",
+        "    c=locals()[c]",
+        '    locals()[".args"] = []',
+        "    currentframe().f_back.f_locals['.frame']=currentframe()",
+    ]
+
+
+def check_attrs(_frame):
+    for attr in frame._attrs:
+        print(attr, ": ", end="", sep="")
+        try:
+            print(getattr(_frame, attr))
+        except:
+            print()
 
 
 def test_generator_update() -> None:
     gen = Generator()
-    (
-        gen._internals["frame"],
-        gen._internals["linetable"],
-        gen._internals["source_lines"],
-    ) = (frame(), [], [])
-    _frame = currentframe()
-    _frame.f_locals["locals"] = None
-    gen._update(_frame, gen._frame_init())
-    assert isinstance(gen._internals["frame"], frame)
-    assert isinstance(gen._internals["frame"].f_back, frame)
-    assert "locals" not in gen._internals["frame"].f_locals
-    # print(gen._internals["frame"].f_lineno)
-    # assert gen._internals["frame"].f_lineno == 0
+    gen._internals.update(
+        {
+            "frame": None,
+            "linetable": [],
+            "source_lines": [],
+        }
+    )
+    ## No frame e.g. exception would have occurred ##
+    gen._update(None, "")
+    # assert gen._internals["frame"] == frame(None)
+    assert gen._internals["frame"] == frame()
+    assert gen._internals["state"] is None
+    assert gen._internals["running"] == False
+
+    ### With frame ###
+    ## No previous frame ##
+    def test():
+        new_frame = frame()
+        new_frame.f_locals = {"a": 1, "b": 2, "c": 3, ".send": 1, "locals": gen._locals}
+        # for __bool__
+        new_frame.f_code = 1
+        new_frame.f_lasti = 1
+        return new_frame
+
+    gen._internals["frame"] = None
+    gen._update(test(), "")
+    assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    assert gen._internals["frame"].f_back is None
+    ## With previous frame ##
+    gen._internals["frame"] = temp = test()
+    temp.f_locals = {"a": 0, "b": 1, "c": 2}
+    gen._update(test(), "")
+    ## new frame locals takes precedence ##
+    assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    ## old frame locals are preserved ##
+    assert gen._internals["frame"].f_back.f_locals == temp.f_locals
+    ## With lineo ##
+    # 3. init
+    # 4. lineno - internals
+    # 5. source_lines - internals
+    ## EOF ##
 
 
 def test_generator__next__() -> None:
@@ -456,16 +627,16 @@ test_Pickler()
 # test_picklers() ## check Generator
 # record_jumps is tested in test_custom_adjustment
 # test_generator_custom_adjustment()
-test_generator_update_jump_positions()  ## could assume lineno is index for the loops ##
-test_generator_append_line()  ## assumes lineno is the lineno ##
-test_generator_block_adjust()  ## could assume lineno is index for the loops ##
+test_generator_update_jump_positions()
+test_generator_append_line()
+test_generator_block_adjust()
 test_generator_string_collector_adjust()
 # test_generator_clean_source_lines()
-test_generator_create_state()
-# test_generator_init_states() ## change the external variables
-# test_generator__init__() ## uncomment out the line after expr_getsource is ready + check overwrite
-# test_generator_frame_init() ## needs more
-# test_generator_update() ## needs more
+test_generator_create_state()  ## check end_pos and the test case setup used ##
+test_generator_init_states()
+test_generator__init__()  ## check overwrite + the generator getsource ##
+test_generator_frame_init()
+test_generator_update()  ## finish the linenos and EOF
 # test_generator__next__()
 # test_generator__iter__()
 test_generator__close()
