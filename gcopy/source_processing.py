@@ -789,7 +789,8 @@ def loop_adjust(
         elif is_statement(temp_line, "break"):
             flag = True
             new_lines += ["locals()['.continue']=False", "break"]
-            indexes = indexes[index:] + [indexes[index]] + indexes[:index]
+            ## the index can be None since the line should run without errors ##
+            indexes = indexes[:index] + [None] + indexes[index:]
         else:
             new_lines += [temp_line]
     ## adjust the outer loops iterator in case it's an iterator that needs its tracked version ##
@@ -809,10 +810,10 @@ def loop_adjust(
             outer_loop, 8 - get_indent(outer_loop[0])
         ), [
             ## add all the indexes which are also adjusted for the changes ##
-            indexes[0],
-            indexes[0],
+            None,
+            None,
         ] + indexes + [
-            pos[0]
+            None,
         ] + list(
             range(*pos)
         )
@@ -1077,3 +1078,21 @@ def exit_adjust(state: str) -> str:
                 line += " 1"
         state[index] = line
     return state
+
+
+def outer_loop_adjust(
+    blocks: list[str],
+    indexes: list[int],
+    source_lines: list[str],
+    loops: list[tuple[int, int]],
+    end_pos: int,
+) -> tuple[list[str], list[int]]:
+    """Adds all the outer loops with the iterable adjusted to the current block and its indexes"""
+    ## add all the outer loops ##
+    for start_pos, end_pos in loops[::-1]:
+        flag, block = iter_adjust(source_lines[start_pos:end_pos])
+        blocks += indent_lines(block, 4 - get_indent(block[0]))
+        if flag:
+            indexes += [start_pos]
+        indexes += list(range(start_pos, end_pos))
+    return blocks + source_lines[end_pos:], indexes
