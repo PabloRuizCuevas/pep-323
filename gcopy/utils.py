@@ -84,7 +84,12 @@ def code_attrs() -> tuple[str, ...]:
 def attr_cmp(obj1: Any, obj2: Any, attrs: Iterable[str]) -> bool:
     """Compares two objects by a collection of their attrs"""
     for attr in attrs:
-        if getattr(obj1, attr) != getattr(obj2, attr):
+        flag1, flag2 = hasattr(obj1, attr), hasattr(obj2, attr)
+        ## both must have the attr or not to preceed ##
+        if flag1 == flag2:
+            if flag1 and flag2 and getattr(obj1, attr) != getattr(obj2, attr):
+                return False
+        else:
             return False
     return True
 
