@@ -17,9 +17,10 @@ except:
 
 
 ## minium version supported ##
-if version_info < (3, 5):
-    ## if positions in get_instructions does not happen ##
-    ## for lower versions this will have to be 3.11 ##
+## if positions in get_instructions does not happen ##
+## for lower versions this will have to be 3.11 ##
+# if version_info < (3, 5):
+if version_info < (3, 11):
     raise ImportError("Python version 3.5 or above is required")
 
 
@@ -228,7 +229,7 @@ class Generator(Pickler):
         loop that used a value yield in its condition
         """
         if self._internals["jump_stack"]:
-            end_lineno = self._internals["lineno"] + 1
+            end_lineno = self._internals["lineno"]
             while (
                 self._internals["jump_stack"]
                 and reference_indent <= self._internals["jump_stack"][-1][0]
@@ -300,7 +301,7 @@ class Generator(Pickler):
             ## skip the definitions ##
             if is_definition(line[reference_indent:]):
                 index, char, self._internals["lineno"], lines = collect_definition(
-                    index,
+                    index - len(line) + 1,
                     lines,
                     self._internals["lineno"],
                     source,
@@ -308,14 +309,18 @@ class Generator(Pickler):
                     reference_indent,
                 )
             else:
-                self._internals["lineno"] += 1
                 lines += self._custom_adjustment(line)
+                ## update the lineno after so that the loops positions are 0 based indexing ##
+                self._internals["lineno"] += 1
                 ## make a linetable if using a running generator ##
-                if running and char == "\n":
-                    self._internals["linetable"] += [self._internals["lineno"]]
+                ## for the linetable e.g. for lineno_adjust e.g. compound statements ##
+                # if running and char == "\n":
+                #     self._internals["linetable"] += [self._internals["lineno"]]
         ## start a new line ##
         if char in ":;":
-            # just in case
+            ## assumes the current line is i.e. ; ... ; ... or if ... : ... ; ... ##
+            ## if it's not this then we should get an empty line and this assumption ##
+            ## will not take effect in modifying lines ##
             indented, line = True, " " * indentation
         else:
             indented, line = False, ""
@@ -334,7 +339,7 @@ class Generator(Pickler):
         Also, the new_lines do need to be indented accordingly
         e.g. to the final_line or specfic adjustment
         """
-        ## make sure any loops are recorded ##
+        ## make sure any loops are recorded (necessary for 'yield from ...' adjustment) ##
         for self._internals["lineno"], line in enumerate(
             new_lines, start=self._internals["lineno"] + 1
         ):
@@ -459,7 +464,7 @@ class Generator(Pickler):
             ## join everything after the line continuation until the next \n or ; ##
             elif char == "\\":
                 skip_line_continuation(source_iter, source, index)
-                ## in case of a line continuation without a space before or after ##
+                ## in case of a line continuation without a space before (whitespace after is removed) ##
                 if space + 1 != index:
                     line += " "
                     space = index
@@ -495,10 +500,11 @@ class Generator(Pickler):
                             "",
                             self._block_adjust(lines, *unpack(line, source_iter)[:-1]),
                         )
-                        if running:
-                            self._internals["linetable"] += [
-                                self._internals["lineno"]
-                            ] * (len(lines) - temp)
+                        ## for the linetable e.g. for lineno_adjust e.g. compound statements ##
+                        # if running:
+                        #     self._internals["linetable"] += [
+                        #         self._internals["lineno"]
+                        #     ] * (len(lines) - temp)
                         depth, ID = 0, ""
                 else:
                     ID = ""
@@ -549,25 +555,14 @@ class Generator(Pickler):
                 self._internals["source_lines"][start_pos:end_pos],
                 *(start_pos, end_pos)
             )
-            self._internals["linetable"] = indexes
-            ## add all the outer loops ##
-            for start_pos, end_pos in loops[::-1]:
-                flag, block = iter_adjust(
-                    self._internals["source_lines"][start_pos:end_pos]
-                )
-                blocks += indent_lines(block, 4 - get_indent(block[0]))
-                if flag:
-                    self._internals["linetable"] += [start_pos]
-                self._internals["linetable"] += list(range(start_pos, end_pos))
-            self._internals["state"] = (
-                blocks + self._internals["source_lines"][end_pos:]
+            self._internals["state"], self._internals["linetable"] = outer_loop_adjust(
+                blocks, indexes, self._intenals["source_lines"], loops, end_pos
             )
             return
-        block, self._internals["linetable"] = control_flow_adjust(
+        self._internals["state"], self._internals["linetable"] = control_flow_adjust(
             self._internals["source_lines"][temp_lineno:],
             list(range(temp_lineno, len(self._internals["source_lines"]))),
         )
-        self._internals["state"] = block
 
     def _locals(self) -> dict:
         """
@@ -622,7 +617,7 @@ class Generator(Pickler):
         del prefix
         ## since self._internals["state"] starts as 'None' ##
         yield self._create_state()
-        ## if no state or then it must be EOF, but, if we're in a loop then we need to finish it ##
+        ## if no state then it must be EOF, but, if we're in a loop then we need to finish it ##
         while (
             self._internals["state"]
             and len(self._internals["linetable"]) > self._internals["frame"].f_lineno
@@ -685,6 +680,11 @@ class Generator(Pickler):
                     )
                     ## Might implement at another time but this is just for compound statements ##
                     ## and therefore not strictly necessary from the standpoint of the style guide ##
+                    self._internals["lineno"] = (
+                        self._internals["frame"].f_lineno
+                        - self._internals["code"].co_firstlineno
+                        + 1
+                    )
                     # self._internals["lineno"] = self._internals["linetable"][
                     #     self._internals["frame"].f_lineno - self._internals["code"].co_firstlineno
                     # ]  + lineno_adjust(self._internals["frame"])
@@ -746,6 +746,10 @@ class Generator(Pickler):
                 self._close()
                 raise result
             return result
+        except Exception as e:
+            self._internals["state_generator"] = empty_generator()
+            locals()[".frame"] = frame()
+            raise e
         finally:
             self._update(locals()[".frame"], init)
 
@@ -755,7 +759,7 @@ class Generator(Pickler):
         ## update the frame ##
         f_back = self._internals["frame"]
         self._internals["frame"] = _frame
-        if self._internals["frame"]:
+        if _frame:
             self._internals["frame"] = frame(self._internals["frame"])
             ## remove locals from memory since it interferes with pickling ##
             del self._internals["frame"].f_locals["locals"]
