@@ -583,7 +583,7 @@ class Generator(Pickler):
 
     def _frame_init(
         self, exception: str = "", close: bool = False
-    ) -> tuple[str, FunctionType]:
+    ) -> tuple[list[str], FunctionType]:
         """
         initializes the frame with the current
         states variables and the _locals proxy
@@ -599,12 +599,12 @@ class Generator(Pickler):
             if self._internals["state"][0][temp:].startswith("try:"):
                 self._internals["state"] = [
                     self._internals["state"][0],
-                    " " * (temp + 4) + exception,
+                    " " * (temp + 4) + "raise " + exception,
                 ] + self._internals["state"][1:]
             else:
-                self._internals["state"] = [" " * temp + exception] + self._internals[
-                    "state"
-                ]
+                self._internals["state"] = [
+                    " " * temp + "raise " + exception
+                ] + self._internals["state"]
         ## adjust the initializers ##
         init = [
             self._internals["version"] + "def next_state():",
@@ -758,28 +758,29 @@ class Generator(Pickler):
                 raise result
             return result
         except Exception as e:
-            self._internals["state_generator"] = empty_generator()
-            locals()[".frame"] = frame()
+            self._close()
+            locals()[".frame"] = None
             raise e
         finally:
-            self._update(locals()[".frame"], init)
+            self._update(locals()[".frame"], len(init))
 
-    def _update(self, _frame, init) -> None:
+    def _update(self, _frame: FrameType, init_length: int) -> None:
         """Update the line position and frame"""
         self._internals["running"] = False
 
         ### update the frame ###
 
         f_back = self._internals["frame"]
-        _frame = self._internals["frame"] = frame(_frame)
         if _frame:
 
             #### update f_locals ####
 
+            _frame = self._internals["frame"] = frame(_frame)
             ## remove 'locals' variable from memory since it interferes with pickling ##
             del _frame.f_locals["locals"]
             ## '.send' reference is not needed ##
-            del _frame.f_locals[".send"]
+            if ".send" in _frame.f_locals:
+                del _frame.f_locals[".send"]
             if f_back:
                 ## make sure the new frames locals are on the right hand side to take presedence ##
                 _frame.f_locals = f_back.f_locals | _frame.f_locals
@@ -788,7 +789,7 @@ class Generator(Pickler):
             #### update lineno ####
 
             ## update the frames lineno in accordance with its state ##
-            _frame.f_lineno = _frame.f_lineno - init.count("\n")
+            _frame.f_lineno = _frame.f_lineno - init_length
             ## update the lineno in accordance with the linetable ##
             if len(self._internals["linetable"]) > _frame.f_lineno:
                 ## +1 to get the next lineno after returning ##
@@ -798,7 +799,8 @@ class Generator(Pickler):
             else:
                 ## EOF ##
                 self._internals["state"] = None
-                self._internals["lineno"] = len(self._internals["source_lines"]) + 1
+                self._internals["lineno"] = len(self._internals["source_lines"])
+
         else:
             ## exception was raised e.g. _frame == frame() ##
             self._internals["state"] = None
@@ -844,7 +846,11 @@ class Generator(Pickler):
         current state e.g. only from what has been
         """
         if issubclass(exception, BaseException):
-            return self.__next__(repr(exception))
+            if isinstance(exception, type):
+                exception = exception.__name__
+            else:
+                exception = repr(exception)
+            return self.__next__(exception)
         raise TypeError(
             "exceptions must be classes or instances deriving from BaseException, not %s"
             % type(exception)
