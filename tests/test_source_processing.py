@@ -361,12 +361,14 @@ def test_skip_alternative_statements() -> None:
     ## shouldn't skip ##
     assert skip_alternative_statements(enumerate(blocks), 4) == (
         0,
+        1,
         blocks[0],
         get_indent(blocks[0]),
     )
     ## should skip through all through 1:4 ##
     assert skip_alternative_statements(enumerate(blocks[1:4]), 4) == (
         2,
+        0,
         blocks[1 + 2],
         get_indent(blocks[1 + 2]),
     )  ## shift is 1
@@ -374,6 +376,7 @@ def test_skip_alternative_statements() -> None:
     for shift in range(1, 6):
         assert skip_alternative_statements(enumerate(blocks[shift:]), 4) == (
             6 - shift,
+            1,
             blocks[6],
             get_indent(blocks[6]),
         )
@@ -390,6 +393,7 @@ def test_skip_alternative_statements() -> None:
         ## it should skip over all of them ##
         assert skip_alternative_statements(enumerate(blocks[shift:]), 4) == (
             6 - shift,
+            0,
             blocks[-1],
             get_indent(blocks[-1]),
         )
@@ -679,12 +683,28 @@ def test_outer_loop_adjust() -> None:
         "        print(i)",
     ]
     ## are in linenos ##
-    loops = [
-        (),
-        (),
-    ]
+    length = len(source_lines)
+    loops = [(2 * i, length) for i in range(0, 3)]
     end_pos = loops.pop()[1]
-    outer_loop_adjust([], [], source_lines, loops, end_pos)
+    assert outer_loop_adjust([], [], source_lines, loops, end_pos) == (
+        [
+            "    for j in locals()['.8']:",
+            "        print(j)",
+            "        for k in range(4):",
+            "            print(k)",
+            "        print(j)",
+            "    print(i)",
+            "    for i in locals()['.4']:",
+            "        print(i)",
+            "        for j in range(4):",
+            "            print(j)",
+            "            for k in range(4):",
+            "                print(k)",
+            "            print(j)",
+            "        print(i)",
+        ],
+        [2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7],
+    )
 
 
 test_update_depth()
@@ -721,4 +741,4 @@ test_extract_lambda()
 test_except_adjust()
 test_singly_space()
 test_exit_adjust()
-# test_outer_loop_adjust()
+test_outer_loop_adjust()
