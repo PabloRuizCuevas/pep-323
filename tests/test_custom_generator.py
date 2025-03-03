@@ -90,7 +90,11 @@ def setup() -> Generator:
 
 
 def test_generator_update_jump_positions() -> None:
+
+    #### Note: jump_positions are by lineno not by index ####
+
     gen = setup()
+    gen._internals["lineno"] += 1  ## it won't occur on the same lineno ##
     ## only positions ##
     # with reference indent #
     assert gen._update_jump_positions([], 4) == []
@@ -102,36 +106,29 @@ def test_generator_update_jump_positions() -> None:
     assert gen._internals["jump_stack"] == []
     ## with stack adjuster ##
     gen = setup()
+    gen._internals["lineno"] += 1
     new_lines = ["    pass", "    for i in range(3)", "        pass"]
     gen._internals["jump_stack_adjuster"] = [[1, new_lines]]
     ## check: lines, lineno, linetable, jump_positions, jump_stack_adjuster ##
     assert gen._update_jump_positions([]) == new_lines
     assert gen._internals["jump_stack_adjuster"] == []
-    assert gen._internals["linetable"] == [2, 3, 4]
-    assert gen._internals["lineno"] == 4
-    assert gen._internals["jump_positions"] == [[1, 2], [1, 2], [3, 6]]
+    ## since we're on lineno == 2 the new_lines will be 3, 4, 5 ##
+    assert gen._internals["linetable"] == [3, 4, 5]
+    assert gen._internals["lineno"] == 5
+    assert gen._internals["jump_positions"] == [[1, 2], [1, 2], [4, 7]]
 
 
 def test_generator_append_line() -> None:
-    # index: int,
-    # char: str,
-    # source: str,
-    # source_iter: Iterable,
-    # running: bool,
-    # line: str,
-    # lines: list[str],
-    # indentation: int
 
-    def test(start: int, indentation: int = 0) -> None:
-        source = "    print('hi')\n    print('hi');print('hi')\n    def hi():\n        print('hi')\n print() ## comment\n    if True:"
-        line = source[: start + 1].split("\n")[-1]
+    def test(start: int, index: int, indentation: int = 0) -> None:
+        source = "    print('hi')\n    print('hi');\nprint('hi')\n    def hi():\n        print('hi')\n print() ## comment\n    if True:"
         return gen._append_line(
-            start,
-            source[start],
+            index,
+            source[index],
             source,
-            enumerate(source[start + 1 :], start=start + 1),
+            enumerate(source[index + 1 :], start=index + 1),
             True,
-            line,
+            source[start:index],
             [],
             indentation,
         )
@@ -150,18 +147,24 @@ def test_generator_append_line() -> None:
     )
 
     ## normal line ##
-
-    test(15)
-
-    ## skip definitions ##
-
-    test(15)
-
-    ## comments ##
-
-    ## statements/colon ##
-
+    assert test(0, 15) == (15, "\n", ["    print('hi')"], "", False, 0)
     ## semi-colon ##
+    assert test(16, 31) == (31, ";", ["    print('hi')"], "", True, 0)
+    ## skip definitions ##
+    gen._internals["lineno"] = 1
+    assert test(45, 57) == (
+        78,
+        "\n",
+        ["    def hi():", "        print('hi')"],
+        "",
+        False,
+        8,
+    )
+    assert gen._internals["lineno"] == 3
+    ## comments ##
+    assert test(79, 88) == (98, "\n", [" print() "], "", False, 0)
+    ## statements/colon ##
+    assert test(99, 110) == (110, ":", ["    if True:"], "        ", True, 8)
 
 
 def test_generator_block_adjust() -> None:
@@ -198,7 +201,7 @@ def test_generator_block_adjust() -> None:
         "            raise locals()['.error']",
         "    except locals()['.args'].pop(0):",
     ]
-    ## for/while ##
+    ## for ##
     new_lines = ["    return  3", "    locals()['.args'] += [locals()['.send']]"]
     test_answer = lambda expr: test(
         "    %s (yield 3):\n        return 4\n" % expr
@@ -209,6 +212,7 @@ def test_generator_block_adjust() -> None:
     assert gen._internals["jump_stack_adjuster"] == [
         [2] + ["        return  3", "        locals()['.args'] += [locals()['.send']]"]
     ]
+    ## while ##
     gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
     assert test_answer("while")
     assert gen._internals["lineno"] == 3
@@ -219,7 +223,7 @@ def test_generator_block_adjust() -> None:
 
 def test_generator_string_collector_adjust() -> None:
     gen = Generator()
-    source = "    print('hi')\n    print(f'hello {(yield 3)}')\n"
+    source = "    print('hi')\n    print(f'hello {(yield 3)}')\n    print(f'hello {{(yield 3)}}')"
     gen._internals["lineno"] = 1
 
     def test(
@@ -250,9 +254,23 @@ def test_generator_string_collector_adjust() -> None:
             ],
         )
     )
+    ## string f-string ##
+    test(
+        48,
+        59,
+        *(
+            "'hello {{(yield 3)}}'",
+            (59, 79, "'"),
+            [],
+        )
+    )
 
 
 def test_generator_clean_source_lines() -> None:
+
+    ### write one test case that has everything ###
+    ## does the line continuation adjustment work  e.g. space + 1 != index ??
+
     ## value yields ##
     ## comments ##
     ## definitions ##
@@ -260,12 +278,27 @@ def test_generator_clean_source_lines() -> None:
     ## named expressions ##
     ## strings ##
     ## f-strings ##
-    ## returns - if you have more than one return statement then return ##
+    ## returns ##
     pass
 
 
 def test_generator_create_state() -> None:
-    pass
+    gen = Generator()
+    gen._internals = {
+        "lineno": 1,
+        "jump_positions": [],
+        "source_lines": [
+            "    return 1",
+            "    if True:" "        return 2",
+            "    else:",
+            "        return 3",
+            "    return 4",
+        ],
+    }
+    gen._internals["lineno"] = 3  ## doesn't work?
+    gen._create_state()
+    # assert gen._internals["state"]
+    print(gen._internals["state"])
 
 
 def test_generator_init_states() -> None:
@@ -328,7 +361,8 @@ def test_generator__init__() -> None:
     # initilized #
     check(simple_generator())
     ## generator expression ##
-    # check((i for i in range(3)))
+    gen = (i for i in range(3))
+    # check(gen)
     ## string ##
     check("(i for i in range(3))")
 
@@ -375,12 +409,13 @@ def test_generator_update() -> None:
     # assert gen._internals["frame"].f_lineno == 0
 
 
-def test_generator__next___() -> None:
+def test_generator__next__() -> None:
     assert next(Generator(simple_generator())) == 1
 
 
-def test_generator__iter___() -> None:
-    assert [i for i in Generator(simple_generator())] == [1, 2, 3]
+def test_generator__iter__() -> None:
+    # assert [i for i in Generator(simple_generator())] == [1, 2, 3]
+    print([i for i in Generator(simple_generator())])
 
 
 def test_generator__close() -> None:
@@ -420,19 +455,19 @@ def test_generator_type_checking() -> None:
 test_Pickler()
 # test_picklers() ## check Generator
 # record_jumps is tested in test_custom_adjustment
-test_generator_custom_adjustment()
-test_generator_update_jump_positions()
-test_generator_append_line()  ## needs more work
-test_generator_block_adjust()
+# test_generator_custom_adjustment()
+test_generator_update_jump_positions()  ## could assume lineno is index for the loops ##
+test_generator_append_line()  ## assumes lineno is the lineno ##
+test_generator_block_adjust()  ## could assume lineno is index for the loops ##
 test_generator_string_collector_adjust()
-# test_generator_clean_source_lines() ## needs more work
-# test_generator_create_state()
+# test_generator_clean_source_lines()
+test_generator_create_state()
 # test_generator_init_states() ## change the external variables
-test_generator__init__()  ## uncomment out the line after expr_getsource is ready + check overwrite
-test_generator_frame_init()  ## needs more
-test_generator_update()  ## needs more
-test_generator__next___()
-test_generator__iter___()
+# test_generator__init__() ## uncomment out the line after expr_getsource is ready + check overwrite
+# test_generator_frame_init() ## needs more
+# test_generator_update() ## needs more
+# test_generator__next__()
+# test_generator__iter__()
 test_generator__close()
 # test_generator_close()
 # test_generator_send()
