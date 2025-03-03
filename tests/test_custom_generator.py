@@ -481,7 +481,7 @@ def test_generator_frame_init() -> None:
     ## exception ##
     gen._frame_init("Exception")
     gen._internals["state"] == [
-        "    Exception",
+        "    raise Exception",
         "    return 1",
         "    return 2",
         "    return 3",
@@ -498,7 +498,7 @@ def test_generator_frame_init() -> None:
     gen2._frame_init("Exception")
     assert gen2._internals["state"] == [
         "    try:",
-        "        Exception",
+        "        raise Exception",
         "        return 3",
         "    except:",
         "        pass",
@@ -544,49 +544,70 @@ def test_generator_update() -> None:
             "source_lines": [],
         }
     )
-    ## No frame e.g. exception would have occurred ##
+
+    ### No frame e.g. exception would have occurred ###
+
     gen._update(None, "")
     # assert gen._internals["frame"] == frame(None)
-    assert gen._internals["frame"] == frame()
+    assert gen._internals["frame"] is None
     assert gen._internals["state"] is None
     assert gen._internals["running"] == False
 
-    ### With frame ###
+    ### frame ###
+
     ## No previous frame ##
-    def test():
+    def test(lineno: int = 0) -> frame:
         new_frame = frame()
         new_frame.f_locals = {"a": 1, "b": 2, "c": 3, ".send": 1, "locals": gen._locals}
         # for __bool__
         new_frame.f_code = 1
         new_frame.f_lasti = 1
+        new_frame.f_lineno = lineno
         return new_frame
 
     gen._internals["frame"] = None
-    gen._update(test(), "")
+    gen._update(test(), 0)
     assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
     assert gen._internals["frame"].f_back is None
     ## With previous frame ##
     gen._internals["frame"] = temp = test()
     temp.f_locals = {"a": 0, "b": 1, "c": 2}
-    gen._update(test(), "")
+    gen._update(test(), 0)
     ## new frame locals takes precedence ##
     assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
     ## old frame locals are preserved ##
     assert gen._internals["frame"].f_back.f_locals == temp.f_locals
-    ## With lineo ##
-    # 3. init
-    # 4. lineno - internals
-    # 5. source_lines - internals
-    ## EOF ##
+
+    ### lineno ###
+
+    ## no linetable / EOF ##
+    gen._internals["source_lines"] = ["a", "b", "c"]
+    gen._internals["state"] = 1
+    gen._update(test(5), 5)
+    assert gen._internals["lineno"] == 3
+    assert gen._internals["state"] is None
+    ## with linetable ##
+    gen._internals["state"] = 1
+    gen._internals["linetable"] = [0, 1, 2]
+    gen._update(test(5), 5)
+    assert gen._internals["lineno"] == 1
+    assert gen._internals["state"] == 1
 
 
 def test_generator__next__() -> None:
-    assert next(Generator(simple_generator())) == 1
+    gen = Generator(simple_generator())
+    assert gen._internals["state"] is None
+    assert next(gen) == 1
+    assert gen._internals["state"] == gen._internals["source_lines"]
+    assert next(gen) == 2
+    assert gen._internals["state"] == gen._internals["source_lines"][1:]
+    assert next(gen) == 3
+    assert gen._internals["state"] is None
+    assert next(gen, True)
 
 
 def test_generator__iter__() -> None:
-    # assert [i for i in Generator(simple_generator())] == [1, 2, 3]
-    print([i for i in Generator(simple_generator())])
+    assert [i for i in Generator(simple_generator())] == [1, 2, 3]
 
 
 def test_generator__close() -> None:
@@ -606,13 +627,33 @@ def test_generator__close() -> None:
     assert count == 0
 
 
+def test_generator_close() -> None:
+    pass
+
+
 def test_generator_send() -> None:
     pass
 
 
 def test_generator_throw() -> None:
-    gen = Generator((i for i in range(3)))
-    gen.throw()
+    gen = Generator(simple_generator())
+    try:
+        gen.throw(ImportError)
+    except ImportError:
+        pass
+
+    def test():
+        try:
+            yield 1
+        except ImportError:
+            pass
+        yield 2
+        yield 3
+
+    gen = Generator(test())
+    assert gen.throw(ImportError) == 2
+    print(gen._internals["state"])
+    # assert next(gen) == 3
 
 
 def test_generator_type_checking() -> None:
@@ -636,9 +677,9 @@ test_generator_create_state()  ## check end_pos and the test case setup used ##
 test_generator_init_states()
 test_generator__init__()  ## check overwrite + the generator getsource ##
 test_generator_frame_init()
-test_generator_update()  ## finish the linenos and EOF
-# test_generator__next__()
-# test_generator__iter__()
+test_generator_update()
+test_generator__next__()
+test_generator__iter__()
 test_generator__close()
 # test_generator_close()
 # test_generator_send()
