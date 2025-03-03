@@ -250,7 +250,7 @@ def test_unpack() -> None:
             "locals()['.args'] += [locals()['.args'].pop(0)]",
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop(0)",  ## should be -1 ##
+            "return  locals()['.args'].pop(0)",  ## should be -1 ## could go i.e. locals()['.args'].pop(0 - locals()['.value yield recurse'])
             "locals()['.args'] += [locals()['.send']]",
         ],
         "locals()['.args'].pop(0),locals()['.args'].pop(0)",
@@ -416,20 +416,24 @@ def test_control_flow_adjust() -> None:
         "        default:",
         "            6",
     ]
-    ## the loop ##
     end_pos = len(blocks)
     test = lambda start_pos: control_flow_adjust(
         blocks[start_pos:], list(range(start_pos + 1, end_pos))
     )
     assert test(0) == (blocks, list(range(1, end_pos)))
+    ## case ##
     assert test(2) == (indent_lines(blocks[2:12], -8), list(range(3, 13)))
+    ## elif ##
     temp = lambda index: (
         [blocks[index][12:]] + indent_lines(blocks[8:12], -8),
         [index + 1] + list(range(9, 16)),
     )
+    ## else, try, except ##
     for i in range(3, 13, 2):
         assert test(3) == temp(3)
+    ## case ##
     assert test(13) == ([blocks[13][8:]], [13 + 1])
+    ## default ##
     assert test(15) == ([blocks[15][8:]], [])
 
 
@@ -522,7 +526,33 @@ def test_loop_adjust() -> None:
             "                pass",
             "            print('hi')",
         ],
-        [2, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 2, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        [
+            None,
+            None,
+            1,
+            None,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            None,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+        ],
     )
     ## no adjustments ##
     assert loop_adjust(block[6:], indexes, block[1:], *(1, length)) == (
@@ -637,6 +667,26 @@ def test_exit_adjust() -> None:
     assert exit_adjust(case.split("\n")) == ["return 1", "return"]
 
 
+def test_outer_loop_adjust() -> None:
+    source_lines = [
+        "    for i in range(3):",
+        "        print(i)",
+        "        for j in range(4):",
+        "            print(j)",
+        "            for k in range(4):",
+        "                print(k)",
+        "            print(j)",
+        "        print(i)",
+    ]
+    ## are in linenos ##
+    loops = [
+        (),
+        (),
+    ]
+    end_pos = loops.pop()[1]
+    outer_loop_adjust([], [], source_lines, loops, end_pos)
+
+
 test_update_depth()
 test_get_indent()
 # test_lineno_adjust() ## not going to be implemented at present time ##
@@ -661,7 +711,7 @@ test_indent_lines()
 test_iter_adjust()
 test_is_statement()
 test_skip_blocks()
-test_loop_adjust()  ## need to check indexes ##
+test_loop_adjust()
 test_yield_adjust()
 test_get_loops()
 test_extract_source_from_comparison()
@@ -671,3 +721,4 @@ test_extract_lambda()
 test_except_adjust()
 test_singly_space()
 test_exit_adjust()
+# test_outer_loop_adjust()
