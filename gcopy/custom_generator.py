@@ -59,6 +59,9 @@ class Pickler:
         for key, value in state.items():
             setattr(self, key, value)
 
+    def __eq__(self, obj: Any) -> bool:
+        return attr_cmp(self, obj, self._attrs)
+
 
 class code(Pickler):
     """For pickling and copying code objects"""
@@ -68,7 +71,8 @@ class code(Pickler):
     def __init__(self, code_obj: CodeType = None) -> None:
         if code_obj:
             for attr in self._attrs:
-                setattr(self, attr, getattr(code_obj, attr))
+                if hasattr(code_obj, attr):
+                    setattr(self, attr, getattr(code_obj, attr))
 
     def __bool__(self) -> bool:
         """Used on i.e. if code_obj:"""
@@ -101,14 +105,15 @@ class frame(Pickler):
 
     def __init__(self, frame: FrameType = None) -> None:
         if frame:
-            if hasattr(
-                frame, "f_back"
-            ):  ## make sure all other frames are the custom type as well ##
+            ## make sure all other frames are the custom type as well ##
+            if hasattr(frame, "f_back") and not isinstance(frame.f_back, type(self)):
                 self.f_back = type(self)(frame.f_back)
-            if hasattr(frame, "f_code"):  ## make sure it can be pickled
+            ## make sure the code can be pickled
+            if hasattr(frame, "f_code") and not isinstance(frame.f_code, code):
                 self.f_code = code(frame.f_code)
             for attr in self._attrs[2:]:
-                setattr(self, attr, getattr(frame, attr))
+                if hasattr(frame, attr):
+                    setattr(self, attr, getattr(frame, attr))
 
     def clear(self) -> None:
         """clears f_locals e.g. 'most references held by the frame'"""
@@ -340,6 +345,8 @@ class Generator(Pickler):
         e.g. to the final_line or specfic adjustment
         """
         ## make sure any loops are recorded (necessary for 'yield from ...' adjustment) ##
+        ## and the lineno is updated ##
+
         for self._internals["lineno"], line in enumerate(
             new_lines, start=self._internals["lineno"] + 1
         ):
@@ -538,15 +545,18 @@ class Generator(Pickler):
         outermost nesting will be the final section that
         also contains the rest of the source lines as well
         """
+        ## jump_positions are in linenos but get_loops automatically sets the indexing to 0 based ##
         loops = get_loops(self._internals["lineno"], self._internals["jump_positions"])
-        self._internals["loops"] = len(loops)
-        temp_lineno = self._internals["lineno"] - 1  ## for 0 based indexing ##
+        self._internals["loops"] = len(loops)  ## needs checking ##
+        index = self._internals["lineno"] - 1  ## for 0 based indexing ##
         if loops:
             start_pos, end_pos = loops.pop()
+            ## not sure why this works? Might be dependent on the test case setup e.g. self._internals["jump_positions"] ##
+            end_pos -= 2
             ## adjustment ##
             blocks, indexes = control_flow_adjust(
-                self._internals["source_lines"][temp_lineno:end_pos],
-                list(range(temp_lineno, end_pos)),
+                self._internals["source_lines"][index:end_pos],
+                list(range(index, end_pos)),
                 get_indent(self._internals["source_lines"][start_pos]),
             )
             blocks, indexes = loop_adjust(
@@ -556,12 +566,12 @@ class Generator(Pickler):
                 *(start_pos, end_pos)
             )
             self._internals["state"], self._internals["linetable"] = outer_loop_adjust(
-                blocks, indexes, self._intenals["source_lines"], loops, end_pos
+                blocks, indexes, self._internals["source_lines"], loops, end_pos
             )
             return
         self._internals["state"], self._internals["linetable"] = control_flow_adjust(
-            self._internals["source_lines"][temp_lineno:],
-            list(range(temp_lineno, len(self._internals["source_lines"]))),
+            self._internals["source_lines"][index:],
+            list(range(index, len(self._internals["source_lines"]))),
         )
 
     def _locals(self) -> dict:
@@ -585,12 +595,16 @@ class Generator(Pickler):
         if close:
             self._internals["state"] = exit_adjust(self._internals["state"])
         temp = get_indent(self._internals["state"][0])
-        if exception and self._internals["state"][0][temp:].startswith("try:"):
-            self._internals["state"] = (
-                self._internals["state"][0]
-                + [" " * (temp + 4) + exception]
-                + self._internals["state"][1:]
-            )
+        if exception:
+            if self._internals["state"][0][temp:].startswith("try:"):
+                self._internals["state"] = [
+                    self._internals["state"][0],
+                    " " * (temp + 4) + exception,
+                ] + self._internals["state"][1:]
+            else:
+                self._internals["state"] = [" " * temp + exception] + self._internals[
+                    "state"
+                ]
         ## adjust the initializers ##
         init = [
             self._internals["version"] + "def next_state():",
@@ -600,7 +614,7 @@ class Generator(Pickler):
             if isinstance(key, str) and key.isalnum() and key != "locals":
                 init += [" " * 4 + "%s=locals()[%s]" % (key, key)]
         ## needs to be added if not already there so it can be appended to ##
-        if '".args"' not in self._internals["frame"].f_locals:
+        if ".args" not in self._internals["frame"].f_locals:
             init += [" " * 4 + 'locals()[".args"] = []']
         init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
         ## try not to use variables here (otherwise it can mess with the state) ##
@@ -617,11 +631,8 @@ class Generator(Pickler):
         del prefix
         ## since self._internals["state"] starts as 'None' ##
         yield self._create_state()
-        ## if no state then it must be EOF, but, if we're in a loop then we need to finish it ##
-        while (
-            self._internals["state"]
-            and len(self._internals["linetable"]) > self._internals["frame"].f_lineno
-        ) or self._internals["loops"]:
+        ## if no state then it must be EOF ##
+        while self._internals["state"]:
             yield self._create_state()
 
     def _api_setup(self) -> None:
@@ -756,29 +767,41 @@ class Generator(Pickler):
     def _update(self, _frame, init) -> None:
         """Update the line position and frame"""
         self._internals["running"] = False
-        ## update the frame ##
+
+        ### update the frame ###
+
         f_back = self._internals["frame"]
-        self._internals["frame"] = _frame
+        _frame = self._internals["frame"] = frame(_frame)
         if _frame:
-            self._internals["frame"] = frame(self._internals["frame"])
-            ## remove locals from memory since it interferes with pickling ##
-            del self._internals["frame"].f_locals["locals"]
-            self._internals["frame"].f_back = f_back
-            ## update f_locals ##
+
+            #### update f_locals ####
+
+            ## remove 'locals' variable from memory since it interferes with pickling ##
+            del _frame.f_locals["locals"]
+            ## '.send' reference is not needed ##
+            del _frame.f_locals[".send"]
             if f_back:
-                f_back.f_locals.update(self._internals["frame"].f_locals)
-                self._internals["frame"].f_locals = f_back.f_locals
-            self._internals["frame"].f_locals[".send"] = None
-            self._internals["frame"].f_lineno = self._internals[
-                "frame"
-            ].f_lineno - init.count("\n")
-            if len(self._internals["linetable"]) > self._internals["frame"].f_lineno:
+                ## make sure the new frames locals are on the right hand side to take presedence ##
+                _frame.f_locals = f_back.f_locals | _frame.f_locals
+            _frame.f_back = f_back
+
+            #### update lineno ####
+
+            ## update the frames lineno in accordance with its state ##
+            _frame.f_lineno = _frame.f_lineno - init.count("\n")
+            ## update the lineno in accordance with the linetable ##
+            if len(self._internals["linetable"]) > _frame.f_lineno:
+                ## +1 to get the next lineno after returning ##
                 self._internals["lineno"] = (
-                    self._internals["linetable"][self._internals["frame"].f_lineno] + 1
-                )  ## +1 to get the next lineno after returning ##
+                    self._internals["linetable"][_frame.f_lineno] + 1
+                )
             else:
                 ## EOF ##
+                self._internals["state"] = None
                 self._internals["lineno"] = len(self._internals["source_lines"]) + 1
+        else:
+            ## exception was raised e.g. _frame == frame() ##
+            self._internals["state"] = None
 
     def send(self, arg: Any) -> Any:
         """
@@ -820,7 +843,12 @@ class Generator(Pickler):
         Raises an exception from the last line in the
         current state e.g. only from what has been
         """
-        return self.__next__(repr(exception))
+        if issubclass(exception, BaseException):
+            return self.__next__(repr(exception))
+        raise TypeError(
+            "exceptions must be classes or instances deriving from BaseException, not %s"
+            % type(exception)
+        )
 
     def __setstate__(self, state: dict) -> None:
         Pickler.__setstate__(self, state)
