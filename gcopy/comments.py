@@ -4,17 +4,20 @@ TODO:
 1. general testing and fixing to make sure everything works before any more changes are made
 
     Finish fixing:
+
+    - lineno needs fixing in amongst the generators methods since some need it to be 0 based indexing
+      and some maybe don't
+
         Priority (in order):
         --------------------
         - custom_generator -
         --------------------
-          _append_line
-          _clean_source_lines
-        ----------------------------------------
           _create_state
           _init_states
           __next__
           __iter__
+        ----------------------------------------
+          _clean_source_lines
         ----------------------------------------
           __init__
 
@@ -26,8 +29,6 @@ TODO:
         - When do i.e. gi_running and gi_suspended change?
         - check all the documentation + docstrings
         - f_back on frame needs checking
-        - get_instructions .positions needs implementing for versions < 3.11 if possible
-          (only used for track_iter for generator/lambda expressions)
 
     Expansion to other types of generators:
 
