@@ -5,15 +5,13 @@ TODO:
 
     Finish fixing:
 
-    - lineno needs fixing in amongst the generators methods since some need it to be 0 based indexing
-      and some maybe don't
+    - check how new_lines gets added in _block_adjust when multiple loops end on the same line e.g.
+      what's its indentation?
 
         Priority (in order):
         --------------------
         - custom_generator -
         --------------------
-          _create_state
-          _init_states
           __next__
           __iter__
         ----------------------------------------
@@ -39,5 +37,7 @@ TODO:
      - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
 
      - Maybe need to make an internal generator and then use this generally?
-
+     
+  - Make a Note in the documentation that while loops don't need tracking and 
+    indentation is enough as an identifier for tracking
 """
