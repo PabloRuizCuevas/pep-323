@@ -604,16 +604,20 @@ def is_definition(line: str) -> bool:
 ########################
 ### code adjustments ###
 ########################
+## it's skipping too much ##
 def skip_alternative_statements(
     line_iter: Iterable, current_min: int
 ) -> tuple[int, str, int]:
     """Skips all alternative statements for the control flow adjustment"""
+    adjuster = 0
     for index, line in line_iter:
         temp_indent = get_indent(line)
         temp_line = line[temp_indent:]
         if temp_indent <= current_min and not is_alternative_statement(temp_line):
+            ## to avoid skipping the non alternative statement ##
+            adjuster = 1
             break
-    return index, line, temp_indent
+    return index, adjuster, line, temp_indent
 
 
 def control_flow_adjust(
@@ -640,17 +644,15 @@ def control_flow_adjust(
         temp_indent = get_indent(line)
         temp_line = line[temp_indent:]
         if temp_indent < current_min:
-            ## skip over all alternative statements until it's not an alternative statement ##
-            ## and the indent is back to the current min ##
             if is_alternative_statement(temp_line):
-                end_index, line, temp_indent = skip_alternative_statements(
+                end_index, adjuster, line, temp_indent = skip_alternative_statements(
                     line_iter, temp_indent
                 )
                 ## remove from the linetable and update the index ##
                 del indexes[index:end_index]
-                index = end_index
-                if end_index == end:
+                if end_index - adjuster == end:
                     break
+                index = end_index
             current_min = temp_indent
             ## we have to adjust in case of except but not match ##
             ## (since if you're in a match you're being adjusted in which ever case you're in) ##
@@ -688,12 +690,15 @@ def iter_adjust(line: str, number_of_indents: int) -> str:
 
     e.g. we extract the second ... in:
     for ... in ...:
+
+    While loops get adjusted on custom adjustment
     """
+    temp_line = line[number_of_indents:]
     index, depth, ID, line_iter = (
         0,
         0,
         "",
-        enumerate(line[number_of_indents:], number_of_indents),
+        enumerate(temp_line, number_of_indents),
     )
     for index, char in line_iter:
         ## the 'in' key word must be avoided in all forms of loop comprehension ##
@@ -1090,9 +1095,12 @@ def outer_loop_adjust(
     """Adds all the outer loops with the iterable adjusted to the current block and its indexes"""
     ## add all the outer loops ##
     for start_pos, end_pos in loops[::-1]:
-        flag, block = iter_adjust(source_lines[start_pos:end_pos])
-        blocks += indent_lines(block, 4 - get_indent(block[0]))
-        if flag:
-            indexes += [start_pos]
+        block = source_lines[start_pos:end_pos]
+        if block:
+            temp_line = block[0]
+            number_of_indents = get_indent(temp_line)
+            if temp_line[number_of_indents:].startswith("for "):
+                block[0] = iter_adjust(temp_line, number_of_indents)
+        blocks += indent_lines(block, 4 - number_of_indents)
         indexes += list(range(start_pos, end_pos))
     return blocks + source_lines[end_pos:], indexes
