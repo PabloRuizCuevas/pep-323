@@ -5,23 +5,11 @@ TODO:
 
     Finish fixing:
 
-    - check how new_lines gets added in _block_adjust when multiple loops end on the same line e.g.
-      what's its indentation?
-
         Priority (in order):
         --------------------
         - custom_generator -
         --------------------
-          __next__
-          __iter__
-        ----------------------------------------
           _clean_source_lines
-        ----------------------------------------
-          __init__
-
-    
-        Do after:
-        - unpack - fix ordering of list popping when doing recursion
         
         Non-priority (at the moment) but will be needed later:
         - When do i.e. gi_running and gi_suspended change?
