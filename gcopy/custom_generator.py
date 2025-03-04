@@ -2,7 +2,7 @@
 ### picklable/copyable objects ###
 ##################################
 from types import FunctionType, GeneratorType, CodeType
-from inspect import currentframe
+from inspect import currentframe, signature
 from copy import deepcopy, copy
 from textwrap import dedent
 from gcopy.source_processing import *
@@ -208,15 +208,18 @@ class Generator(Pickler):
         number_of_indents = get_indent(line)
         temp_line = line[number_of_indents:]
         indent = " " * number_of_indents
+        ## yield ##
         result = yield_adjust(temp_line, indent)
         if result is not None:
             return result
+        ## loops ##
         if is_loop(temp_line):
             self._record_jumps(number_of_indents)
             return [line]
+        ## return ##
         if temp_line == "return" or temp_line.startswith("return "):
             ## close the generator then return ##
-            ## have to use a try-finally in case the user returns from the locals ##
+            ## have to use a try-finally in case the user returns a value from locals() ##
             return [
                 indent + "try:",
                 indent + "    return EOF('" + line[7:] + "')",
@@ -612,10 +615,12 @@ class Generator(Pickler):
         ]
         for key in self._internals["frame"].f_locals:
             if isinstance(key, str) and key.isalnum() and key != "locals":
-                init += [" " * 4 + "%s=locals()[%s]" % (key, key)]
+                init += [" " * 4 + "%s=locals()[%s]" % (key, repr(key))]
         ## needs to be added if not already there so it can be appended to ##
         if ".args" not in self._internals["frame"].f_locals:
             init += [" " * 4 + 'locals()[".args"] = []']
+        if ".send" not in self._internals["frame"].f_locals:
+            init += [" " * 4 + "locals()['.send'] = None"]
         init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
         ## try not to use variables here (otherwise it can mess with the state) ##
         exec("\n".join(init + self._internals["state"]), globals(), locals())
@@ -710,6 +715,7 @@ class Generator(Pickler):
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
                     self._internals["code"] = code(FUNC.__code__)
+                    self._internals["signature"] = signature(FUNC)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
                         ## proably need something that locates its source better for other cases ##
@@ -738,6 +744,18 @@ class Generator(Pickler):
             self._internals["running"] = False
             self._internals["state"] = None
             self._internals["state_generator"] = self._init_states()
+
+    def __call__(self, *args, **kwargs) -> GeneratorType:
+        """initializes the generators locals with arguements and keyword arguements"""
+        _signature = self._internals.get("signature", None)
+        if _signature:
+            ## if binding to the signature fails it will raise an error ##
+            binding = _signature.bind(*args, **kwargs)
+            ## makes sure default arguments are applied ##
+            binding.apply_defaults()
+            self._internals["frame"].f_locals.update(binding.arguments)
+            return self
+        raise TypeError("Generator expression is not callable")
 
     def __iter__(self) -> GeneratorType:
         """Converts the generator function into an iterable"""
