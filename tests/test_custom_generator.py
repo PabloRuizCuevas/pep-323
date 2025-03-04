@@ -56,13 +56,14 @@ def test_generator_custom_adjustment() -> None:
         "    else:",
         "        return locals()['.i']",
     ]
-    ## for/while positions + default case return ##
+    ## for ##
     gen._internals["jump_positions"], gen._internals["jump_stack"] = [], []
     assert test("for ") == ["for "]
     assert gen._internals["jump_positions"], gen._internals["jump_stack"] == (
         [[0, None]],
         [(0, 0)],
     )
+    ## while ##
     assert test("while ") == ["while "]
     assert gen._internals["jump_positions"], gen._internals["jump_stack"] == (
         [[0, None], [0, None]],
@@ -472,6 +473,18 @@ def test_generator__init__() -> None:
     check("(i for i in range(3))")
 
 
+def test_generator__call__() -> None:
+    def test(a, b, c=3):
+        yield a
+        yield b
+        yield c
+
+    gen = Generator(test)
+    gen(1, 2)
+    assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    assert [i for i in gen] == [1, 2, 3]
+
+
 def test_generator_frame_init() -> None:
     gen = Generator(simple_generator())
     ### state adjustments ###
@@ -510,6 +523,7 @@ def test_generator_frame_init() -> None:
         "def next_state():",
         "    locals=currentframe().f_back.f_locals['self']._locals",
         '    locals()[".args"] = []',
+        "    locals()['.send'] = None",
         "    currentframe().f_back.f_locals['.frame']=currentframe()",
     ]
     ## with local variables stored ##
@@ -518,10 +532,11 @@ def test_generator_frame_init() -> None:
     assert init == [
         "def next_state():",
         "    locals=currentframe().f_back.f_locals['self']._locals",
-        "    a=locals()[a]",
-        "    b=locals()[b]",
-        "    c=locals()[c]",
+        "    a=locals()['a']",
+        "    b=locals()['b']",
+        "    c=locals()['c']",
         '    locals()[".args"] = []',
+        "    locals()['.send'] = None",
         "    currentframe().f_back.f_locals['.frame']=currentframe()",
     ]
 
@@ -632,7 +647,36 @@ def test_generator_close() -> None:
 
 
 def test_generator_send() -> None:
-    pass
+    ## value yield ##
+    gen = Generator()
+    f = frame()
+    f.f_locals = {}
+    gen._internals.update(
+        {
+            "frame": f,
+            "code": None,
+            "lineno": 1,
+            "source_lines": [
+                "    return 1",
+                "    return 2",
+                "    a = locals()['.send']",
+                "    return a",
+            ],
+            "jump_positions": [],
+            "state": None,
+            "running": False,
+            "suspended": False,
+            "yieldfrom": None,
+        }
+    )
+    gen._internals["state_generator"] = gen._init_states()
+    try:
+        gen.send(1)
+    except TypeError:
+        pass
+    assert next(gen) == 1
+    assert gen.send(1) == 2
+    assert gen.send(1) == 1
 
 
 def test_generator_throw() -> None:
@@ -667,7 +711,7 @@ def test_generator_type_checking() -> None:
 test_Pickler()
 # test_picklers() ## check Generator
 # record_jumps is tested in test_custom_adjustment
-# test_generator_custom_adjustment()
+test_generator_custom_adjustment()
 test_generator_update_jump_positions()
 test_generator_append_line()
 test_generator_block_adjust()
@@ -675,13 +719,14 @@ test_generator_string_collector_adjust()
 # test_generator_clean_source_lines()
 test_generator_create_state()  ## check end_pos and the test case setup used ##
 test_generator_init_states()
-test_generator__init__()  ## check overwrite + the generator getsource ##
+test_generator__init__()  ## check generator getsource ##
+test_generator__call__()
 test_generator_frame_init()
 test_generator_update()
 test_generator__next__()
 test_generator__iter__()
 test_generator__close()
 # test_generator_close()
-# test_generator_send()
+test_generator_send()
 # test_generator_throw()
 test_generator_type_checking()
