@@ -617,6 +617,7 @@ def skip_alternative_statements(
             ## to avoid skipping the non alternative statement ##
             adjuster = 1
             break
+
     return index, adjuster, line, temp_indent
 
 
@@ -628,6 +629,8 @@ def statement_adjust(
     line: str,
     temp_indent: int,
     end: int,
+    shift: int,
+    append_shift: int,
 ) -> tuple[list[str], list[int], int, str, bool]:
     """Adjusts the current statement for control_flow_adjust"""
     temp_line = line[temp_indent:]
@@ -637,21 +640,34 @@ def statement_adjust(
         if not new_lines:
             new_lines = [" " * 4 + "try:", " " * 8 + "pass"]
             indexes = [indexes[0], indexes[0]] + indexes
+            append_shift += 2
         else:
             new_lines = [" " * 4 + "try:"] + indent_lines(new_lines)
             ## add to the linetable ##
             indexes = [indexes[0]] + indexes
-    if is_alternative_statement(temp_line):
+            append_shift += 1
+    elif is_alternative_statement(temp_line):
         end_index, adjuster, line, temp_indent = skip_alternative_statements(
             line_iter, temp_indent
         )
         ## remove from the linetable and update the index ##
-        del indexes[index:end_index]
-        if end_index - adjuster != end:
+        del indexes[
+            index
+            + append_shift
+            - shift : end_index
+            + 1
+            + append_shift
+            - adjuster
+            - shift
+        ]
+        if not indexes:
+            line = ""
+        shift += end_index + 1 - adjuster - index
+        if end_index != end:
             index = end_index
         else:
             breaking = True
-    return new_lines, indexes, index, line, breaking
+    return new_lines, indexes, index, line, breaking, shift, append_shift
 
 
 def control_flow_adjust(
@@ -668,17 +684,27 @@ def control_flow_adjust(
     It will also add 'try:' when there's an
     'except' line on the next minimum indent
     """
-    new_lines, current_min, line_iter, end = (
+    new_lines, current_min, line_iter, end, shift, append_shift = (
         [],
         get_indent(lines[0]),
         enumerate(lines),
         len(lines) - 1,
+        0,
+        0,
     )
     ## check if the first line is an alternative statement ##
     index, line = next(line_iter)
     temp_indent = get_indent(line)
-    new_lines, indexes, index, line, breaking = statement_adjust(
-        line_iter, new_lines, indexes, index, line, temp_indent, end
+    new_lines, indexes, index, line, breaking, shift, append_shift = statement_adjust(
+        line_iter,
+        new_lines,
+        indexes,
+        index,
+        line,
+        temp_indent,
+        end,
+        shift,
+        append_shift,
     )
     ## add the line (adjust if indentation is not reference_indent) ##
     if current_min != reference_indent:
@@ -694,8 +720,18 @@ def control_flow_adjust(
             temp_indent = get_indent(line)
             if temp_indent < current_min:
                 current_min = temp_indent
-                new_lines, indexes, index, line, breaking = statement_adjust(
-                    line_iter, new_lines, indexes, index, line, temp_indent, end
+                new_lines, indexes, index, line, breaking, shift, append_shift = (
+                    statement_adjust(
+                        line_iter,
+                        new_lines,
+                        indexes,
+                        index,
+                        line,
+                        temp_indent,
+                        end,
+                        shift,
+                        append_shift,
+                    )
                 )
                 if breaking:
                     break
