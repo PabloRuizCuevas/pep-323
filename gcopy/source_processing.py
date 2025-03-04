@@ -620,6 +620,40 @@ def skip_alternative_statements(
     return index, adjuster, line, temp_indent
 
 
+def statement_adjust(
+    line_iter: Iterable,
+    new_lines: list[str],
+    indexes: list[int],
+    index: int,
+    line: str,
+    temp_indent: int,
+    end: int,
+) -> tuple[list[str], list[int], int, str, bool]:
+    """Adjusts the current statement for control_flow_adjust"""
+    temp_line = line[temp_indent:]
+    breaking = False
+    if temp_line.startswith("except") and temp_line[6] in " :":
+        ## temp_line gets added after ##
+        if not new_lines:
+            new_lines = [" " * 4 + "try:", " " * 8 + "pass"]
+            indexes = [indexes[0], indexes[0]] + indexes
+        else:
+            new_lines = [" " * 4 + "try:"] + indent_lines(new_lines)
+            ## add to the linetable ##
+            indexes = [indexes[0]] + indexes
+    if is_alternative_statement(temp_line):
+        end_index, adjuster, line, temp_indent = skip_alternative_statements(
+            line_iter, temp_indent
+        )
+        ## remove from the linetable and update the index ##
+        del indexes[index:end_index]
+        if end_index - adjuster != end:
+            index = end_index
+        else:
+            breaking = True
+    return new_lines, indexes, index, line, breaking
+
+
 def control_flow_adjust(
     lines: list[str], indexes: list[int], reference_indent: int = 4
 ) -> tuple[list[str], list[int]]:
@@ -640,36 +674,40 @@ def control_flow_adjust(
         enumerate(lines),
         len(lines) - 1,
     )
-    for index, line in line_iter:
-        temp_indent = get_indent(line)
-        temp_line = line[temp_indent:]
-        if temp_indent < current_min:
-            if is_alternative_statement(temp_line):
-                end_index, adjuster, line, temp_indent = skip_alternative_statements(
-                    line_iter, temp_indent
+    ## check if the first line is an alternative statement ##
+    index, line = next(line_iter)
+    temp_indent = get_indent(line)
+    new_lines, indexes, index, line, breaking = statement_adjust(
+        line_iter, new_lines, indexes, index, line, temp_indent, end
+    )
+    ## add the line (adjust if indentation is not reference_indent) ##
+    if current_min != reference_indent:
+        ## adjust using the current_min until it's the same as reference_indent ##
+        new_lines += [line[current_min - 4 :]]
+    else:
+        return (
+            new_lines + indent_lines(lines[index:], 4 - reference_indent),
+            indexes,
+        )
+    if not breaking:
+        for index, line in line_iter:
+            temp_indent = get_indent(line)
+            if temp_indent < current_min:
+                current_min = temp_indent
+                new_lines, indexes, index, line, breaking = statement_adjust(
+                    line_iter, new_lines, indexes, index, line, temp_indent, end
                 )
-                ## remove from the linetable and update the index ##
-                del indexes[index:end_index]
-                if end_index - adjuster == end:
+                if breaking:
                     break
-                index = end_index
-            current_min = temp_indent
-            ## we have to adjust in case of except but not match ##
-            ## (since if you're in a match you're being adjusted in which ever case you're in) ##
-            if temp_line.startswith("except") and temp_line[6] in " :":
-                ## temp_line gets added after ##
-                new_lines = [" " * 4 + "try:"] + indent_lines(new_lines)
-                ## add to the linetable ##
-                indexes = [indexes[0]] + indexes
-        ## add the line (adjust if indentation is not reference_indent) ##
-        if current_min != reference_indent:
-            ## adjust using the current_min until it's the same as reference_indent ##
-            new_lines += [line[current_min - 4 :]]
-        else:
-            return (
-                new_lines + indent_lines(lines[index:], 4 - reference_indent),
-                indexes,
-            )
+            ## add the line (adjust if indentation is not reference_indent) ##
+            if current_min != reference_indent:
+                ## adjust using the current_min until it's the same as reference_indent ##
+                new_lines += [line[current_min - 4 :]]
+            else:
+                return (
+                    new_lines + indent_lines(lines[index:], 4 - reference_indent),
+                    indexes,
+                )
     return new_lines, indexes
 
 
