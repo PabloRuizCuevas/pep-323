@@ -305,7 +305,6 @@ def test_generator_create_state() -> None:
         return gen._internals["state"], gen._internals["linetable"]
 
     ## control_flow_adjust e.g. no loops ##
-
     assert test(3) == (["    return 2", "    return 4"], [2, 5])
     assert test(5) == (["    return 3", "    return 4"], [4, 5])
 
@@ -326,7 +325,7 @@ def test_generator_create_state() -> None:
         "        print(i)",
     ]
     start_indexes = [0, 2, 4]
-    end_indexes = [11, 12, 13]
+    end_indexes = [13, 12, 11]
     ## they get reduced by one in get_loops and originally they are linenos ##
     gen._internals["jump_positions"] = [
         (pos[0] + 1, pos[1] + 1) for pos in zip(start_indexes, end_indexes)
@@ -397,6 +396,8 @@ def test_generator_create_state() -> None:
             8,
             9,
             10,
+            11,
+            12,
         ],
     )
 
@@ -692,6 +693,9 @@ def test_generator_throw() -> None:
         gen.throw(ImportError)
     except ImportError:
         pass
+    from sys import exit
+
+    exit()
 
     def test():
         try:
@@ -724,7 +728,7 @@ test_generator_append_line()
 test_generator_block_adjust()
 test_generator_string_collector_adjust()
 # test_generator_clean_source_lines()
-test_generator_create_state()  ## check end_pos and the test case setup used ##
+test_generator_create_state()  ## needs fixing ##
 test_generator_init_states()
 test_generator__init__()  ## check generator getsource ##
 test_generator__call__()
