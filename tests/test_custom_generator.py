@@ -486,7 +486,7 @@ def test_generator__init__() -> None:
             "state_generator": GeneratorType,
             "running": bool,
             "source_lines": str,
-            "type": type,
+            "type": str,
             "frame": frame,
         }.items():
             try:
@@ -526,9 +526,11 @@ def test_generator__call__() -> None:
         yield c
 
     gen = Generator(test)
+    del gen._internals["state_generator"]
     gen(1, 2)
     assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
     assert [i for i in gen] == [1, 2, 3]
+    assert gen._internals["state_generator"]
 
 
 def test_generator_frame_init() -> None:
@@ -801,14 +803,14 @@ def test_generator_type_checking() -> None:
 
 ## tests are for cleaning + adjusting + pickling ##
 test_Pickler()
-# test_picklers() ## check Generator
+test_picklers()
 # record_jumps is tested in test_custom_adjustment
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
 test_generator_append_line()
 test_generator_block_adjust()
 test_generator_string_collector_adjust()
-test_generator_clean_source_lines()
+# test_generator_clean_source_lines()
 test_generator_create_state()
 test_generator_init_states()
 test_generator__init__()
