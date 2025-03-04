@@ -75,12 +75,13 @@ def offset_adjust(f_locals: dict) -> dict:
     """
     ## the first offset will probably get in the way ##
     lineno = 0  ## every line will increase the indentation by 4 ##
+    new_dct = {}
     for key, value in f_locals.items():
         if isinstance(key, str) and key[0] == "." and key[1:].isdigit():
-            del f_locals[key]
             lineno += 1
-            f_locals[".%s" % (4 * lineno)] = value
-    return f_locals
+            key = ".%s" % (4 * lineno)
+        new_dct[key] = value
+    return new_dct
 
 
 ####################
