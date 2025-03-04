@@ -215,7 +215,7 @@ class Generator(Pickler):
                 indent + "try:",
                 indent + "    return EOF('" + line[7:] + "')",
                 indent + "finally:",
-                indent + "    currentframe().f_back.f_locals['self'].close()",
+                indent + "    currentframe().f_back.f_locals['self']._close()",
             ]
         return [line]
 
@@ -404,7 +404,7 @@ class Generator(Pickler):
                 line_start + string_collected + line_end,
             )
             return "", prev, self._block_adjust(lines, final_adjustments, final_line)
-        return string_collected, prev, lines
+        return line + string_collected, prev, lines
 
     def _clean_source_lines(self, running: bool = False) -> list[str]:
         """
@@ -545,8 +545,6 @@ class Generator(Pickler):
         index = self._internals["lineno"] - 1  ## for 0 based indexing ##
         if loops:
             start_pos, end_pos = loops.pop()
-            ## not sure why this works? Might be dependent on the test case setup e.g. self._internals["jump_positions"] ##
-            end_pos -= 2
             ## adjustment ##
             blocks, indexes = control_flow_adjust(
                 self._internals["source_lines"][index:end_pos],
@@ -854,6 +852,9 @@ class Generator(Pickler):
         try:
             if self.__next__("GeneratorExit()", True):
                 raise RuntimeError("generator ignored GeneratorExit")
+        except GeneratorExit:
+            ## This error is internally ignored by generators during closing ##
+            pass
         finally:
             self._close()
 
