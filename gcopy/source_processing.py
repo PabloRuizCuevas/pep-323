@@ -665,8 +665,9 @@ def statement_adjust(
         shift += end_index + 1 - adjuster - index
         if end_index != end:
             index = end_index
-        else:
+        elif adjuster == 0:
             breaking = True
+        index = end_index
     return new_lines, indexes, index, line, breaking, shift, append_shift
 
 
