@@ -105,7 +105,7 @@ def test_collect_string() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "\"asdf{locals()['.args'].pop(0)}\"",
+            "\"asdf{locals()['.args'].pop()}\"",
         ],
     )
     # double bracket #
@@ -129,7 +129,7 @@ def test_collect_multiline_string() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            '"""hello {locals()[\'.args\'].pop(0)} world"""',
+            '"""hello {locals()[\'.args\'].pop()} world"""',
         ],
     )
     # double bracket #
@@ -199,13 +199,13 @@ def test_unpack() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "locals()['.args'] += [locals()['.args'].pop()]",
             "return  5",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "locals()['.args'] += [locals()['.args'].pop()]",
             "return  7",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "locals()['.args'] += [locals()['.args'].pop()]",
         ],
         "a =locals()['.args'].pop(0),locals()['.args'].pop(0),locals()['.args'].pop(0)= 5",
         36,
@@ -215,7 +215,7 @@ def test_unpack() -> None:
 
     assert test("(yield 3)") == (
         ["return  3", "locals()['.args'] += [locals()['.send']]"],
-        "locals()['.args'].pop(0)",
+        "locals()['.args'].pop()",
         5,
     )
 
@@ -223,10 +223,10 @@ def test_unpack() -> None:
         [
             "return  5",
             "locals()['.args'] += [locals()['.send']]",
-            "return  3,locals()['.args'].pop(0)",
+            "return  3,locals()['.args'].pop()",
             "locals()['.args'] += [locals()['.send']]",
         ],
-        "locals()['.args'].pop(0)",
+        "locals()['.args'].pop()",
         5,
     )
 
@@ -234,9 +234,9 @@ def test_unpack() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop(0)",
+            "return  locals()['.args'].pop()",
             "locals()['.args'] += [locals()['.send']]",
-            "return locals()['.args'].pop(0)",
+            "return locals()['.args'].pop()",
             "locals()['.args'] += [locals()['.send']]",
         ],
         "a =locals()['.args'].pop(0)= 5",
@@ -247,13 +247,13 @@ def test_unpack() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "locals()['.args'] += [locals()['.args'].pop()]",  ## shouldn't that be -1???
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop(0)",  ## should be -1 ## could go i.e. locals()['.args'].pop(0 - locals()['.value yield recurse'])
+            "return  locals()['.args'].pop()",  ## should be -1 ## could go i.e. locals()['.args'].pop(0 - locals()['.value yield recurse'])
             "locals()['.args'] += [locals()['.send']]",
         ],
-        "locals()['.args'].pop(0),locals()['.args'].pop(0)",
+        "locals()['.args'].pop(0),locals()['.args'].pop()",
         15,
     )
 
@@ -265,7 +265,7 @@ def test_unpack() -> None:
 
     assert test("a = (b:=(yield 3) +a) = 5") == (
         ["return  3", "locals()['.args'] += [locals()['.send']]"],
-        "a = (b:=locals()['.args'].pop(0) +a) = 5",
+        "a = (b:=locals()['.args'].pop() +a) = 5",
         24,
     )
 
@@ -275,7 +275,7 @@ def test_unpack() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [f'hi{locals()['.args'].pop(0)}']",
+            "locals()['.args'] += [f'hi{locals()['.args'].pop()}']",
             "return 3",
             "locals()['.args'] += [locals()['.send']]",
         ],
@@ -288,12 +288,12 @@ def test_unpack() -> None:
         [
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop(0)]",
+            "locals()['.args'] += [locals()['.args'].pop()]",
             "return  3",
             "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop(0)",  ### should be -1 ###
+            "return  locals()['.args'].pop()",
             "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [f'hi{locals()['.args'].pop(0),locals()['.args'].pop(0)}']",
+            "locals()['.args'] += [f'hi{locals()['.args'].pop(0),locals()['.args'].pop()}']",
             "return 3",
             "locals()['.args'] += [locals()['.send']]",
         ],
@@ -342,7 +342,7 @@ def test_is_alternative_statement() -> None:
 
 
 def test_is_definition() -> None:
-    assert_cases(is_definition, "def ", "async def ", "class ", "async class ")
+    assert_cases(is_definition, "def ", "async def ", "class ")
 
 
 def test_skip_alternative_statements() -> None:
@@ -397,10 +397,6 @@ def test_skip_alternative_statements() -> None:
             blocks[-1],
             get_indent(blocks[-1]),
         )
-
-
-def test_statement_adjust() -> None:
-    pass
 
 
 def test_control_flow_adjust() -> None:
@@ -497,8 +493,6 @@ def test_skip_blocks() -> None:
         "        3",
         "    class func:",
         "        4",
-        "    async class func:",
-        "        5",
     ]
     length = len(blocks)
     for shift in range(0, length, 2):
@@ -526,9 +520,10 @@ def test_loop_adjust() -> None:
         "            print('hi')",
     ]
     length = len(block)
-    indexes = list(range(1, length + 1))
+    # 0 based indexes #
+    indexes = list(range(length))
     ## adjustments ##
-    assert loop_adjust(block[2:], indexes, block[1:], *(1, length)) == (
+    assert loop_adjust(block[2:], indexes[2:], block[1:], *(1, length)) == (
         [
             "    locals()['.continue']=True",
             "    for _ in (None,):",
@@ -556,9 +551,8 @@ def test_loop_adjust() -> None:
         [
             None,
             None,
-            1,
-            None,
             2,
+            None,
             3,
             4,
             5,
@@ -567,7 +561,6 @@ def test_loop_adjust() -> None:
             8,
             9,
             10,
-            11,
             None,
             1,
             2,
@@ -582,7 +575,7 @@ def test_loop_adjust() -> None:
         ],
     )
     ## no adjustments ##
-    assert loop_adjust(block[6:], indexes, block[1:], *(1, length)) == (
+    assert loop_adjust(block[6:], indexes[6:], block[1:], *(1, length)) == (
         [
             "    def func():",
             "        pass",
@@ -600,7 +593,7 @@ def test_loop_adjust() -> None:
             "            pass",
             "        print('hi')",
         ],
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        [6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     )
 
 
@@ -641,8 +634,8 @@ def test_extract_source_from_comparison() -> None:
 
 def test_expr_getsource() -> None:
     a, b = lambda x: x, (i for i in range(3))
-    expr_getsource(a)
-    expr_getsource(b)
+    assert expr_getsource(a) == "lambda x: x"
+    assert expr_getsource(b) == "(i for i in range(3))"
 
 
 def test_extract_genexpr() -> None:
@@ -743,13 +736,13 @@ test_collect_multiline_string()
 test_string_collector_proxy()
 test_inverse_bracket()
 ## tested in test_unpack: named_adjust, unpack_adjust, update_lines
-test_unpack()  ## need to fix the ordering of popping ##
+test_unpack()
 test_collect_definition()
 test_is_alternative_statement()
 test_is_loop()
 test_is_definition()
 test_skip_alternative_statements()
-# test_statement_adjust()
+# tested in control_flow_adjust: statement_adjust
 test_control_flow_adjust()
 test_indent_lines()
 test_iter_adjust()
@@ -759,7 +752,7 @@ test_loop_adjust()
 test_yield_adjust()
 test_get_loops()
 test_extract_source_from_comparison()
-# test_expr_getsource()
+test_expr_getsource()
 test_extract_genexpr()
 test_extract_lambda()
 test_except_adjust()
