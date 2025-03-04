@@ -36,6 +36,7 @@ def test_picklers() -> None:
     _code = code(_frame.f_code)
     test_Pickler(_code)
     ## probably needs more work before f_back can be pickled ##
+    ## it might be because f_locals in f_back is not picklable ##
     _frame.f_back = None
     test_Pickler(_frame)
     test_Pickler(Generator())
@@ -487,18 +488,21 @@ def test_generator__call__() -> None:
 
 def test_generator_frame_init() -> None:
     gen = Generator(simple_generator())
+
     ### state adjustments ###
+
     ## close/exit ##
     gen._frame_init(close=True)
     assert gen._internals["state"] == ["    return 1" for _ in range(3)]
     ## exception ##
     gen._frame_init("Exception")
-    gen._internals["state"] == [
+    assert gen._internals["state"] == [
         "    raise Exception",
         "    return 1",
         "    return 2",
         "    return 3",
     ]
+    assert gen._internals["linetable"] == [-1, 0, 1, 2]
 
     ## exception with try block ##
     def test():
@@ -516,7 +520,10 @@ def test_generator_frame_init() -> None:
         "    except:",
         "        pass",
     ]
+    assert gen2._internals["linetable"] == [0, 0, 1, 2, 3]
+
     ### frame adjustments ###
+
     ## no local variables stored ##
     init, _ = gen._frame_init()
     assert init == [
