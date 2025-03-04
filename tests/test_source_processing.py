@@ -426,24 +426,42 @@ def test_control_flow_adjust() -> None:
     ]
     end_pos = len(blocks)
     test = lambda start_pos: control_flow_adjust(
-        blocks[start_pos:], list(range(start_pos + 1, end_pos))
+        blocks[start_pos:], list(range(start_pos, end_pos))
     )
-    assert test(0) == (blocks, list(range(1, end_pos)))
-    ## case ##
-    assert test(2) == (indent_lines(blocks[2:12], -8), list(range(3, 13)))
-    ## elif ##
+    ## match ##
+    assert test(0) == (blocks, list(range(0, end_pos)))
+    ### between + start alternative statements ###
+
     temp = lambda index: (
         [blocks[index][12:]] + indent_lines(blocks[8:12], -8),
-        [index + 1] + list(range(9, 16)),
+        [index] + list(range(8, 12)),
     )
-    ## else, try, except ##
-    for i in range(3, 13, 2):
-        print(test(i), temp(i))
-        # assert test(i) == temp(i)
+
+    ## if ##
+    assert test(2) == (indent_lines(blocks[2:12], -8), list(range(2, 12)))
+    assert test(3) == temp(3)
+
+    ## elif, else ##
+    for i in range(5, 9, 2):
+        assert test(i) == temp(i)
+        assert test(i - 1) == (
+            ["    try:", "        3", "    except:", "        4"],
+            [8, 9, 10, 11],
+        )
+    ## try ##
+    assert test(9) == (indent_lines(blocks[8:12], -8), [9] + list(range(9, 12)))
+    ## except ##
+    assert test(11) == (["    4"], [11])
+    assert test(10) == (
+        ["    try:", "        pass", "    except:", "        4"],
+        [10, 10, 10, 11],
+    )
     ## case ##
-    assert test(13) == ([blocks[13][8:]], [13 + 1])
+    assert test(13) == ([blocks[13][8:]], [13])
+    assert test(12) == ([""], [])
     ## default ##
-    assert test(15) == ([blocks[15][8:]], [])
+    assert test(15) == ([blocks[15][8:]], [15])
+    assert test(14) == ([""], [])
 
 
 def test_indent_lines() -> None:
@@ -732,7 +750,7 @@ test_is_loop()
 test_is_definition()
 test_skip_alternative_statements()
 # test_statement_adjust()
-test_control_flow_adjust()  ## finish else, try, except ## Then test for the alternate statement start
+test_control_flow_adjust()
 test_indent_lines()
 test_iter_adjust()
 test_is_statement()
