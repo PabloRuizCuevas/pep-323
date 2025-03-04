@@ -97,11 +97,10 @@ class frame(Pickler):
         "f_trace_lines",
         "f_trace_opcodes",
     )
-    _not_allowed = ("f_globals",)
+    _not_allowed = ("f_globals", "f_builtins")
     f_locals = {}
     f_lineno = 1
     f_globals = globals()
-    f_builtins = __builtins__
 
     def __init__(self, frame: FrameType = None) -> None:
         if frame:
@@ -642,7 +641,7 @@ class Generator(Pickler):
         """sets up the api; subclasses should override this method for alternate api setup"""
         self._internals = {
             "prefix": "gi_",
-            "type": GeneratorType,
+            "type": "GeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
             "version": "",  ## specific to 'async ' Generators for _frame_init ##
         }
 
@@ -740,7 +739,10 @@ class Generator(Pickler):
             self._internals["state_generator"] = self._init_states()
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
-        """initializes the generators locals with arguements and keyword arguements"""
+        """
+        initializes the generators locals with arguements and keyword arguements
+        but is also a shorthand method to initialize the state generator
+        """
         _signature = self._internals.get("signature", None)
         if _signature:
             ## if binding to the signature fails it will raise an error ##
@@ -748,8 +750,8 @@ class Generator(Pickler):
             ## makes sure default arguments are applied ##
             binding.apply_defaults()
             self._internals["frame"].f_locals.update(binding.arguments)
-            return self
-        raise TypeError("Generator expression is not callable")
+        self._internals["state_generator"] = self._init_states()
+        return self
 
     def __iter__(self) -> GeneratorType:
         """Converts the generator function into an iterable"""
@@ -873,12 +875,8 @@ class Generator(Pickler):
             % type(exception)
         )
 
-    def __setstate__(self, state: dict) -> None:
-        Pickler.__setstate__(self, state)
-        self._internals["state_generator"] = self._init_states()
-
     def __instancecheck__(self, instance: object) -> bool:
-        return isinstance(instance, self._internals["type"] | type(self))
+        return isinstance(instance, eval(self._internals["type"]) | type(self))
 
     def __subclasscheck__(self, subclass: type) -> bool:
-        return issubclass(subclass, self._internals["type"] | type(self))
+        return issubclass(subclass, eval(self._internals["type"]) | type(self))
