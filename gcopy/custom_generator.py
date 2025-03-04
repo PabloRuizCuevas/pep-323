@@ -333,7 +333,7 @@ class Generator(Pickler):
     ) -> list[str]:
         """
         Checks if lines that were adjusted because of value yields
-        were in a block statement and therefore needs adjusting
+        are in a block statement and therefore needs adjusting
 
         Also, the new_lines do need to be indented accordingly
         e.g. to the final_line or specfic adjustment
@@ -375,6 +375,7 @@ class Generator(Pickler):
                 + [final_line]
             )
         elif check("except"):
+            ## except_adjust automatically does the indentation ##
             return except_adjust(current_lines, new_lines, final_line)
         self._internals["lineno"] += 1
         return current_lines + indent_lines(new_lines, number_of_indents) + [final_line]
@@ -687,10 +688,6 @@ class Generator(Pickler):
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     self._internals["source_lines"] = self._clean_source_lines(True)
-                    self._internals["lineno"] = (
-                        self._internals["frame"].f_lineno
-                        - self._internals["code"].co_firstlineno
-                    )
                     ## Might implement at another time but this is just for compound statements ##
                     ## and therefore not strictly necessary from the standpoint of the style guide ##
                     self._internals["lineno"] = (
@@ -796,6 +793,8 @@ class Generator(Pickler):
             ## '.send' reference is not needed ##
             if ".send" in _frame.f_locals:
                 del _frame.f_locals[".send"]
+            if ".yieldfrom" in _frame.f_locals:
+                self._internals["yieldfrom"] = _frame.f_locals[".yieldfrom"]
             if f_back:
                 ## make sure the new frames locals are on the right hand side to take presedence ##
                 _frame.f_locals = f_back.f_locals | _frame.f_locals
