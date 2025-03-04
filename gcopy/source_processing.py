@@ -393,7 +393,8 @@ def update_lines(
             if yielding:
                 temp_final_line = "yield " + temp_final_line[:-1]
                 lines += temp_lines + unpack_adjust(temp_final_line.strip())
-                line = line[:bracket_index] + "locals()['.args'].pop(0)"
+                ## unwrapping should pop from the end (current expression) ##
+                line = line[:bracket_index] + "locals()['.args'].pop()"
             else:
                 lines += temp_lines
                 line += temp_final_line
@@ -404,6 +405,7 @@ def update_lines(
                 final_line += line
             ## expression ##
             else:
+                ## unpacking should pop from the start (since the line is in this order) ##
                 final_line += "locals()['.args'].pop(0)"
                 lines += unpack_adjust(line.strip())
             line = ""
@@ -597,14 +599,12 @@ def is_definition(line: str) -> bool:
         line.startswith("def ")
         or line.startswith("async def ")
         or line.startswith("class ")
-        or line.startswith("async class ")
     )
 
 
 ########################
 ### code adjustments ###
 ########################
-## it's skipping too much ##
 def skip_alternative_statements(
     line_iter: Iterable, current_min: int
 ) -> tuple[int, str, int]:
@@ -895,7 +895,7 @@ def loop_adjust(
         ] + list(
             range(*pos)
         )
-    ## If it doesn't need any adjustments e.g. to continue and break statements ##
+    ## If it doesn't need any adjustments e.g. continue and break statements ##
     ## then we just dedent the current lines and add the outer loop ##
     return indent_lines(lines, 4 - get_indent(lines[0])) + indent_lines(
         outer_loop, 4 - get_indent(outer_loop[0])
@@ -957,18 +957,14 @@ def extract_source_from_comparison(
     attrs = (
         "co_freevars",
         "co_cellvars",
-        "co_firstlineno",
         "co_nlocals",
         "co_stacksize",
-        "co_flags",
         "co_code",
         "co_consts",
         "co_names",
         "co_varnames",
         "co_name",
     )
-    if (3, 3) <= version_info:
-        attrs += ("co_qualname",)
     if isinstance(source, list):
         source = "".join(source)
     for col_offset, end_col_offset in extractor(source):
