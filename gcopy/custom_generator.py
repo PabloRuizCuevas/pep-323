@@ -131,15 +131,6 @@ class EOF(StopIteration):
     pass
 
 
-def generator(FUNC: FunctionType) -> FunctionType:
-    """Decorator of Generator class"""
-
-    def proxy(*args, **kwargs) -> Generator:
-        return Generator(FUNC(*args, **kwargs))
-
-    return proxy
-
-
 #################
 ### Generator ###
 #################
@@ -604,10 +595,18 @@ class Generator(Pickler):
                     self._internals["state"][0],
                     " " * (temp + 4) + "raise " + exception,
                 ] + self._internals["state"][1:]
+                index_0 = self._internals["linetable"][0]
+                self._internals["linetable"] = [index_0, index_0] + self._internals[
+                    "linetable"
+                ][1:]
             else:
                 self._internals["state"] = [
                     " " * temp + "raise " + exception
                 ] + self._internals["state"]
+                ## -1 so that on +1 (on _update) it will be correct ##
+                self._internals["linetable"] = [
+                    self._internals["linetable"][0] - 1
+                ] + self._internals["linetable"]
         ## adjust the initializers ##
         init = [
             self._internals["version"] + "def next_state():",
@@ -849,7 +848,7 @@ class Generator(Pickler):
         Throws a GeneratorExit and closes the generator clearing its
         frame, state_generator, and yieldfrom
 
-        return = EOF('...')
+        return = return
         yield  = return 1
         """
         try:
