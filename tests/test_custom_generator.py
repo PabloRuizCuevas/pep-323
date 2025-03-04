@@ -75,7 +75,7 @@ def test_generator_custom_adjustment() -> None:
         "try:",
         "    return EOF('... ')",
         "finally:",
-        "    currentframe().f_back.f_locals['self'].close()",
+        "    currentframe().f_back.f_locals['self']._close()",
     ]
 
 
@@ -241,7 +241,7 @@ def test_generator_string_collector_adjust() -> None:
         )
 
     ## string collection ##
-    test(None, 10, *("'hi'", (10, 13, "'"), []))
+    test(None, 10, *("    print('hi'", (10, 13, "'"), []))
     ## f-string ##
     test(
         16,
@@ -261,7 +261,7 @@ def test_generator_string_collector_adjust() -> None:
         48,
         59,
         *(
-            "'hello {{(yield 3)}}'",
+            "    print(f'hello {{(yield 3)}}'",
             (59, 79, "'"),
             [],
         )
@@ -651,7 +651,46 @@ def test_generator__close() -> None:
 
 
 def test_generator_close() -> None:
-    pass
+    gen = Generator(simple_generator())
+    assert gen.close() is None
+    assert gen._internals["frame"] is None
+
+    def test(case: int = 0) -> GeneratorType:
+        yield 0
+        try:
+            yield 1
+            yield 2
+        except GeneratorExit:
+            if case == 0:
+                raise GeneratorExit()
+            if case == 1:
+                yield 4
+            return 30
+
+    gen = Generator(test())
+    ## start ##
+    assert gen.close() is None
+    assert gen._internals["frame"] is None
+
+    ### catched ###
+
+    # GeneratorExit #
+    gen = Generator(test())
+    next(gen)
+    assert gen.close() is None
+    assert gen._internals["frame"] is None
+    # yield #
+    gen = Generator(test(1))
+    next(gen)
+    try:
+        gen.close()
+    except RuntimeError:
+        pass
+    # return #
+    gen = Generator(test(2))
+    next(gen)
+    assert gen.close() is None
+    assert gen._internals["frame"] is None
 
 
 def test_generator_send() -> None:
@@ -692,10 +731,8 @@ def test_generator_throw() -> None:
     try:
         gen.throw(ImportError)
     except ImportError:
-        pass
-    from sys import exit
-
-    exit()
+        assert gen._internals["linetable"] == [-1, 0, 1, 2]
+        assert gen._internals["state"] is None
 
     def test():
         try:
@@ -707,8 +744,8 @@ def test_generator_throw() -> None:
 
     gen = Generator(test())
     assert gen.throw(ImportError) == 2
-    print(gen._internals["state"])
-    # assert next(gen) == 3
+    assert gen._internals["state"][2:] == gen._internals["source_lines"][1:]
+    assert gen._internals["linetable"] == [0, 0, 1, 2, 3, 4, 5]
 
 
 def test_generator_type_checking() -> None:
@@ -728,7 +765,7 @@ test_generator_append_line()
 test_generator_block_adjust()
 test_generator_string_collector_adjust()
 # test_generator_clean_source_lines()
-test_generator_create_state()  ## needs fixing ##
+test_generator_create_state()
 test_generator_init_states()
 test_generator__init__()  ## check generator getsource ##
 test_generator__call__()
@@ -737,7 +774,7 @@ test_generator_update()
 test_generator__next__()
 test_generator__iter__()
 test_generator__close()
-# test_generator_close()
+test_generator_close()
 test_generator_send()
-# test_generator_throw()
+test_generator_throw()
 test_generator_type_checking()
