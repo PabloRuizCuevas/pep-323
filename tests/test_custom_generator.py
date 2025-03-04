@@ -180,14 +180,14 @@ def test_generator_block_adjust() -> None:
     assert test("    if     (yield 3):\n        return 4\n") == [
         "    return  3",
         "    locals()['.args'] += [locals()['.send']]",
-        "    if locals()['.args'].pop(0):",
+        "    if locals()['.args'].pop():",
     ]
     ## elif ##
     assert test("    elif (yield 3):\n        return 4\n") == [
         "    else:",
         "        return  3",
         "        locals()['.args'] += [locals()['.send']]",
-        "        if locals()['.args'].pop(0):",
+        "        if locals()['.args'].pop():",
     ]
     ## except ##
     assert test(
@@ -201,13 +201,13 @@ def test_generator_block_adjust() -> None:
         "            return  3",
         "            locals()['.args'] += [locals()['.send']]",
         "            raise locals()['.error']",
-        "    except locals()['.args'].pop(0):",
+        "    except locals()['.args'].pop():",
     ]
     ## for ##
     new_lines = ["    return  3", "    locals()['.args'] += [locals()['.send']]"]
     test_answer = lambda expr: test(
         "    %s (yield 3):\n        return 4\n" % expr
-    ) == new_lines + ["    %s locals()['.args'].pop(0):" % expr]
+    ) == new_lines + ["    %s locals()['.args'].pop():" % expr]
     gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
     assert test_answer("for")
     assert gen._internals["lineno"] == 3
@@ -252,9 +252,9 @@ def test_generator_string_collector_adjust() -> None:
             [
                 "    return  3",
                 "    locals()['.args'] += [locals()['.send']]",
-                "    print(f'hello {locals()['.args'].pop(0)}')",
+                "    print(f'hello {locals()['.args'].pop()}')",
             ],
-        )
+        ),
     )
     ## string f-string ##
     test(
@@ -264,24 +264,64 @@ def test_generator_string_collector_adjust() -> None:
             "    print(f'hello {{(yield 3)}}'",
             (59, 79, "'"),
             [],
-        )
+        ),
     )
 
 
 def test_generator_clean_source_lines() -> None:
+    def test() -> Generator:
+        """
+        single test case that attempts to test most cases:
 
-    ### write one test case that has everything ###
-    ## does the line continuation adjustment work  e.g. space + 1 != index ??
-
-    ## value yields ##
-    ## comments ##
-    ## definitions ##
-    ## statements ##
-    ## named expressions ##
-    ## strings ##
-    ## f-strings ##
-    ## returns ##
+        ## value yields ##
+        ## comments ##
+        ## definitions ##
+        ## statements ##
+        ## named expressions ##
+        ## strings ##
+        ## f-strings ##
+        ## returns ##
+        """
+        yield
+        (yield (yield), (yield 3)) == (yield 5), (yield 6)
+        if (yield):
+            yield from simple_generator()
+            return 3
+        while 3 < next((yield 3)):
+            print(3)
+        for i in (yield 2):
+            print(2)
+        print(f"hi {(yield 2),(yield (yield 2))}")  ## f-string ##
+        string = """def test():
     pass
+"""
+        print(string)
+        (a := (yield (a := (yield 3)))) == (yield 3)
+        try:
+            print()
+        except (yield 3):
+            pass
+        if True:
+            pass
+        elif (yield 3):
+            pass
+
+        def test2():
+            yield 3
+
+        async def test2():
+            yield 3
+
+        class test2:
+            def __init__(self):
+                yield 3
+
+        return (yield 3)
+
+    gen = Generator(test)
+    from pprint import pprint
+
+    pprint(gen._internals["source_lines"])
 
 
 def test_generator_create_state() -> None:
@@ -452,6 +492,12 @@ def test_generator__init__() -> None:
             try:
                 obj = gen._internals[key]
             except KeyError:
+                if (
+                    key == "jump_positions"
+                    and isinstance(FUNC, GeneratorType)
+                    and FUNC.gi_code.co_name == "<genexpr>"
+                ):
+                    continue
                 if key != "linetable":
                     raise AssertionError("Missing key: %s" % key)
                 continue
@@ -461,8 +507,6 @@ def test_generator__init__() -> None:
             else:
                 assert isinstance(obj, value)
 
-    ## check overwrite in __init__; do we want overwrite? ##
-
     ## function generator ##
     # uninitilized #
     check(simple_generator)
@@ -470,7 +514,7 @@ def test_generator__init__() -> None:
     check(simple_generator())
     ## generator expression ##
     gen = (i for i in range(3))
-    # check(gen)
+    check(gen)
     ## string ##
     check("(i for i in range(3))")
 
@@ -764,10 +808,10 @@ test_generator_update_jump_positions()
 test_generator_append_line()
 test_generator_block_adjust()
 test_generator_string_collector_adjust()
-# test_generator_clean_source_lines()
+test_generator_clean_source_lines()
 test_generator_create_state()
 test_generator_init_states()
-test_generator__init__()  ## check generator getsource ##
+test_generator__init__()
 test_generator__call__()
 test_generator_frame_init()
 test_generator_update()
