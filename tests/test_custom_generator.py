@@ -19,11 +19,27 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
     with open("test.pkl", "rb") as file:
         ## they should be identical in terms of the attrs we care about ##
         test_loaded = pickle.load(file)
+
+        if isinstance(pickler_test, Generator):
+            not_allowed = pickler_test._not_allowed
+            pickler_test = pickler_test._internals
+            test_loaded = test_loaded._internals
+            for key in pickler_test:
+                if key in not_allowed:
+                    continue
+                if not (key in test_loaded and test_loaded[key] == pickler_test[key]):
+                    print(
+                        " --- %s attr comparison == False: test_Pickler (_internals comparison key: '%s')"
+                        % (pickler_test.__class__.__name__, key)
+                    )
+            return
         try:
-            assert attr_cmp(
-                test_loaded, pickler_test, ("_attrs",) + pickler_test._attrs
-            )
-        except:
+            attrs = ("_attrs",) + pickler_test._attrs
+            attrs = list(attrs)
+            for i in pickler_test._not_allowed:
+                attrs.remove(i)
+            assert attr_cmp(test_loaded, pickler_test, attrs)
+        except AssertionError:
             ## it'll be the frame ##
             print(
                 " --- %s attr comparison == False: test_Pickler"
@@ -41,8 +57,13 @@ def test_picklers() -> None:
 
 def test_generator_pickle() -> None:
     gen = Generator(simple_generator)
-    del gen._internals["signature"]
     test_Pickler(gen)
+    assert next(gen) == 1
+    ## copy the generator ##
+    gen2 = gen.copy()
+    gen3 = gen.copy()
+    assert next(gen) == next(gen2) == next(gen3)
+    assert next(gen) == next(gen2) == next(gen3)
 
 
 def test_generator_custom_adjustment() -> None:
