@@ -915,4 +915,4 @@ class Generator(Pickler):
     def __setstate__(self, state: dict) -> None:
         Pickler.__setstate__(self, state)
         ## setup the state generator + api ##
-        self()
+        self._internals["state_generator"] = self._init_states()
