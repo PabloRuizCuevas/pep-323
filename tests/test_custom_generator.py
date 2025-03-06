@@ -2,11 +2,50 @@ from gcopy.custom_generator import *
 import pickle
 from types import NoneType
 
+#########################
+### testing utilities ###
+#########################
+
 
 ## classes need to be globally defined for it to be picklable ##
 ## e.g. cannot pickle locally defined classes/types ##
 class pickler(Pickler):
     _attrs = ("a", "b", "c")
+
+
+def setup() -> Generator:
+    """setup used for jump_positions"""
+    gen = Generator()
+    gen._internals["jump_positions"], gen._internals["jump_stack"] = [
+        [1, None],
+        [1, None],
+    ], [(0, 0), (0, 1)]
+    gen._internals["jump_stack_adjuster"], gen._internals["linetable"] = [], []
+    gen._internals["lineno"] = 1
+    return gen
+
+
+def simple_generator() -> GeneratorType:
+    yield 1
+    yield 2
+    yield 3
+
+
+def api_test(gen, flag: bool) -> None:
+    """
+    Tests if the api is setup correctly
+
+    Note: only for Generators currently e.g. gi_ prefix on attributes
+    """
+    for key in dir(gen):
+        if key.startswith("gi_"):
+            assert (getattr(gen, key) is gen._internals[key[3:]]) == flag
+    assert gen._internals["state"] == gen._internals["source_lines"]
+
+
+#############
+### tests ###
+#############
 
 
 def test_Pickler(pickler_test: Pickler = None) -> None:
@@ -21,11 +60,12 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
         test_loaded = pickle.load(file)
 
         if isinstance(pickler_test, Generator):
-            not_allowed = pickler_test._not_allowed
+            not_allowed = list(pickler_test._not_allowed)
             pickler_test = pickler_test._internals
             test_loaded = test_loaded._internals
             for key in pickler_test:
                 if key in not_allowed:
+                    not_allowed.remove(key)
                     continue
                 if not (key in test_loaded and test_loaded[key] == pickler_test[key]):
                     print(
@@ -76,10 +116,9 @@ def test_generator_custom_adjustment() -> None:
     assert test("yield from ... ") == [
         "locals()['.yieldfrom']=... ",
         "for locals()['.i'] in locals()['.yieldfrom']:",
+        "    return locals()['.i']",
         "    if locals()['.send']:",
-        "        return locals()['.i'].send(locals()['.send'])",
-        "    else:",
-        "        return locals()['.i']",
+        "        return locals()['.yieldfrom'].send(locals()['.send'])",
     ]
     ## for ##
     gen._internals["jump_positions"], gen._internals["jump_stack"] = [], []
@@ -101,18 +140,6 @@ def test_generator_custom_adjustment() -> None:
         "finally:",
         "    currentframe().f_back.f_locals['self']._close()",
     ]
-
-
-def setup() -> Generator:
-    """setup used for jump_positions"""
-    gen = Generator()
-    gen._internals["jump_positions"], gen._internals["jump_stack"] = [
-        [1, None],
-        [1, None],
-    ], [(0, 0), (0, 1)]
-    gen._internals["jump_stack_adjuster"], gen._internals["linetable"] = [], []
-    gen._internals["lineno"] = 1
-    return gen
 
 
 def test_generator_update_jump_positions() -> None:
@@ -315,6 +342,8 @@ def test_generator_clean_source_lines() -> None:
             print(3)
         for i in (yield 2):
             print(2)
+        if i in (yield 2):
+            pass
         print(f"hi {(yield 2),(yield (yield 2))}")  ## f-string ##
         string = """def test():
     pass
@@ -467,35 +496,30 @@ def test_generator_create_state() -> None:
 
 
 def test_generator_init_states() -> None:
-    gen = Generator(simple_generator())
-    ## show the api is setup correctly ##
-    for key in dir(gen):
-        if key.startswith("gi_"):
-            assert getattr(gen, key) is gen._internals[key[3:]]
-    assert gen._internals["state"] == gen._internals["source_lines"]
-    ## show the state_generator is dependent on external variables ##
-    for _ in range(2):
-        next(gen._internals["state_generator"])
-        assert gen._internals["state"] == gen._internals["source_lines"]
-    ## EOF ##
-    gen._internals["state"] = None
-    assert next(gen._internals["state_generator"], True)
+    def test(gen) -> None:
+        ## show the state_generator is dependent on external variables ##
+        for _ in range(2):
+            next(gen._internals["state_generator"])
+            assert gen._internals["state"] == gen._internals["source_lines"]
+        ## EOF ##
+        gen._internals["state"] = None
+        assert next(gen._internals["state_generator"], True)
 
-
-def simple_generator() -> GeneratorType:
-    yield 1
-    yield 2
-    yield 3
+    ## initialized generator ##
+    test(Generator(simple_generator()))
+    ## uninitialized generator ##
+    test(Generator(simple_generator))
 
 
 def test_generator__init__() -> None:
-    def check(FUNC: Any) -> None:
+    def test(FUNC: Any, flag: bool) -> None:
         """
         Does two checks:
         1. has the attrs
         2. the attrs values are of the correct type
         """
         gen = Generator(FUNC)
+        api_test(gen, flag)
         for key, value in {
             "state": str,
             "source": str,
@@ -533,14 +557,14 @@ def test_generator__init__() -> None:
 
     ## function generator ##
     # uninitilized #
-    check(simple_generator)
+    test(simple_generator, False)
     # initilized #
-    check(simple_generator())
+    test(simple_generator(), True)
     ## generator expression ##
     gen = (i for i in range(3))
-    check(gen)
+    test(gen, True)
     ## string ##
-    check("(i for i in range(3))")
+    test("(i for i in range(3))", False)
 
 
 def test_generator__call__() -> None:
@@ -551,8 +575,10 @@ def test_generator__call__() -> None:
 
     gen = Generator(test)
     del gen._internals["state_generator"]
-    gen(1, 2)
+    ## initializes but also returns itself ##
+    assert gen(1, 2) is not None
     assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    api_test(gen, True)
     assert [i for i in gen] == [1, 2, 3]
     assert gen._internals["state_generator"]
 
@@ -617,15 +643,6 @@ def test_generator_frame_init() -> None:
         "    locals()['.send'] = None",
         "    currentframe().f_back.f_locals['.frame']=currentframe()",
     ]
-
-
-def check_attrs(_frame):
-    for attr in frame._attrs:
-        print(attr, ": ", end="", sep="")
-        try:
-            print(getattr(_frame, attr))
-        except:
-            print()
 
 
 def test_generator_update() -> None:
