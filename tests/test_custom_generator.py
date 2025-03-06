@@ -35,11 +35,14 @@ def test_picklers() -> None:
     _frame = frame(currentframe())
     _code = code(_frame.f_code)
     test_Pickler(_code)
-    ## probably needs more work before f_back can be pickled ##
-    ## it might be because f_locals in f_back is not picklable ##
-    _frame.f_back = None
     test_Pickler(_frame)
     test_Pickler(Generator())
+
+
+def test_generator_pickle() -> None:
+    gen = Generator(simple_generator)
+    del gen._internals["signature"]
+    test_Pickler(gen)
 
 
 def test_generator_custom_adjustment() -> None:
@@ -448,7 +451,7 @@ def test_generator_init_states() -> None:
     for key in dir(gen):
         if key.startswith("gi_"):
             assert getattr(gen, key) is gen._internals[key[3:]]
-    assert gen._internals["state"] is None
+    assert gen._internals["state"] == gen._internals["source_lines"]
     ## show the state_generator is dependent on external variables ##
     for _ in range(2):
         next(gen._internals["state_generator"])
@@ -473,7 +476,7 @@ def test_generator__init__() -> None:
         """
         gen = Generator(FUNC)
         for key, value in {
-            "state": NoneType,
+            "state": str,
             "source": str,
             "linetable": int,
             "yieldfrom": NoneType | Iterable | GeneratorType,
@@ -665,7 +668,7 @@ def test_generator_update() -> None:
 
 def test_generator__next__() -> None:
     gen = Generator(simple_generator())
-    assert gen._internals["state"] is None
+    assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 1
     assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 2
@@ -744,19 +747,20 @@ def test_generator_send() -> None:
     gen = Generator()
     f = frame()
     f.f_locals = {}
+    source_lines = [
+        "    return 1",
+        "    return 2",
+        "    a = locals()['.send']",
+        "    return a",
+    ]
     gen._internals.update(
         {
             "frame": f,
             "code": None,
             "lineno": 1,
-            "source_lines": [
-                "    return 1",
-                "    return 2",
-                "    a = locals()['.send']",
-                "    return a",
-            ],
+            "source_lines": source_lines,
             "jump_positions": [],
-            "state": None,
+            "state": source_lines,
             "running": False,
             "suspended": False,
             "yieldfrom": None,
@@ -804,6 +808,7 @@ def test_generator_type_checking() -> None:
 ## tests are for cleaning + adjusting + pickling ##
 test_Pickler()
 test_picklers()
+test_generator_pickle()
 # record_jumps is tested in test_custom_adjustment
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
