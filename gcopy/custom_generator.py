@@ -56,7 +56,6 @@ class Pickler:
             for attr in obj._not_allowed:
                 if hasattr(obj, attr):
                     delattr(obj, attr)
-            return obj
         return obj
 
     ## for pickling ##
@@ -246,7 +245,7 @@ class Generator(Pickler):
             ## have to use a try-finally in case the user returns a value from locals() ##
             return [
                 indent + "try:",
-                indent + "    return EOF('" + line[7:] + "')",
+                indent + "    return EOF('" + temp_line[7:] + "')",
                 indent + "finally:",
                 indent + "    currentframe().f_back.f_locals['self']._close()",
             ]
@@ -659,11 +658,6 @@ class Generator(Pickler):
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
-        ## api setup ##
-        prefix = self._internals["prefix"]
-        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
-            setattr(self, prefix + key, self._internals[key])
-        del prefix
         ## if no state then it must be EOF ##
         while self._internals["state"]:
             yield self._create_state()
@@ -699,8 +693,10 @@ class Generator(Pickler):
         if FUNC:
             ## needed to identify certain attributes ##
             prefix = self._internals["prefix"]
+            initialized = False
             ## running generator ##
             if hasattr(FUNC, prefix + "code"):
+                initialized = True
                 self._internals["linetable"] = []
                 self._internals["frame"] = frame(getframe(FUNC))
                 self._internals["code"] = code(getcode(FUNC))
@@ -768,12 +764,20 @@ class Generator(Pickler):
             self._internals["running"] = False
             self._internals["state"] = self._internals["source_lines"]
             self._internals["state_generator"] = self._init_states()
+            ## setup api if it's currently running ##
+            if initialized:
+                for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+                    setattr(self, prefix + key, self._internals[key])
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
         """
         initializes the generators locals with arguements and keyword arguements
         but is also a shorthand method to initialize the state generator
         """
+        ## for the api setup ##
+        prefix = self._internals["prefix"]
+        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+            setattr(self, prefix + key, self._internals[key])
         binding = self._internals.get("binding", None)
         if binding:
             ## if binding to the binding fails it will raise an error ##
@@ -799,7 +803,6 @@ class Generator(Pickler):
         try:
             result = next_state()
             if isinstance(result, EOF):
-                self._close()
                 raise result
             return result
         except Exception as e:
