@@ -5,15 +5,15 @@ from types import FunctionType, GeneratorType, CodeType
 from inspect import currentframe, signature
 from copy import deepcopy, copy
 from textwrap import dedent
+from operator import methodcaller
 from gcopy.source_processing import *
 from gcopy.track import offset_adjust
 
 try:
     from typing import NoReturn
 except:
-    NoReturn = {
-        "NoReturn"
-    }  ## for 3.5 since 3.6.2; there might be alternatives that are better than this for 3.5 ##
+    ## for 3.5 since 3.6.2; there might be alternatives that are better than this for 3.5 ##
+    NoReturn = {"NoReturn"}
 
 
 ## minium version supported ##
@@ -33,9 +33,9 @@ class Pickler:
     _not_allowed = tuple()
 
     def _copier(self, FUNC: FunctionType) -> object:
-        """copying will create a new generator object but the copier will determine its depth"""
+        """copying will create a new generator object out of a copied version of the current instance"""
         obj = type(self)()
-        obj.__setstate__(obj.__getstate__(FUNC))
+        obj.__setstate__(self.__getstate__(FUNC, True))
         return obj
 
     ## for copying ##
@@ -45,13 +45,28 @@ class Pickler:
     def __deepcopy__(self, memo: dict) -> object:
         return self._copier(deepcopy)
 
+    def pickler_get(obj):
+        if issubclass(type(obj), Pickler):
+            return methodcaller("__getstate__")(obj)
+        return obj
+
     ## for pickling ##
-    def __getstate__(self, FUNC: FunctionType = lambda x: x) -> dict:
+    def __getstate__(
+        self, FUNC: FunctionType = pickler_get, copying: bool = False
+    ) -> dict:
         """Serializing pickle (what object you want serialized)"""
         dct = dict()
-        for attr in self._attrs:
-            if hasattr(self, attr) and not attr in self._not_allowed:
-                dct[attr] = FUNC(getattr(self, attr))
+        attrs, has, get = self._attrs, hasattr, getattr
+        is_internals = attrs == ("_internals",)
+        if is_internals:
+            attrs = self._internals
+            has = lambda self, attr: attr in attrs
+            get = lambda self, attr: attrs.get(attr)
+        for attr in attrs:
+            if has(self, attr) and (copying or not attr in self._not_allowed):
+                dct[attr] = FUNC(get(self, attr))
+        if is_internals:
+            return {"_internals": dct}
         return dct
 
     def __setstate__(self, state: dict) -> None:
@@ -71,8 +86,7 @@ class code(Pickler):
     def __init__(self, code_obj: CodeType = None) -> None:
         if code_obj:
             for attr in self._attrs:
-                if hasattr(code_obj, attr):
-                    setattr(self, attr, getattr(code_obj, attr))
+                setattr(self, attr, getattr(code_obj, attr, None))
 
     def __bool__(self) -> bool:
         """Used on i.e. if code_obj:"""
@@ -83,8 +97,11 @@ class frame(Pickler):
     """
     acts as the initial FrameType
 
-    Note: on pickling ensure f_locals
-    and f_back can be pickled
+    Note: on pickling ensure f_locals and f_back can be pickled
+
+    Also, this class treats global frames as having no local variables
+    to avoid errors in pickling e.g. global frame (on f_back) will have
+    its f_locals equal 'None'.
     """
 
     _attrs = (
@@ -93,26 +110,28 @@ class frame(Pickler):
         "f_lasti",
         "f_lineno",
         "f_locals",
+        "f_globals",
+        "f_builtins",
         "f_trace",
         "f_trace_lines",
         "f_trace_opcodes",
     )
     _not_allowed = ("f_globals", "f_builtins")
-    f_locals = {}
-    f_lineno = 1
-    f_globals = globals()
 
     def __init__(self, frame: FrameType = None) -> None:
         if frame:
-            ## make sure all other frames are the custom type as well ##
-            if hasattr(frame, "f_back") and not isinstance(frame.f_back, type(self)):
-                self.f_back = type(self)(frame.f_back)
-            ## make sure the code can be pickled
-            if hasattr(frame, "f_code") and not isinstance(frame.f_code, code):
-                self.f_code = code(frame.f_code)
             for attr in self._attrs[2:]:
-                if hasattr(frame, attr):
-                    setattr(self, attr, getattr(frame, attr))
+                setattr(self, attr, getattr(frame, attr, None))
+            ## to prevent interferrence with pickling
+            self.f_back = type(self)(getattr(frame, "f_back", None))
+            self.f_code = code(getattr(frame, "f_code", None))
+            if self.f_globals == self.f_locals:
+                self.f_locals = {}
+                ## we have to do this as well since in co_consts you ##
+                ## get records of globally defined code objects      ##
+                self.f_code = code()
+            return
+        self.f_locals = {}
 
     def clear(self) -> None:
         """clears f_locals e.g. 'most references held by the frame'"""
@@ -176,6 +195,7 @@ class Generator(Pickler):
     ## so we don't necessarily have to implement one ##
 
     _attrs = ("_internals",)  ## for Pickler ##
+    _not_allowed = ("state_generator",)
 
     def _record_jumps(self, number_of_indents: int) -> None:
         """Records the jump positions for the loops (for and while) to help with code adjustments"""
@@ -541,7 +561,6 @@ class Generator(Pickler):
         """
         ## jump_positions are in linenos but get_loops automatically sets the indexing to 0 based ##
         loops = get_loops(self._internals["lineno"], self._internals["jump_positions"])
-        self._internals["loops"] = len(loops)  ## needs checking ##
         index = self._internals["lineno"] - 1  ## for 0 based indexing ##
         if loops:
             start_pos, end_pos = loops.pop()
@@ -631,8 +650,6 @@ class Generator(Pickler):
         for key in ("code", "frame", "suspended", "yieldfrom", "running"):
             setattr(self, prefix + key, self._internals[key])
         del prefix
-        ## since self._internals["state"] starts as 'None' ##
-        yield self._create_state()
         ## if no state then it must be EOF ##
         while self._internals["state"]:
             yield self._create_state()
@@ -735,7 +752,7 @@ class Generator(Pickler):
                 ## modified every time __next__ is called; always start at line 1 ##
                 self._internals["lineno"] = 1
             self._internals["running"] = False
-            self._internals["state"] = None
+            self._internals["state"] = self._internals["source_lines"]
             self._internals["state_generator"] = self._init_states()
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
