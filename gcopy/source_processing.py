@@ -361,7 +361,7 @@ def named_adjust(
 
 def unpack_adjust(line: str) -> list[str]:
     """adjusts the unpacked line for usage and value yields"""
-    if line.startswith("yield "):
+    if line.startswith("yield ") or line == "yield":
         return yield_adjust(line, "") + ["locals()['.args'] += [locals()['.send']]"]
     return ["locals()['.args'] += [%s]" % line]
 
@@ -912,12 +912,11 @@ def yield_adjust(temp_line: str, indent: str) -> list[str]:
             ## 11 to get past the yield from
             indent + "locals()['.yieldfrom']=" + temp_line[11:],
             indent + "for locals()['.i'] in locals()['.yieldfrom']:",
+            indent + "    return locals()['.i']",
             indent + "    if locals()['.send']:",
-            indent + "        return locals()['.i'].send(locals()['.send'])",
-            indent + "    else:",
-            indent + "        return locals()['.i']",
+            indent + "        return locals()['.yieldfrom'].send(locals()['.send'])",
         ]
-    if temp_line.startswith("yield "):
+    if temp_line.startswith("yield ") or temp_line == "yield":
         return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
 
 
