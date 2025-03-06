@@ -2,10 +2,9 @@
 ### picklable/copyable objects ###
 ##################################
 from types import FunctionType, GeneratorType, CodeType
-from inspect import currentframe, signature
+from inspect import currentframe
 from copy import deepcopy, copy
 from textwrap import dedent
-from operator import methodcaller
 from gcopy.source_processing import *
 from gcopy.track import offset_adjust
 
@@ -35,7 +34,7 @@ class Pickler:
     def _copier(self, FUNC: FunctionType) -> object:
         """copying will create a new generator object out of a copied version of the current instance"""
         obj = type(self)()
-        obj.__setstate__(self.__getstate__(FUNC, True))
+        obj.__setstate__(self.__getstate__(FUNC))
         return obj
 
     ## for copying ##
@@ -45,15 +44,23 @@ class Pickler:
     def __deepcopy__(self, memo: dict) -> object:
         return self._copier(deepcopy)
 
+    def copy(self, deep: bool = True) -> object:
+        """short hand method for copying"""
+        if deep:
+            return deepcopy(self)
+        return copy(self)
+
     def pickler_get(obj):
         if issubclass(type(obj), Pickler):
-            return methodcaller("__getstate__")(obj)
+            ## subclasses of Pickler will remove attributes on pickling ##
+            for attr in obj._not_allowed:
+                if hasattr(obj, attr):
+                    delattr(obj, attr)
+            return obj
         return obj
 
     ## for pickling ##
-    def __getstate__(
-        self, FUNC: FunctionType = pickler_get, copying: bool = False
-    ) -> dict:
+    def __getstate__(self, FUNC: FunctionType = pickler_get) -> dict:
         """Serializing pickle (what object you want serialized)"""
         dct = dict()
         attrs, has, get = self._attrs, hasattr, getattr
@@ -63,7 +70,7 @@ class Pickler:
             has = lambda self, attr: attr in attrs
             get = lambda self, attr: attrs.get(attr)
         for attr in attrs:
-            if has(self, attr) and (copying or not attr in self._not_allowed):
+            if has(self, attr) and not attr in self._not_allowed:
                 dct[attr] = FUNC(get(self, attr))
         if is_internals:
             return {"_internals": dct}
@@ -73,9 +80,6 @@ class Pickler:
         """Deserializing pickle (returns an instance of the object with state)"""
         for key, value in state.items():
             setattr(self, key, value)
-
-    def __eq__(self, obj: Any) -> bool:
-        return attr_cmp(self, obj, self._attrs)
 
 
 class code(Pickler):
@@ -91,6 +95,9 @@ class code(Pickler):
     def __bool__(self) -> bool:
         """Used on i.e. if code_obj:"""
         return hasattrs(self, self._attrs)
+
+    def __eq__(self, obj: Any) -> bool:
+        return attr_cmp(self, obj, self._attrs)
 
 
 class frame(Pickler):
@@ -141,6 +148,13 @@ class frame(Pickler):
     def __bool__(self) -> bool:
         """Used on i.e. if frame:"""
         return hasattrs(self, ("f_code", "f_lasti", "f_lineno", "f_locals"))
+
+    def __eq__(self, obj: Any) -> bool:
+        attrs = list(self._attrs)
+        for attr in self._not_allowed:
+            attrs.remove(attr)
+        attrs.remove("f_back")
+        return attr_cmp(self, obj, attrs)
 
 
 class EOF(StopIteration):
@@ -725,7 +739,7 @@ class Generator(Pickler):
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
                     self._internals["code"] = code(FUNC.__code__)
-                    self._internals["signature"] = signature(FUNC)
+                    self._internals["binding"] = binding(FUNC)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
                         ## proably need something that locates its source better for other cases ##
@@ -760,10 +774,10 @@ class Generator(Pickler):
         initializes the generators locals with arguements and keyword arguements
         but is also a shorthand method to initialize the state generator
         """
-        _signature = self._internals.get("signature", None)
-        if _signature:
-            ## if binding to the signature fails it will raise an error ##
-            binding = _signature.bind(*args, **kwargs)
+        binding = self._internals.get("binding", None)
+        if binding:
+            ## if binding to the binding fails it will raise an error ##
+            binding = binding.bind(*args, **kwargs)
             ## makes sure default arguments are applied ##
             binding.apply_defaults()
             self._internals["frame"].f_locals.update(binding.arguments)
@@ -897,3 +911,8 @@ class Generator(Pickler):
 
     def __subclasscheck__(self, subclass: type) -> bool:
         return issubclass(subclass, eval(self._internals["type"]) | type(self))
+
+    def __setstate__(self, state: dict) -> None:
+        Pickler.__setstate__(self, state)
+        ## setup the state generator + api ##
+        self()
