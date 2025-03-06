@@ -1,6 +1,10 @@
 from gcopy.utils import *
 
 
+def test_is_cli() -> None:
+    is_cli()  ## run it to make sure no errors ##
+
+
 def test_cli_findsource() -> None:
     if is_cli():
         pass
@@ -10,10 +14,6 @@ def test_skip() -> None:
     i = iter(range(3))
     skip(i, 2)
     assert next(i) == 2
-
-
-def test_is_cli() -> None:
-    is_cli()  ## run it to make sure no errors ##
 
 
 def test_get_col_offset() -> None:
@@ -101,8 +101,37 @@ def test_chain() -> None:
         assert i == ls.pop(0)
 
 
+def test_binding() -> None:
+    def f(a, b, *args, c=3, d=4, **kwargs) -> None:
+        pass
+
+    bind = binding(f)
+    ## make sure it's picklable ##
+    import pickle
+
+    with open("test.pkl", "wb") as file:
+        pickle.dump(bind, file)
+
+    with open("test.pkl", "rb") as file:
+        ## they should be identical in terms of the attrs we care about ##
+        assert attr_cmp(pickle.load(file), bind, ("paramters",))
+
+    assert format(bind.signature) == "(a, b, *args, c=3, d=4, **kwargs)"
+    bind = bind.bind(1, 2, *(3, 4), **{"k": 4})
+    assert bind.arguments == {"a": 1, "b": 2, "args": (3, 4), "kwargs": {"k": 4}}
+    bind.apply_defaults()
+    assert bind.arguments == {
+        "a": 1,
+        "b": 2,
+        "args": (3, 4),
+        "c": 3,
+        "d": 4,
+        "kwargs": {"k": 4},
+    }
+
+
 test_is_cli()
-test_cli_findsource()
+# test_cli_findsource()
 test_skip()
 test_get_col_offset()
 test_empty_generator()
@@ -117,3 +146,4 @@ with warnings.catch_warnings():
     test_getframe()
 test_hasattrs()
 test_chain()
+test_binding()
