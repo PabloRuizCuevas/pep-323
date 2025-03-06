@@ -127,7 +127,11 @@ def chain(*iterators: tuple[Iterable]) -> GeneratorType:
 
 
 class binding:
-    """To make Signature types pickleable (this class is only needed for binding)"""
+    """
+    To make Signature types pickleable (this class is only needed for binding)
+
+    Note: ensure default args are pickleable if wanting to pickle
+    """
 
     _bound_arguments_cls = BoundArguments
 
