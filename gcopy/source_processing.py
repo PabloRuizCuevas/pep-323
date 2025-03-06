@@ -4,7 +4,7 @@
 from .utils import *
 from inspect import getsource, findsource
 from typing import Iterable, Any
-from types import GeneratorType, FrameType, FunctionType
+from types import GeneratorType, FunctionType  # , FrameType ## lineno_adjust
 
 
 def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:
