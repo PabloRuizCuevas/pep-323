@@ -1,9 +1,10 @@
 from sys import version_info
-from inspect import getframeinfo
+from inspect import getframeinfo, signature, Signature, BoundArguments
 from readline import get_history_item, get_current_history_length
 from dis import get_instructions
-from types import FrameType, GeneratorType, CodeType
+from types import FrameType, GeneratorType, CodeType, FunctionType
 from typing import Iterable, Any
+from collections import OrderedDict
 
 
 def is_cli() -> bool:
@@ -123,3 +124,38 @@ def chain(*iterators: tuple[Iterable]) -> GeneratorType:
     for iterator in iterators:
         for value in iterator:
             yield value
+
+
+class binding:
+    """To make Signature types pickleable (this class is only needed for binding)"""
+
+    _bound_arguments_cls = BoundArguments
+
+    def __init__(self, FUNC: FunctionType) -> None:
+        self.parameters = signature(FUNC).parameters
+
+    def __getstate__(self) -> dict:
+        return {
+            "keys": tuple(self.parameters.keys()),
+            "values": tuple(self.parameters.values()),
+        }
+
+    def __setstate__(self, state: dict) -> None:
+        self.parameters = OrderedDict(zip(state["keys"], state["values"]))
+
+    def bind(self, *args, **kwargs) -> BoundArguments:
+        """Convenience method to get the signature"""
+        return Signature._bind(self, args, kwargs)
+
+    @property
+    def signature(self) -> Signature:
+        """Convenience method to get the signature if desired"""
+        return Signature(self.parameters.values())
+
+    def __repr__(self) -> str:
+        return repr(self.signature)
+
+    def __eq__(self, obj) -> bool:
+        if hasattr(obj, "parameters") and isinstance(obj, binding):
+            return obj.parameters == self.parameters
+        return False
