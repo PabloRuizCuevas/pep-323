@@ -936,9 +936,9 @@ def get_loops(
         ## make sure the lineno is contained within the position for a ##
         ## loop adjustment and because the jump positions are ordered we ##
         ## can also break when the start lineno is beyond the current lineno ##
-        if lineno < pos[0]:
+        if lineno <= pos[0]:
             break
-        if lineno < pos[1]:
+        if lineno <= pos[1]:
             ## subtract 1 for 0 based indexing; it's only got one specific ##
             ## use case that requires it to be an array accessor ##
             loops += [(pos[0] - 1, pos[1] - 1)]
