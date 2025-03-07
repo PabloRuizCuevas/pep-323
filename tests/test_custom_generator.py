@@ -134,12 +134,7 @@ def test_generator_custom_adjustment() -> None:
         [(0, 0), (0, 1)],
     )
     ## return ##
-    assert test("return ... ") == [
-        "try:",
-        "    return EOF('... ')",
-        "finally:",
-        "    currentframe().f_back.f_locals['self']._close()",
-    ]
+    assert test("return ... ") == ["return EOF('... ')"]
 
 
 def test_generator_update_jump_positions() -> None:
@@ -320,6 +315,17 @@ def test_generator_string_collector_adjust() -> None:
 
 
 def test_generator_clean_source_lines() -> None:
+    def test():
+        yield 1
+        for i in range(3):
+            yield i
+        for i in range(3):
+            yield i
+
+    gen = Generator(test())
+    ## make sure the jump_positions are forming correctly ##
+    assert gen._internals["jump_positions"] == [[2, 3], [4, 5]]
+
     def test() -> Generator:
         """
         single test case that attempts to test most cases:
@@ -374,7 +380,7 @@ def test_generator_clean_source_lines() -> None:
     gen = Generator(test)
     from pprint import pprint
 
-    pprint(gen._internals["source_lines"])
+    # pprint(gen._internals["source_lines"])
 
 
 def test_generator_create_state() -> None:
@@ -390,6 +396,7 @@ def test_generator_create_state() -> None:
             "        return 3",
             "    return 4",
         ],
+        "loops": [],
     }
 
     def test(lineno: int) -> tuple[list[str], list[int]]:
@@ -420,9 +427,10 @@ def test_generator_create_state() -> None:
     start_indexes = [0, 2, 4]
     end_indexes = [13, 12, 11]
     ## they get reduced by one in get_loops and originally they are linenos ##
-    gen._internals["jump_positions"] = [
-        (pos[0] + 1, pos[1] + 1) for pos in zip(start_indexes, end_indexes)
-    ]
+    # gen._internals["jump_positions"] = [
+    #     (pos[0] + 1, pos[1]) for pos in zip(start_indexes, end_indexes)
+    # ]
+    gen._internals["loops"] = list(zip(start_indexes, end_indexes))
     assert test(8) == (
         [
             "    return 2",
@@ -652,6 +660,7 @@ def test_generator_update() -> None:
             "frame": None,
             "linetable": [],
             "source_lines": [],
+            "jump_positions": [],
         }
     )
 
@@ -718,6 +727,18 @@ def test_generator__next__() -> None:
 
 def test_generator__iter__() -> None:
     assert [i for i in Generator(simple_generator())] == [1, 2, 3]
+
+    def test_case():
+        yield 1
+        for i in range(3):
+            yield i
+
+    gen = Generator(test_case())
+    ## acts as the fishhook iterator for now ##
+    r = iter(range(3))
+    next(r)
+    gen._internals["frame"].f_locals[".4"] = r
+    assert [i for i in gen] == [1, 0, 1, 2]
 
 
 def test_generator__close() -> None:
@@ -853,7 +874,7 @@ test_generator_update_jump_positions()
 test_generator_append_line()
 test_generator_block_adjust()
 test_generator_string_collector_adjust()
-# test_generator_clean_source_lines()
+test_generator_clean_source_lines()
 test_generator_create_state()
 test_generator_init_states()
 test_generator__init__()
