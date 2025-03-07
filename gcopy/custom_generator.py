@@ -243,12 +243,7 @@ class Generator(Pickler):
         if temp_line == "return" or temp_line.startswith("return "):
             ## close the generator then return ##
             ## have to use a try-finally in case the user returns a value from locals() ##
-            return [
-                indent + "try:",
-                indent + "    return EOF('" + temp_line[7:] + "')",
-                indent + "finally:",
-                indent + "    currentframe().f_back.f_locals['self']._close()",
-            ]
+            return [indent + "return EOF('" + temp_line[7:] + "')"]
         return [line]
 
     def _update_jump_positions(
@@ -340,9 +335,9 @@ class Generator(Pickler):
                     reference_indent,
                 )
             else:
-                lines += self._custom_adjustment(line)
-                ## update the lineno after so that the loops positions are 0 based indexing ##
+                ## update the lineno before so the loops positions are lineno based ##
                 self._internals["lineno"] += 1
+                lines += self._custom_adjustment(line)
                 ## make a linetable if using a running generator ##
                 ## for the linetable e.g. for lineno_adjust e.g. compound statements ##
                 # if running and char == "\n":
@@ -573,22 +568,26 @@ class Generator(Pickler):
         also contains the rest of the source lines as well
         """
         ## jump_positions are in linenos but get_loops automatically sets the indexing to 0 based ##
-        loops = get_loops(self._internals["lineno"], self._internals["jump_positions"])
+        loops = self._internals["loops"]
         index = self._internals["lineno"] - 1  ## for 0 based indexing ##
         if loops:
             start_pos, end_pos = loops.pop()
             ## adjustment ##
-            blocks, indexes = control_flow_adjust(
-                self._internals["source_lines"][index:end_pos],
-                list(range(index, end_pos)),
-                get_indent(self._internals["source_lines"][start_pos]),
-            )
-            blocks, indexes = loop_adjust(
-                blocks,
-                indexes,
-                self._internals["source_lines"][start_pos:end_pos],
-                *(start_pos, end_pos)
-            )
+            blocks, indexes = [], []
+            if index < end_pos:
+                blocks, indexes = control_flow_adjust(
+                    self._internals["source_lines"][index:end_pos],
+                    list(range(index, end_pos)),
+                    get_indent(self._internals["source_lines"][start_pos]),
+                )
+                blocks, indexes = loop_adjust(
+                    blocks,
+                    indexes,
+                    self._internals["source_lines"][start_pos:end_pos],
+                    *(start_pos, end_pos)
+                )
+            else:
+                loops += [[start_pos, end_pos]]
             self._internals["state"], self._internals["linetable"] = outer_loop_adjust(
                 blocks, indexes, self._internals["source_lines"], loops, end_pos
             )
@@ -652,12 +651,19 @@ class Generator(Pickler):
             init += [" " * 4 + "locals()['.send'] = None"]
         init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
         ## try not to use variables here (otherwise it can mess with the state) ##
-        exec("\n".join(init + self._internals["state"]), globals(), locals())
+        exec(
+            "\n".join(init + self._internals["state"] + ["    return EOF()"]),
+            globals(),
+            locals(),
+        )
         self._internals["running"] = True
         return init, locals()["next_state"]
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
+        self._internals["loops"] = get_loops(
+            self._internals["lineno"], self._internals["jump_positions"]
+        )
         ## if no state then it must be EOF ##
         while self._internals["state"]:
             yield self._create_state()
@@ -768,6 +774,10 @@ class Generator(Pickler):
             if initialized:
                 for key in ("code", "frame", "suspended", "yieldfrom", "running"):
                     setattr(self, prefix + key, self._internals[key])
+            ## add additional relevant attributes where applicable ##
+            if isinstance(FUNC, FunctionType):
+                self.__annotations__ = FUNC.__annotations__
+                self.__doc__ = FUNC.__doc__
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
         """
@@ -840,12 +850,19 @@ class Generator(Pickler):
 
             ## update the frames lineno in accordance with its state ##
             _frame.f_lineno = _frame.f_lineno - init_length
+            self._internals["loops"] = get_loops(
+                _frame.f_lineno + 1, self._internals["jump_positions"]
+            )
             ## update the lineno in accordance with the linetable ##
             if len(self._internals["linetable"]) > _frame.f_lineno:
                 ## +1 to get the next lineno after returning ##
                 self._internals["lineno"] = (
                     self._internals["linetable"][_frame.f_lineno] + 1
                 )
+            # elif get_loops(_frame.f_lineno + 1, self._internals["jump_positions"]):
+            #     self._internals["lineno"] = _frame.f_lineno + 1
+            elif self._internals["loops"]:
+                self._internals["lineno"] = _frame.f_lineno + 1
             else:
                 ## EOF ##
                 self._internals["state"] = None
