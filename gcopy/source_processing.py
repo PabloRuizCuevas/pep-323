@@ -196,7 +196,7 @@ def skip_source_definition(source: str) -> str:
 
 
 def collect_string(
-    source_iter: Iterable, reference: str, source: str = None
+    source_iter: Iterable, index: int, reference: str, source: str = None
 ) -> tuple[int, str | list[str]]:
     """
     Collects strings in an iterable assuming correct
@@ -210,8 +210,9 @@ def collect_string(
         if source and char == "{" or left_brace:
             if char != "{" and left_brace % 2:
                 ## we could check for yields before unpacking but this is maybe more efficient ##
-                adjustments, f_string_contents, _ = unpack(char, source_iter, True)
-                # print(f"{line,adjustments,f_string_contents=}")
+                adjustments, f_string_contents, _ = unpack(
+                    char, source_iter, source, True, index=index
+                )
                 ## update ##
                 lines += adjustments
                 line += f_string_contents
@@ -231,7 +232,7 @@ def collect_string(
 
 
 def collect_multiline_string(
-    source_iter: Iterable, reference: str, source: str = None
+    source_iter: Iterable, index: int, reference: str, source: str = None
 ) -> tuple[int, str | list[str]]:
     """
     Collects multiline strings in an iterable assuming
@@ -249,7 +250,9 @@ def collect_multiline_string(
         if source and char == "{" or left_brace:
             if char != "{" and left_brace % 2:
                 ## we could check for yields before unpacking but this is maybe more efficient ##
-                adjustments, f_string_contents, _ = unpack(char, source_iter, True)
+                adjustments, f_string_contents, _ = unpack(
+                    char, source_iter, source, True, index=index
+                )
                 ## update ##
                 lines += adjustments
                 line += f_string_contents
@@ -289,7 +292,6 @@ def string_collector_proxy(
     else:
         string_collector, temp_index = collect_string, 1
     ## determine if we need to look for f-strings in case of value yields ##
-    # print(line,temp_index,char,)
     source = None
     if (
         f_string
@@ -300,7 +302,7 @@ def string_collector_proxy(
         ## use the source to determine the extractions ##
         ## +1 to move one forwards from the 'f' ##
         source = line[1 - temp_index :]
-    temp_index, temp_line = string_collector(iterable, char, source)
+    temp_index, temp_line = string_collector(iterable, index, char, source)
     prev = (index, temp_index, char)
     if f_string:
         if source:
@@ -331,6 +333,9 @@ def named_adjust(
     final_line: str,
     line_iter: Iterable,
     ID: str,
+    source: str = "",
+    index: int = 0,
+    unwrapping: bool = False,
 ) -> tuple[list[str], str, str, int]:
     """
     Adjusts the lines and final line for named expressions
@@ -351,19 +356,27 @@ def named_adjust(
     temp = []
     if ID and lines:
         temp = [lines.pop()]
-    named = True
     line, lines, final_line, named = update_lines(
-        line, lines, final_line, named, line_iter
+        line,
+        lines,
+        final_line,
+        True,
+        line_iter,
+        source=source,
+        index=index,
+        unwrapping=True,
     )
     lines += temp
-    return line, lines, final_line, named
+    return line, lines, final_line, False
 
 
 def unpack_adjust(line: str) -> list[str]:
     """adjusts the unpacked line for usage and value yields"""
     if line.startswith("yield ") or line == "yield":
-        return yield_adjust(line, "") + ["locals()['.args'] += [locals()['.send']]"]
-    return ["locals()['.args'] += [%s]" % line]
+        return yield_adjust(line, "") + [
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]"
+        ]
+    return ["locals()['.internals']['.args'] += [%s]" % line]
 
 
 operators = ",<=>/|+-*&%@^"
@@ -378,6 +391,9 @@ def update_lines(
     bracket_index: int = None,
     operator: str = "",
     yielding: bool = False,
+    source: str = "",
+    index: int = 0,
+    unwrapping: bool = False,
 ) -> tuple[list[str], str]:
     """
     adds the current line or the unwrapped line to the lines
@@ -388,13 +404,20 @@ def update_lines(
         ## unwrapping ##
         if unwrap:
             temp_lines, temp_final_line, _ = unpack(
-                source_iter=unwrap, unwrapping=True, named=named
+                source_iter=unwrap,
+                source=source,
+                unwrapping=True,
+                named=named,
+                index=index,
             )
             if yielding:
-                temp_final_line = "yield " + temp_final_line[:-1]
-                lines += temp_lines + unpack_adjust(temp_final_line.strip())
+                temp_final_line = "yield " + temp_final_line
+                adjust = unpack_adjust(temp_final_line.strip())
+                lines += temp_lines + adjust
                 ## unwrapping should pop from the end (current expression) ##
-                line = line[:bracket_index] + "locals()['.args'].pop()"
+                line = line[:bracket_index] + "locals()['.internals']['.args'].pop()"
+                if named and not unwrapping:
+                    line += ")"
             else:
                 lines += temp_lines
                 line += temp_final_line
@@ -406,25 +429,32 @@ def update_lines(
             ## expression ##
             else:
                 ## unpacking should pop from the start (since the line is in this order) ##
-                final_line += "locals()['.args'].pop(0)"
+                final_line += "locals()['.internals']['.args'].pop(0)"
                 lines += unpack_adjust(line.strip())
             line = ""
     if operator:
-        final_line += operator
+        final_line += " " + operator
     return line, lines, final_line, named
 
 
 def unpack(
-    line: str = empty_generator(),
+    line: str = None,
     source_iter: Iterable = empty_generator(),
+    source: str = "",
     unwrapping: bool = False,
     named: bool = False,
+    index: int = 0,
 ) -> tuple[list[str], str, int]:
     """
     Unpacks value yields from a line into a
     list of lines going towards its right side
     """
-    line_iter = chain(enumerate(line), source_iter)
+    if line is None:
+        line = empty_generator()
+        index = 0
+    else:
+        index = index - len(line) + 1
+    line_iter = chain(enumerate(line, start=index), source_iter)
     ## make sure 'space' == -1 for indentation ##
     (
         depth,
@@ -457,7 +487,13 @@ def unpack(
         ## dictionary assignment ##
         elif char == "[" and prev[-1] not in (" ", ""):
             line, lines, final_line, named = update_lines(
-                line + char, lines, final_line, named, line_iter
+                line + char,
+                lines,
+                final_line,
+                named,
+                line_iter,
+                source=source,
+                index=end_index,
             )
         elif char == "\\":
             skip_line_continuation(line_iter, line, end_index)
@@ -469,12 +505,19 @@ def unpack(
             ## since we can have i.e. ** or %= etc. ##
             if end_index - 1 != operator:
                 line, lines, final_line, named = update_lines(
-                    line, lines, final_line, named, operator=char
+                    line,
+                    lines,
+                    final_line,
+                    named,
+                    operator=char,
+                    source=source,
+                    index=end_index,
                 )
             else:
                 final_line += char
             operator = end_index
-        elif depth == 0 and char in "#:;\n":  ## split and break condition ##
+        ## split and break condition ##
+        elif depth == 0 and char in "#:;\n":
             if char == ":":
                 line += ":"
             ## not sure if this is needed or not yet ... ##
@@ -483,10 +526,21 @@ def unpack(
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
             line, lines, final_line, named = named_adjust(
-                line, lines, final_line, line_iter, ID
+                line,
+                lines,
+                final_line,
+                line_iter,
+                ID,
+                source,
+                index=end_index,
+                unwrapping=unwrapping,
             )
+            named = False
             ## since we're going to skip some chars ##
             ID, prev = "", prev[:-1] + (char,)
+            depth -= 1
+            depth_total -= 1
+            continue
         else:
             ## record the current depth ##
             if char in "([{":
@@ -495,7 +549,6 @@ def unpack(
             elif char in ")}]":
                 depth_total -= 1
                 if unwrapping and depth_total < 0 or char != inverse_bracket(bracket):
-                    line += char
                     break
             if char == "(":
                 depth += 1
@@ -509,7 +562,11 @@ def unpack(
                 if space + 1 == end_index:
                     ID = ""
                 ID += char
-                if depth and ID == "yield":  ## unwrapping ##
+                next_char = source[end_index + 1 : end_index + 2]
+                if ID == "lambda" and next_char in " :\\":
+                    char, lines = collect_lambda(line, source_iter, source, (0, 0, ""))
+                ## unwrapping ##
+                elif depth and ID == "yield" and next_char in " )]}\n;\\":
                     ## what should happen when we unwrap? ##
                     ## go from the last bracket onwards for the replacement ##
                     line, lines, final_line, named = update_lines(
@@ -520,6 +577,8 @@ def unpack(
                         line_iter,
                         bracket_index,
                         yielding=True,
+                        source=source,
+                        index=end_index,
                     )
                     ID, prev, bracket_index = "", prev[:-1] + (char,), None
                     ## since the unwrapping will accumulate up to the next bracket this ##
@@ -530,8 +589,26 @@ def unpack(
                     continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
                 elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
                     line, lines, final_line, named = update_lines(
-                        line, lines, final_line, named, operator=ID
+                        line,
+                        lines,
+                        final_line,
+                        named,
+                        operator=ID,
+                        source=source,
+                        index=end_index,
                     )
+                    ID, prev = "", prev[:-1] + (char,)
+                    continue
+                ## adjust for ternary statements ##
+                ## I don't think you can have a value yield in a 'case' statement otherwise this too is in here ##
+                elif ID in ("if", "elif", "while", "for") and next_char in " :\\":
+                    ## i.e. ID='while' will have 'whil' but no 'e' since the char has not been added ##
+                    temp_line = line[: -len(ID) + 1]
+                    if ID == "if" and temp_line.lstrip():
+                        unpack(source_iter=line_iter, source=source, index=index)
+                    else:
+                        final_line += ID + " "
+                        line = temp_line
                     ID, prev = "", prev[:-1] + (char,)
                     continue
             else:
@@ -550,11 +627,14 @@ def collect_definition(
     source: str,
     source_iter: Iterable,
     reference_indent: int,
+    decorator: bool = False,
 ) -> tuple[int, str, int, list[str]]:
     """
     Collects a block of code from source, specifically a
     definition block in the case of this modules use case
     """
+    if decorator:
+        lines += ["@locals()['.internals']['.decorator']"]
     indent = reference_indent + 1
     while reference_indent < indent:
         ## we're not specific about formatting the definitions ##
@@ -790,7 +870,7 @@ def iter_adjust(line: str, number_of_indents: int) -> str:
     ## remove the leading and trailing whitespace and then it should be a variable name ##
     if iterator.strip().isalnum():
         return line
-    return line[:index] + "locals()['.%s']:" % number_of_indents
+    return line[:index] + "locals()['.internals']['.%s']:" % number_of_indents
 
 
 def is_statement(line: str, statement: str) -> bool:
@@ -866,7 +946,7 @@ def loop_adjust(
             new_lines += ["break"]
         elif is_statement(temp_line, "break"):
             flag = True
-            new_lines += ["locals()['.continue']=False", "break"]
+            new_lines += ["locals()['.internals']['.continue']=False", "break"]
             ## the index can be None since the line should run without errors ##
             indexes = indexes[:index] + [None] + indexes[index:]
         else:
@@ -879,10 +959,10 @@ def loop_adjust(
     if flag:
         ## the loop adjust itself ##
         return [
-            "    locals()['.continue']=True",
+            "    locals()['.internals']['.continue']=True",
             "    for _ in (None,):",
         ] + indent_lines(new_lines, 8 - get_indent(new_lines[0])) + [
-            "    if locals()['.continue']:"
+            "    if locals()['.internals']['.continue']:"
             ## add the outer loop (dedented so that it works) ##
         ] + indent_lines(
             outer_loop, 8 - get_indent(outer_loop[0])
@@ -910,11 +990,13 @@ def yield_adjust(temp_line: str, indent: str) -> list[str]:
     if temp_line.startswith("yield from "):
         return [
             ## 11 to get past the yield from
-            indent + "locals()['.yieldfrom']=" + temp_line[11:],
-            indent + "for locals()['.i'] in locals()['.yieldfrom']:",
-            indent + "    return locals()['.i']",
-            indent + "    if locals()['.send']:",
-            indent + "        return locals()['.yieldfrom'].send(locals()['.send'])",
+            indent + "locals()['.internals']['.yieldfrom']=" + temp_line[11:],
+            indent
+            + "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
+            indent + "    return locals()['.internals']['.i']",
+            indent + "    if locals()['.internals']['.send']:",
+            indent
+            + "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
         ]
     if temp_line.startswith("yield ") or temp_line == "yield":
         return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
@@ -1114,10 +1196,11 @@ def except_adjust(
         + current_lines[-index:]
         + [
             current_indent[:-4] + "except:",
-            current_indent + "locals()['.error'] = exc_info()[1]",
+            current_indent
+            + "locals()['.internals']['.error'] = locals()['.internals']['.exc_info']()[1]",
         ]
         + indent_lines(exception_lines, number_of_indents)
-        + [current_indent + "raise locals()['.error']"]
+        + [current_indent + "raise locals()['.internals']['.error']"]
         + [final_line]
     )
 
@@ -1172,3 +1255,73 @@ def outer_loop_adjust(
         blocks += indent_lines(block, 4 - number_of_indents)
         indexes += list(range(start_pos, end_pos))
     return blocks + source_lines[end_pos:], indexes
+
+
+def setup_next_line(char: str, indentation: int) -> tuple[str, bool]:
+    """sets up the next line with indentation or not"""
+    if char in ":;":
+        ## assumes the current line is i.e. ; ... ; ... or if ... : ... ; ... ##
+        ## if it's not this then we should get an empty line and this assumption ##
+        ## will not take effect in modifying lines ##
+        return " " * indentation, True
+    return "", False
+
+
+def unpack_lambda(source: str) -> list[str]:
+    """Unpacks the lambda into a single source line"""
+    depth = 0
+    for index, char in enumerate(source):
+        if char == ":" and depth == 0:
+            return [source[index + 1 :]]
+        depth = update_depth(depth, char, ("([{", ")]}"))
+    raise SyntaxError("Unexpected format encountered")
+
+
+def get_signature(line: str, args: bool = False) -> str | tuple[str, str]:
+    """Returns the function signature and its arguments if desired"""
+    ID, has_definition, has_args = "", False, False
+    for index, char in enumerate(line):
+        if char == "(":
+            has_args = True
+            break
+        if char.isalnum():
+            ID += char
+            if not has_definition and ID == "def":
+                ID, has_definition = "", True
+        else:
+            ID = ""
+    if args:
+        args = ""
+        if has_args:
+            ## -1 rstrip() -1 since you can have i.e. func( ... ) :
+            args = line[index + 1 :].strip()[:-1].rstrip()[:-1]
+        return ID, args
+    return ID
+
+
+def collect_lambda(
+    line: str, source_iter: Iterable, source: str, prev: tuple[int, int, str]
+) -> tuple[str, str]:
+    """Collects a lambda function into a single line"""
+    depth, in_definition = 0, False
+    for index, char in source_iter:
+        if char == "'" or char == '"':
+            string_collected, prev, adjustments = string_collector_proxy(
+                index, char, prev, source_iter, line, source
+            )
+            line += string_collected
+        elif (
+            char in "#\n;"
+            or (char == ":" and source[index + 1 : index + 2] != "=")
+            and in_definition
+        ):
+            break
+        else:
+            if not in_definition and char == ":":
+                in_definition = True
+            else:
+                depth = update_depth(depth, char, ("([{", ")]}"))
+                if depth == -1:
+                    break
+            line += char
+    return char, line
