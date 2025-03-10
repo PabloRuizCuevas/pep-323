@@ -7,6 +7,8 @@ from copy import deepcopy, copy
 from textwrap import dedent
 from gcopy.source_processing import *
 from gcopy.track import offset_adjust
+from sys import exc_info
+from functools import partial
 
 try:
     from typing import NoReturn
@@ -218,7 +220,7 @@ class Generator(Pickler):
             (number_of_indents, len(self._internals["jump_positions"]) - 1)
         ]
 
-    def _custom_adjustment(self, line: str) -> list[str]:
+    def _custom_adjustment(self, line: str, number_of_indents: int = 0) -> list[str]:
         """
         It does the following to the source lines:
 
@@ -228,9 +230,12 @@ class Generator(Pickler):
         4. tend to all yield from ... with the same for loop variation
         5. adjust all value yields either via unwrapping or unpacking
         """
-        number_of_indents = get_indent(line)
         temp_line = line[number_of_indents:]
         indent = " " * number_of_indents
+        ## decorator ##
+        if temp_line.startswith("@"):
+            self._internals["decorator"] = True
+            return [line]
         ## yield ##
         result = yield_adjust(temp_line, indent)
         if result is not None:
@@ -244,6 +249,13 @@ class Generator(Pickler):
             ## close the generator then return ##
             ## have to use a try-finally in case the user returns a value from locals() ##
             return [indent + "return EOF('" + temp_line[7:] + "')"]
+        ## nonlocal ##
+        if temp_line.startswith("nonlocal "):
+            ## we have to remove the nonlocal keyword since there will be no bindings. ##
+            ## The args are collected in __init__ for unintialized function generators; ##
+            ## initialized generators already have them in their locals ##
+            self._internals["lineno"] -= 1
+            return []
         return [line]
 
     def _update_jump_positions(
@@ -311,6 +323,7 @@ class Generator(Pickler):
         line: str,
         lines: list[str],
         indentation: int,
+        indent_adjust: int,
     ) -> tuple[int, str, int, list[str], str, bool, int]:
         ## skip comments ##
         if char == "#":
@@ -323,9 +336,18 @@ class Generator(Pickler):
             line += char
         if line and not line.isspace():  ## empty lines are possible ##
             reference_indent = get_indent(line)
+            ## make sure the line is corrected if it currently assumes indentation when it shouldn't ##
+            if (
+                indent_adjust
+                and reference_indent - (char == ":") * 4 >= indentation - indent_adjust
+            ):
+                line = " " * indent_adjust + line
+            else:
+                indent_adjust = 0
             lines = self._update_jump_positions(lines, reference_indent)
             ## skip the definitions ##
-            if is_definition(line[reference_indent:]):
+            temp_line = line[reference_indent:]
+            if is_definition(temp_line):
                 index, char, self._internals["lineno"], lines = collect_definition(
                     index - len(line) + 1,
                     lines,
@@ -333,30 +355,34 @@ class Generator(Pickler):
                     source,
                     source_iter,
                     reference_indent,
+                    self._internals["decorator"],
                 )
+                self._internals["decorator"] = False
             else:
                 ## update the lineno before so the loops positions are lineno based ##
                 self._internals["lineno"] += 1
-                lines += self._custom_adjustment(line)
+                lines += self._custom_adjustment(line, reference_indent)
                 ## make a linetable if using a running generator ##
                 ## for the linetable e.g. for lineno_adjust e.g. compound statements ##
                 # if running and char == "\n":
                 #     self._internals["linetable"] += [self._internals["lineno"]]
-        ## start a new line ##
-        if char in ":;":
-            ## assumes the current line is i.e. ; ... ; ... or if ... : ... ; ... ##
-            ## if it's not this then we should get an empty line and this assumption ##
-            ## will not take effect in modifying lines ##
-            indented, line = True, " " * indentation
+            line, indented = setup_next_line(char, indentation)
         else:
-            indented, line = False, ""
-        return index, char, lines, line, indented, indentation
+            reference_indent = indentation
+            line, indented = "", False
+
+        # if indent_adjust:
+        #     line += " " * indent_adjust
+        ## start a new line ##
+        return index, char, lines, line, indented, indentation, indent_adjust
 
     def _block_adjust(
         self,
         current_lines: list[str],
         new_lines: list[str],
         final_line: str,
+        source: str,
+        source_iter: Iterable,
     ) -> list[str]:
         """
         Checks if lines that were adjusted because of value yields
@@ -378,7 +404,34 @@ class Generator(Pickler):
         number_of_indents = get_indent(final_line)
         temp_line = final_line[number_of_indents:]
         check = lambda expr: temp_line.startswith(expr) and temp_line[len(expr)] in " :"
-        if is_loop(temp_line):
+        if temp_line[:1] == "@":
+            temp_line = temp_line[1:]
+            signature = get_signature(temp_line, True)
+            if signature[1]:
+                temp_line = "locals()['.internals']['partial'](%s, %s)" % signature
+            else:
+                temp_line = signature[0]
+            if self._internals["decorator"]:
+                temp_line = "locals()['.internals']['.decorator'](%s)" % temp_line
+            else:
+                self._internals["decorator"] = True
+            final_line = (
+                " " * number_of_indents
+                + "locals()['.internals']['.decorator'] = "
+                + temp_line
+            )
+        elif is_definition(temp_line):
+            index, char, self._internals["lineno"], lines = collect_definition(
+                index - len(line) + 1,
+                lines,
+                self._internals["lineno"],
+                source,
+                source_iter,
+                number_of_indents,
+                self._internals["decorator"],
+            )
+            self._internals["decorator"] = False
+        elif is_loop(temp_line):
             ## the end of the loop needs to be appended with the new_lines ##
             ## locals()[".args"] += next(...)
             ## while locals()[".args"].pop():
@@ -402,6 +455,10 @@ class Generator(Pickler):
                 + [final_line]
             )
         elif check("except"):
+            ## this is the problem ##
+            # if current_lines[-2] == ' try:':
+            #     current_lines[-2] = ' ' * 8 + 'try:'
+            #     final_line = final_line[8:]
             ## except_adjust automatically does the indentation ##
             return except_adjust(current_lines, new_lines, final_line)
         self._internals["lineno"] += 1
@@ -423,15 +480,24 @@ class Generator(Pickler):
         )
         if adjustments:
             ## since we have adjustments we need to adjust the chars before it ##
-            (adjustments_start, line_start), (adjustments_end, line_end) = (
-                unpack(line)[:-1],
-                unpack(source_iter=source_iter)[:-1],
+            adjustments_start, line_start, index = unpack(
+                line, source=source, index=index
+            )
+            line_start = " " * get_indent(line) + line_start.lstrip()
+            adjustments_end, line_end, index = unpack(
+                source_iter=source_iter, source=source, index=index
             )
             final_adjustments, final_line = (
                 adjustments_start + adjustments + adjustments_end,
                 line_start + string_collected + line_end,
             )
-            return "", prev, self._block_adjust(lines, final_adjustments, final_line)
+            return (
+                index,
+                prev,
+                self._block_adjust(
+                    lines, final_adjustments, final_line, source, source_iter
+                ),
+            )
         return line + string_collected, prev, lines
 
     def _clean_source_lines(self, running: bool = False) -> list[str]:
@@ -457,11 +523,13 @@ class Generator(Pickler):
             self._internals["jump_positions"],
             self._internals["jump_stack"],
             self._internals["jump_stack_adjuster"],
+            self._internals["decorator"],
             self._internals["lineno"],
         ) = (
             [],
             [],
             [],
+            False,
             0,
         )
         ## setup source as an iterator and making sure the first indentation's correct ##
@@ -469,7 +537,7 @@ class Generator(Pickler):
         ## we need to make sure the source is saved for skipping for line continuations ##
         source = source[get_indent(source) :]
         source_iter = enumerate(source)
-        ID, depth, line, lines, indented, space, indentation, prev = (
+        ID, depth, line, lines, indented, space, indentation, prev, indent_adjust = (
             "",
             0,
             " " * 4,
@@ -478,6 +546,7 @@ class Generator(Pickler):
             0,
             4,
             (0, 0, ""),
+            0,
         )
         ## enumerate since I want the loop to use an iterator but the
         ## index is needed to retain it for when it's used on get_indent
@@ -487,6 +556,11 @@ class Generator(Pickler):
                 line, prev, lines = self._string_collector_adjust(
                     index, char, prev, source_iter, line, source, lines
                 )
+                if isinstance(line, int):
+                    depth, ID = 0, ""
+                    indentation = get_indent(lines[-1])
+                    line, indented = setup_next_line(source[line], indentation)
+                    space = index
             ## makes the line singly spaced while retaining the indentation ##
             elif char == " ":
                 line, space, indented = singly_space(index, char, line, space, indented)
@@ -494,24 +568,33 @@ class Generator(Pickler):
             elif char == "\\":
                 skip_line_continuation(source_iter, source, index)
                 ## in case of a line continuation without a space before (whitespace after is removed) ##
+                ## Note: i.e. 'func        ()' is valid in python ##
                 if space + 1 != index:
                     line += " "
                     space = index
             ## create new line ##
-            elif char in "#\n;:":
+            elif char in "#\n;" or (
+                char == ":" and source[index + 1 : index + 2] != "="
+            ):
                 ## 'space' is important (otherwise we get more indents than necessary) ##
-                space, char, lines, line, indented, indentation = self._append_line(
-                    index,
-                    char,
-                    source,
-                    source_iter,
-                    running,
-                    line,
-                    lines,
-                    indentation,
+                space, char, lines, line, indented, indentation, indent_adjust = (
+                    self._append_line(
+                        index,
+                        char,
+                        source,
+                        source_iter,
+                        running,
+                        line,
+                        lines,
+                        indentation,
+                        indent_adjust,
+                    )
                 )
                 depth, ID = 0, ""
             else:
+
+                ### might move this section into a function ###
+
                 line += char
                 ## detect value yields [yield] and {yield} is not possible only (yield) ##
                 depth = update_depth(depth, char)
@@ -522,19 +605,50 @@ class Generator(Pickler):
                     if space + 1 == index:
                         ID = ""
                     ID += char
-                    if ID == "yield":
-                        ## isn't temp == self._internals["lineno"]? ##
-                        temp, line, lines = (
-                            len(lines),
-                            "",
-                            self._block_adjust(lines, *unpack(line, source_iter)[:-1]),
+                    ## : index + 2 in case of IndexError ##
+                    next_char = source[index + 1 : index + 2]
+                    if ID == "lambda" and next_char in " :\\":
+                        char, lines = collect_lambda(line, source_iter, source, prev)
+                        indentation = get_indent(line)
+                        line, indented = setup_next_line(char, indentation)
+                        self._internals["lineno"] += 1
+                        ID = ""
+                    elif ID == "yield" and next_char in " )]}\n;\\":
+                        new_lines, final_line, index = unpack(
+                            line, source_iter, source=source, index=index
+                        )
+                        final_line = " " * get_indent(line) + final_line.lstrip()
+                        if line[get_indent(line) :].startswith("elif "):
+                            indent_adjust = 4
+                        lines = self._block_adjust(
+                            lines, new_lines, final_line, source, source_iter
                         )
                         ## for the linetable e.g. for lineno_adjust e.g. compound statements ##
+                        ## isn't temp == self._internals["lineno"]? ##
+                        # temp = len(lines)
                         # if running:
                         #     self._internals["linetable"] += [
                         #         self._internals["lineno"]
                         #     ] * (len(lines) - temp)
-                        depth, ID = 0, ""
+
+                        if is_definition(final_line[get_indent(final_line) :]):
+                            line, indented = "", False
+                        else:
+                            indentation = get_indent(lines[-1]) + indent_adjust
+                            line, indented = setup_next_line(source[index], indentation)
+                        if indent_adjust:
+                            line = " " * indentation
+                            space = index
+                        ID = ""
+                    ## ternary statement ##
+                    elif ID == "if" and next_char in " \\" and line[:-2].lstrip():
+                        new_lines, final_line, _ = unpack(
+                            line, source_iter, source=source, index=index
+                        )
+                        lines = self._block_adjust(
+                            lines, new_lines, final_line, source, source_iter
+                        )
+                        ## setup for a new line ##
                 else:
                     ID = ""
         ## in case you get a for loop at the end and you haven't got the end jump_position ##
@@ -542,8 +656,12 @@ class Generator(Pickler):
         ## note: we don't need a reference indent since the line is over e.g. ##
         ## the jump_stack will be popped if it exists ##
         lines = self._update_jump_positions(lines)
-        ## jump_stack is no longer needed ##
-        del self._internals["jump_stack"], self._internals["jump_stack_adjuster"]
+        ## are no longer needed ##
+        del (
+            self._internals["jump_stack"],
+            self._internals["jump_stack_adjuster"],
+            self._internals["decorator"],
+        )
         return lines
 
     def _create_state(self) -> None:
@@ -601,11 +719,15 @@ class Generator(Pickler):
         """
         proxy to replace locals within 'next_state' within
         __next__ while still retaining the same functionality
+
+        Note: it is not meant to be used as an alternative to
+        self._internals["frame"].f_locals since this method
+        initializes other internally used variables for the frame
         """
         return self._internals["frame"].f_locals
 
     def _frame_init(
-        self, exception: str = "", close: bool = False
+        self, exception: str = "", close: bool = False, sending=False
     ) -> tuple[list[str], FunctionType]:
         """
         initializes the frame with the current
@@ -636,21 +758,31 @@ class Generator(Pickler):
                 self._internals["linetable"] = [
                     self._internals["linetable"][0] - 1
                 ] + self._internals["linetable"]
+        ## initilize the internal locals ##s
+        f_locals = self._internals["frame"].f_locals
+        if not sending:
+            if ".internals" not in f_locals:
+                f_locals[".internals"] = {
+                    "exec_info": exc_info,
+                    "partial": partial,
+                    ".args": [],
+                    ".send": None,
+                }
+            else:
+                ## initialize variables for the frame ##
+                f_locals[".internals"].update({".send": None})
         ## adjust the initializers ##
         init = [
             self._internals["version"] + "def next_state():",
             " " * 4 + "locals=currentframe().f_back.f_locals['self']._locals",
         ]
-        for key in self._internals["frame"].f_locals:
+        for key in f_locals:
             if isinstance(key, str) and key.isalnum() and key != "locals":
                 init += [" " * 4 + "%s=locals()[%s]" % (key, repr(key))]
         ## needs to be added if not already there so it can be appended to ##
-        if ".args" not in self._internals["frame"].f_locals:
-            init += [" " * 4 + 'locals()[".args"] = []']
-        if ".send" not in self._internals["frame"].f_locals:
-            init += [" " * 4 + "locals()['.send'] = None"]
         init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
-        ## try not to use variables here (otherwise it can mess with the state) ##
+        ## try not to use variables here (otherwise it can mess with the state); ##
+        ## 'return EOF()' is appended to help return after a loop ##
         exec(
             "\n".join(init + self._internals["state"] + ["    return EOF()"]),
             globals(),
@@ -731,10 +863,7 @@ class Generator(Pickler):
                     #     self._internals["frame"].f_lineno - self._internals["code"].co_firstlineno
                     # ]  + lineno_adjust(self._internals["frame"])
                 ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
-                if hasattr(FUNC, prefix + "yieldfrom"):
-                    self._internals["yieldfrom"] = getattr(FUNC, prefix + "yieldfrom")
-                else:
-                    self._internals["yieldfrom"] = None
+                self._internals["yieldfrom"] = getattr(FUNC, prefix + "yieldfrom", None)
                 self._internals["suspended"] = True
             ## uninitialized generator ##
             else:
@@ -744,7 +873,9 @@ class Generator(Pickler):
                     self._internals["binding"] = binding(FUNC)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
-                        ## proably need something that locates its source better for other cases ##
+                        self._internals["source_lines"] = unpack_lambda(
+                            self._internals["source"]
+                        )
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
                         self._internals["source_lines"] = self._clean_source_lines()
@@ -767,6 +898,9 @@ class Generator(Pickler):
                 self._internals["yieldfrom"] = None
                 ## modified every time __next__ is called; always start at line 1 ##
                 self._internals["lineno"] = 1
+                ## for uninitialized generators we have to inject its nonlocals into ##
+                ## its local scope since its current bindings will not work in exec ##
+                self._internals["frame"].f_locals.update(get_nonlocals(FUNC))
             self._internals["running"] = False
             self._internals["state"] = self._internals["source_lines"]
             self._internals["state_generator"] = self._init_states()
@@ -806,10 +940,12 @@ class Generator(Pickler):
             except StopIteration:
                 break
 
-    def __next__(self, exception: str = "", close: bool = False) -> Any:
+    def __next__(
+        self, exception: str = "", close: bool = False, sending: bool = False
+    ) -> Any:
         """updates the current state and returns the result"""
         ## update with the new state and get the frame ##
-        init, next_state = self._frame_init(exception, close)
+        init, next_state = self._frame_init(exception, close, sending)
         try:
             result = next_state()
             if isinstance(result, EOF):
@@ -837,11 +973,15 @@ class Generator(Pickler):
             ## remove 'locals' variable from memory since it interferes with pickling ##
             del _frame.f_locals["locals"]
             ## '.send' reference is not needed ##
-            if ".send" in _frame.f_locals:
-                del _frame.f_locals[".send"]
-            if ".yieldfrom" in _frame.f_locals:
-                self._internals["yieldfrom"] = _frame.f_locals[".yieldfrom"]
-            if f_back:
+            if ".internals" in _frame.f_locals:
+                if ".send" in _frame.f_locals[".internals"]:
+                    del _frame.f_locals[".internals"][".send"]
+                if ".yieldfrom" in _frame.f_locals[".internals"]:
+                    self._internals["yieldfrom"] = _frame.f_locals[".internals"][
+                        ".yieldfrom"
+                    ]
+
+            if hasattr(f_back, "f_locals"):
                 ## make sure the new frames locals are on the right hand side to take presedence ##
                 _frame.f_locals = f_back.f_locals | _frame.f_locals
             _frame.f_back = f_back
@@ -859,8 +999,6 @@ class Generator(Pickler):
                 self._internals["lineno"] = (
                     self._internals["linetable"][_frame.f_lineno] + 1
                 )
-            # elif get_loops(_frame.f_lineno + 1, self._internals["jump_positions"]):
-            #     self._internals["lineno"] = _frame.f_lineno + 1
             elif self._internals["loops"]:
                 self._internals["lineno"] = _frame.f_lineno + 1
             else:
@@ -879,8 +1017,8 @@ class Generator(Pickler):
         """
         if arg is not None and self._internals["lineno"] == 1:
             raise TypeError("can't send non-None value to a just-started generator")
-        self._internals["frame"].f_locals[".send"] = arg
-        return next(self)
+        self._internals["frame"].f_locals[".internals"][".send"] = arg
+        return self.__next__(sending=True)
 
     def _close(self) -> None:
         self._internals.update(
