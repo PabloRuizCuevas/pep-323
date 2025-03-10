@@ -7,8 +7,8 @@ def test_track_iter():
         for j in range(1):
             pass
     assert (
-        type(locals()[".4"]).__name__
-        == type(locals()[".8"]).__name__
+        type(locals()[".internals"][".4"]).__name__
+        == type(locals()[".internals"][".8"]).__name__
         == "range_iterator"
     )
 
