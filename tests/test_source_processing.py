@@ -90,32 +90,33 @@ def test_collect_string() -> None:
     ## normal string ##
 
     source_iter, char, source = test('"""hello world"""')
-    assert collect_string(source_iter, char, source) == (1, ['""'])
+
+    assert collect_string(source_iter, 0, char, source) == (1, ['""'])
     next(source_iter)
-    assert collect_string(source_iter, char, source) == (14, ['"hello world"'])
+    assert collect_string(source_iter, 1, char, source) == (14, ['"hello world"'])
     next(source_iter)
-    assert collect_string(source_iter, char, source) == (16, ['""'])
+    assert collect_string(source_iter, 14, char, source) == (16, ['""'])
 
     ## f-string ##
 
     # single bracket #
     source_iter, char, source = test('f"asdf{(yield 3)}" -----', True)
-    assert collect_string(source_iter, char, source) == (
+    assert collect_string(source_iter, 0, char, source) == (
         17,
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "\"asdf{locals()['.args'].pop()}\"",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "\"asdf{locals()['.internals']['.args'].pop()\"",
         ],
     )
     # double bracket #
     source_iter, char, source = test('f"asdf{{(yield 3)}}"', True)
-    assert collect_string(source_iter, char, source) == (19, ['"asdf{{(yield 3)}}"'])
+    assert collect_string(source_iter, 0, char, source) == (19, ['"asdf{{(yield 3}}"'])
 
 
 def test_collect_multiline_string() -> None:
     source_iter, char, source = test('"""hello world"""')
-    assert collect_multiline_string(source_iter, char, source) == (
+    assert collect_multiline_string(source_iter, 0, char, source) == (
         len(source) - 1,
         [source],
     )
@@ -124,19 +125,19 @@ def test_collect_multiline_string() -> None:
 
     # single bracket #
     source_iter, char, source = test('f"""hello {(yield 3)} world"""', True)
-    assert collect_multiline_string(source_iter, char, source) == (
+    assert collect_multiline_string(source_iter, 0, char, source) == (
         29,
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            '"""hello {locals()[\'.args\'].pop()} world"""',
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            '"""hello {locals()[\'.internals\'][\'.args\'].pop() world"""',
         ],
     )
     # double bracket #
     source_iter, char, source = test('f"""hello {{(yield 3)}} world"""', True)
-    assert collect_multiline_string(source_iter, char, source) == (
+    assert collect_multiline_string(source_iter, 0, char, source) == (
         31,
-        ['"""hello {{(yield 3)}} world"""'],
+        ['"""hello {{(yield 3}} world"""'],
     )
 
 
@@ -183,14 +184,17 @@ def test_unpack() -> None:
     get tested along with the unpack function.
     """
 
-    test = lambda line: unpack("", enumerate(line))
+    test = lambda line: unpack("", enumerate(line), source=line, index=0)
 
     ## unpacking ##
 
     # general unpacking #
     assert test("a = yield 3 *= 5 == 5") == (
-        ["return 3", "locals()['.args'] += [locals()['.send']]"],
-        "a =locals()['.args'].pop(0)*= 5 == 5",
+        [
+            "return 3",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        ],
+        "a  =locals()['.internals']['.args'].pop(0) *= 5  == 5",
         20,
     )
 
@@ -198,74 +202,89 @@ def test_unpack() -> None:
     assert test("a = (yield 3),(yield 5),(yield 7) = 5") == (
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop()]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.args'].pop()]",
             "return  5",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop()]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.args'].pop()]",
             "return  7",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop()]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.args'].pop()]",
         ],
-        "a =locals()['.args'].pop(0),locals()['.args'].pop(0),locals()['.args'].pop(0)= 5",
+        "a  =locals()['.internals']['.args'].pop(0) ,locals()['.internals']['.args'].pop(0) ,locals()['.internals']['.args'].pop(0) = 5",
         36,
     )
 
     ## unwrapping ##
 
     assert test("(yield 3)") == (
-        ["return  3", "locals()['.args'] += [locals()['.send']]"],
-        "locals()['.args'].pop()",
+        [
+            "return  3",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        ],
+        "locals()['.internals']['.args'].pop()",
         5,
     )
 
     assert test("(yield 3,(yield 5))") == (
         [
             "return  5",
-            "locals()['.args'] += [locals()['.send']]",
-            "return  3,locals()['.args'].pop()",
-            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "return  3 ,locals()['.internals']['.args'].pop()",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ],
-        "locals()['.args'].pop()",
+        "locals()['.internals']['.args'].pop()",
         5,
     )
 
     assert test("a = yield (     yield    (yield 3 )  ) = 5") == (
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop()",
-            "locals()['.args'] += [locals()['.send']]",
-            "return locals()['.args'].pop()",
-            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "return  locals()['.internals']['.args'].pop()",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "return locals()['.internals']['.args'].pop()",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ],
-        "a =locals()['.args'].pop(0)= 5",
+        "a  =locals()['.internals']['.args'].pop(0) = 5",
         41,
     )
 
     assert test("(yield 3),(yield (yield 3))") == (
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop()]",  ## shouldn't that be -1???
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.args'].pop()]",
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop()",  ## should be -1 ## could go i.e. locals()['.args'].pop(0 - locals()['.value yield recurse'])
-            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "return  locals()['.internals']['.args'].pop()",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ],
-        "locals()['.args'].pop(0),locals()['.args'].pop()",
+        "locals()['.internals']['.args'].pop(0) ,locals()['.internals']['.args'].pop()",
         15,
     )
 
     ## with named expression ##
 
-    assert test("a = (b:=(c:=next(j)) ) = 5") == ([], "a = (b:=(c:=next(j)) ) = 5", 6)
+    assert test("a = (b:=(c:=next(j)) ) = 5") == (
+        ["locals()['.internals']['.args'] += [(b:=(c:=next(j)]"],
+        "a  =locals()['.internals']['.args'].pop(0) = 5",
+        25,
+    )
 
-    assert test("a = (b:=next(j) ) = 5") == ([], "a = (b:=next(j) ) = 5", 20)
+    assert test("a = (b:=next(j) ) = 5") == (
+        ["locals()['.internals']['.args'] += [(b:=next(j)]"],
+        "a  =locals()['.internals']['.args'].pop(0) = 5",
+        20,
+    )
 
     assert test("a = (b:=(yield 3) +a) = 5") == (
-        ["return  3", "locals()['.args'] += [locals()['.send']]"],
-        "a = (b:=locals()['.args'].pop() +a) = 5",
+        [
+            "return  3",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [(b:=locals()['.internals']['.args'].pop())  +a]",
+        ],
+        "a  =locals()['.internals']['.args'].pop(0) = 5",
         24,
     )
 
@@ -274,30 +293,29 @@ def test_unpack() -> None:
     assert test("a = f'hi{(yield 3)}' = yield 3 = 5") == (
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [f'hi{locals()['.args'].pop()}']",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [f'hi{locals()['.internals']['.args'].pop()']",
             "return 3",
-            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ],
-        "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
+        "a  =locals()['.internals']['.args'].pop(0) =locals()['.internals']['.args'].pop(0) = 5",
         33,
     )
 
-    ## needs fixing ##
     assert test("a = f'hi{(yield 3),(yield (yield 3))}' = yield 3 = 5") == (
         [
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [locals()['.args'].pop()]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.args'].pop()]",
             "return  3",
-            "locals()['.args'] += [locals()['.send']]",
-            "return  locals()['.args'].pop()",
-            "locals()['.args'] += [locals()['.send']]",
-            "locals()['.args'] += [f'hi{locals()['.args'].pop(0),locals()['.args'].pop()}']",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "return  locals()['.internals']['.args'].pop()",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "locals()['.internals']['.args'] += [f'hi{locals()['.internals']['.args'].pop(0) ,locals()['.internals']['.args'].pop()']",
             "return 3",
-            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ],
-        "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5",
+        "a  =locals()['.internals']['.args'].pop(0) =locals()['.internals']['.args'].pop(0) = 5",
         51,
     )
 
@@ -306,16 +324,18 @@ def test_unpack() -> None:
         "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
     ) == (
         [
-            "locals()['.args'] += ['a']",
-            "locals()['.args'] += [locals()[locals()['.args'].pop(0)+next(j)]]",
-            "locals()['.args'] += ['hi ']",
-            "locals()['.args'] += ['hi{(yield 3)} (yield 3)']",
+            "locals()['.internals']['.args'] += ['a']",
+            "locals()['.internals']['.args'] += [locals()[locals()['.internals']['.args'].pop(0) +next(j)]",
+            "locals()['.internals']['.args'] += ['hi ']",
+            "locals()['.internals']['.args'] += ['hi{(yield 3)} (yield 3)']",
             "return 3",
-            "locals()['.args'] += [locals()['.send']]",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ],
-        "a =locals()['.args'].pop(0)=locals()['.args'].pop(0)+locals()['.args'].pop(0)=locals()['.args'].pop(0)= 5 = ",
+        "a  =locals()['.internals']['.args'].pop(0) =locals()['.internals']['.args'].pop(0) +locals()['.internals']['.args'].pop(0) =locals()['.internals']['.args'].pop(0) = 5  = ",
         75,
     )
+    ## ternary statements ##
+    ## collect_lambda ##
 
 
 def test_collect_definition() -> None:
@@ -471,8 +491,8 @@ def test_indent_lines() -> None:
 def test_iter_adjust() -> None:
     indents = 4
     test = lambda test_case: (" " * indents + "%s i in range(3):" % test_case, indents)
-    assert iter_adjust(*test("for")) == "    for i in locals()['.4']:"
-    assert iter_adjust(*test("while")) == "    while i in locals()['.4']:"
+    assert iter_adjust(*test("for")) == "    for i in locals()['.internals']['.4']:"
+    assert iter_adjust(*test("while")) == "    while i in locals()['.internals']['.4']:"
 
 
 def test_is_statement() -> None:
@@ -525,10 +545,10 @@ def test_loop_adjust() -> None:
     ## adjustments ##
     assert loop_adjust(block[2:], indexes[2:], block[1:], *(1, length)) == (
         [
-            "    locals()['.continue']=True",
+            "    locals()['.internals']['.continue']=True",
             "    for _ in (None,):",
             "        break",
-            "        locals()['.continue']=False",
+            "        locals()['.internals']['.continue']=False",
             "        break",
             "        while True:",
             "            pass",
@@ -536,8 +556,8 @@ def test_loop_adjust() -> None:
             "            pass",
             "        for k in range(7):",
             "            pass",
-            "    if locals()['.continue']:",
-            "        for j in locals()['.8']:",
+            "    if locals()['.internals']['.continue']:",
+            "        for j in locals()['.internals']['.8']:",
             "            continue",
             "            break",
             "            while True:",
@@ -582,7 +602,7 @@ def test_loop_adjust() -> None:
             "    for k in range(7):",
             "        pass",
             "    print('hi')",
-            "    for j in locals()['.8']:",
+            "    for j in locals()['.internals']['.8']:",
             "        continue",
             "        break",
             "        while True:",
@@ -602,11 +622,11 @@ def test_yield_adjust() -> None:
     assert yield_adjust("yield 3", "") == ["return 3"]
 
     assert yield_adjust("yield from range(3)", "") == [
-        "locals()['.yieldfrom']=range(3)",
-        "for locals()['.i'] in locals()['.yieldfrom']:",
-        "    return locals()['.i']",
-        "    if locals()['.send']:",
-        "        return locals()['.yieldfrom'].send(locals()['.send'])",
+        "locals()['.internals']['.yieldfrom']=range(3)",
+        "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
+        "    return locals()['.internals']['.i']",
+        "    if locals()['.internals']['.send']:",
+        "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
     ]
 
 
@@ -654,18 +674,21 @@ def test_extract_lambda() -> None:
 def test_except_adjust() -> None:
     result = except_adjust(
         ["try:", "    pass"],
-        ["return value", "locals()['.args'] += [locals()['.send']]"],
-        "except locals()['.args'].pop():",
+        [
+            "return value",
+            "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        ],
+        "except locals()['.internals']['.args'].pop():",
     )
     answer = """try:
     try:
         pass
     except:
-        locals()['.error'] = exc_info()[1]
+        locals()['.internals']['.error'] = locals()['.internals']['.exc_info']()[1]
         return value
-        locals()['.args'] += [locals()['.send']]
-        raise locals()['.error']
-except locals()['.args'].pop():"""
+        locals()['.internals']['.args'] += [locals()['.internals']['.send']]
+        raise locals()['.internals']['.error']
+except locals()['.internals']['.args'].pop():"""
     assert "\n".join(result) == answer
 
 
@@ -703,13 +726,13 @@ def test_outer_loop_adjust() -> None:
     end_pos = loops.pop()[1]
     assert outer_loop_adjust([], [], source_lines, loops, end_pos) == (
         [
-            "    for j in locals()['.8']:",
+            "    for j in locals()['.internals']['.8']:",
             "        print(j)",
             "        for k in range(4):",
             "            print(k)",
             "        print(j)",
             "    print(i)",
-            "    for i in locals()['.4']:",
+            "    for i in locals()['.internals']['.4']:",
             "        print(i)",
             "        for j in range(4):",
             "            print(j)",
@@ -720,6 +743,32 @@ def test_outer_loop_adjust() -> None:
         ],
         [2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7],
     )
+
+
+def test_setup_next_line() -> None:
+    assert setup_next_line(":", 1) == (" ", True)
+    assert setup_next_line(";", 1) == (" ", True)
+    assert setup_next_line("\n", 1) == ("", False)
+
+
+def test_unpack_lambda() -> None:
+    assert unpack_lambda("lambda x: x") == [" x"]
+
+
+def test_get_signature() -> None:
+    assert get_signature("def func():") == "func"
+    assert get_signature("def func():", True) == ("func", "")
+    assert get_signature("def func(*args, **kwargs):", True) == (
+        "func",
+        "*args, **kwargs",
+    )
+
+
+def test_collect_lambda() -> None:
+    line = "lambda "
+    assert collect_lambda(
+        line, enumerate("x: x", start=len(line)), "lambda x: x", (0, 0, "")
+    ) == ("x", "lambda x: x")
 
 
 test_update_depth()
@@ -758,3 +807,7 @@ test_except_adjust()
 test_singly_space()
 test_exit_adjust()
 test_outer_loop_adjust()
+test_setup_next_line()
+test_unpack_lambda()
+test_get_signature()
+test_collect_lambda()
