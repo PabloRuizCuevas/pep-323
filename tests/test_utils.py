@@ -130,6 +130,24 @@ def test_binding() -> None:
     }
 
 
+def test_get_nonlocals() -> None:
+    def test():
+        b = None
+        a = 3
+
+        def case():
+            a
+            b
+
+        case2 = lambda: print(a, b)
+        return case, case2
+
+    f1, f2 = test()
+
+    assert get_nonlocals(f1) == {"a": 3, "b": None}
+    assert get_nonlocals(f2) == {"a": 3, "b": None}
+
+
 test_is_cli()
 # test_cli_findsource()
 test_skip()
@@ -147,3 +165,4 @@ with warnings.catch_warnings():
 test_hasattrs()
 test_chain()
 test_binding()
+test_get_nonlocals()
