@@ -163,3 +163,13 @@ class binding:
         if hasattr(obj, "parameters") and isinstance(obj, binding):
             return obj.parameters == self.parameters
         return False
+
+
+def get_nonlocals(FUNC: FunctionType) -> dict:
+    """Gets the nonlocals or closure variables of a function"""
+    cells = getattr(FUNC, "__closure__", [])
+    nonlocals = {}
+    if cells:
+        for key, value in zip(FUNC.__code__.co_freevars, cells):
+            nonlocals[key] = value.cell_contents
+    return nonlocals
