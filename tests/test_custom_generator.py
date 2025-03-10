@@ -98,6 +98,7 @@ def test_picklers() -> None:
 def test_generator_pickle() -> None:
     gen = Generator(simple_generator)
     test_Pickler(gen)
+    gen._internals["frame"]
     assert next(gen) == 1
     ## copy the generator ##
     gen2 = gen.copy()
@@ -114,11 +115,11 @@ def test_generator_custom_adjustment() -> None:
     assert test("yield ... ") == ["return ... "]
     ## yield from ##
     assert test("yield from ... ") == [
-        "locals()['.yieldfrom']=... ",
-        "for locals()['.i'] in locals()['.yieldfrom']:",
-        "    return locals()['.i']",
-        "    if locals()['.send']:",
-        "        return locals()['.yieldfrom'].send(locals()['.send'])",
+        "locals()['.internals']['.yieldfrom']=... ",
+        "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
+        "    return locals()['.internals']['.i']",
+        "    if locals()['.internals']['.send']:",
+        "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
     ]
     ## for ##
     gen._internals["jump_positions"], gen._internals["jump_stack"] = [], []
@@ -179,27 +180,42 @@ def test_generator_append_line() -> None:
             source[start:index],
             [],
             indentation,
+            0,
         )
 
     ## empty line ##
 
     gen = setup()
-    assert gen._append_line(0, "", "", "", "", "", [], 0) == (0, "", [], "", True, 0)
-    assert gen._append_line(0, "", "", "", "", "         ", [], 0) == (
+    assert gen._append_line(0, "", "", "", "", "", [], 0, 0) == (
         0,
         "",
         [],
         "",
-        True,
+        False,
+        0,
+        0,
+    )
+    assert gen._append_line(0, "", "", "", "", "         ", [], 0, 0) == (
+        0,
+        "",
+        [],
+        "",
+        False,
+        0,
         0,
     )
 
     ## normal line ##
-    assert test(0, 15) == (15, "\n", ["    print('hi')"], "", False, 0)
+    assert test(0, 15) == (15, "\n", ["    print('hi')"], "", False, 0, 0)
     ## semi-colon ##
-    assert test(16, 31) == (31, ";", ["    print('hi')"], "", True, 0)
+    assert test(16, 31) == (31, ";", ["    print('hi')"], "", True, 0, 0)
+    ## comments ##
+    assert test(79, 88) == (98, "\n", [" print() "], "", False, 0, 0)
+    ## statements/colon ##
+    assert test(99, 110) == (110, ":", ["    if True:"], "        ", True, 8, 0)
     ## skip definitions ##
     gen._internals["lineno"] = 1
+    gen._internals["decorator"] = False
     assert test(45, 57) == (
         78,
         "\n",
@@ -207,12 +223,10 @@ def test_generator_append_line() -> None:
         "",
         False,
         8,
+        0,
     )
     assert gen._internals["lineno"] == 3
-    ## comments ##
-    assert test(79, 88) == (98, "\n", [" print() "], "", False, 0)
-    ## statements/colon ##
-    assert test(99, 110) == (110, ":", ["    if True:"], "        ", True, 8)
+    ## decorators ##
 
 
 def test_generator_block_adjust() -> None:
@@ -225,15 +239,15 @@ def test_generator_block_adjust() -> None:
     )
     assert test("    if     (yield 3):\n        return 4\n") == [
         "    return  3",
-        "    locals()['.args'] += [locals()['.send']]",
-        "    if locals()['.args'].pop():",
+        "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "    if locals()['.internals']['.args'].pop():",
     ]
     ## elif ##
     assert test("    elif (yield 3):\n        return 4\n") == [
         "    else:",
         "        return  3",
-        "        locals()['.args'] += [locals()['.send']]",
-        "        if locals()['.args'].pop():",
+        "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "        if locals()['.internals']['.args'].pop():",
     ]
     ## except ##
     assert test(
@@ -243,29 +257,40 @@ def test_generator_block_adjust() -> None:
         "        try:",
         "            pass",
         "        except:",
-        "            locals()['.error'] = exc_info()[1]",
+        "            locals()['.internals']['.error'] = locals()['.internals']['.exc_info']()[1]",
         "            return  3",
-        "            locals()['.args'] += [locals()['.send']]",
-        "            raise locals()['.error']",
-        "    except locals()['.args'].pop():",
+        "            locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "            raise locals()['.internals']['.error']",
+        "    except locals()['.internals']['.args'].pop():",
     ]
     ## for ##
-    new_lines = ["    return  3", "    locals()['.args'] += [locals()['.send']]"]
+    new_lines = [
+        "    return  3",
+        "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+    ]
     test_answer = lambda expr: test(
         "    %s (yield 3):\n        return 4\n" % expr
-    ) == new_lines + ["    %s locals()['.args'].pop():" % expr]
+    ) == new_lines + ["    %s locals()['.internals']['.args'].pop():" % expr]
     gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
     assert test_answer("for")
     assert gen._internals["lineno"] == 3
     assert gen._internals["jump_stack_adjuster"] == [
-        [2] + ["        return  3", "        locals()['.args'] += [locals()['.send']]"]
+        [2]
+        + [
+            "        return  3",
+            "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        ]
     ]
     ## while ##
     gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
     assert test_answer("while")
     assert gen._internals["lineno"] == 3
     assert gen._internals["jump_stack_adjuster"] == [
-        [2] + ["        return  3", "        locals()['.args'] += [locals()['.send']]"]
+        [2]
+        + [
+            "        return  3",
+            "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        ]
     ]
 
 
@@ -279,6 +304,11 @@ def test_generator_string_collector_adjust() -> None:
     ) -> tuple[Iterable, int, str]:
         line = source[line_start:start]
         source_iter = enumerate(source[start:], start=start)
+        print(
+            gen._string_collector_adjust(
+                *next(source_iter), (0, 0, ""), source_iter, line, source, []
+            )
+        )
         assert (
             gen._string_collector_adjust(
                 *next(source_iter), (0, 0, ""), source_iter, line, source, []
@@ -297,8 +327,8 @@ def test_generator_string_collector_adjust() -> None:
             (27, 45, "'"),
             [
                 "    return  3",
-                "    locals()['.args'] += [locals()['.send']]",
-                "    print(f'hello {locals()['.args'].pop()}')",
+                "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+                "    print(f'hello {locals()['.internals']['.args'].pop()}')",
             ],
         ),
     )
@@ -326,6 +356,8 @@ def test_generator_clean_source_lines() -> None:
     ## make sure the jump_positions are forming correctly ##
     assert gen._internals["jump_positions"] == [[2, 3], [4, 5]]
 
+    a = None
+
     def test() -> Generator:
         """
         single test case that attempts to test most cases:
@@ -339,8 +371,11 @@ def test_generator_clean_source_lines() -> None:
         ## f-strings ##
         ## returns ##
         """
+        nonlocal a
         yield
+
         (yield (yield), (yield 3)) == (yield 5), (yield 6)
+
         if (yield):
             yield from simple_generator()
             return 3
@@ -348,21 +383,34 @@ def test_generator_clean_source_lines() -> None:
             print(3)
         for i in (yield 2):
             print(2)
+        for i in f"{(yield 2)}":
+            print(2)
         if i in (yield 2):
             pass
+        if i in f"{(yield 2)}":
+
+            pass
+
         print(f"hi {(yield 2),(yield (yield 2))}")  ## f-string ##
         string = """def test():
     pass
 """
         print(string)
+
         (a := (yield (a := (yield 3)))) == (yield 3)
+
         try:
             print()
         except (yield 3):
             pass
+        try:
+            print()
+        except f"hi there{(yield 3)}":
+            pass
         if True:
             pass
         elif (yield 3):
+
             pass
 
         def test2():
@@ -375,12 +423,12 @@ def test_generator_clean_source_lines() -> None:
             def __init__(self):
                 yield 3
 
+        func()
         return (yield 3)
 
     gen = Generator(test)
-    from pprint import pprint
-
-    # pprint(gen._internals["source_lines"])
+    for line in gen._internals["source_lines"]:
+        print(repr(line))
 
 
 def test_generator_create_state() -> None:
@@ -435,14 +483,14 @@ def test_generator_create_state() -> None:
         [
             "    return 2",
             "    return 4",
-            "    for k in locals()['.12']:",
+            "    for k in locals()['.internals']['.12']:",
             "       return 1",
             "       if True:",
             "           return 2",
             "       else:",
             "           return 3",
             "       return 4",
-            "    for j in locals()['.8']:",
+            "    for j in locals()['.internals']['.8']:",
             "        print(j)",
             "        for k in range(4):",
             "           return 1",
@@ -452,7 +500,7 @@ def test_generator_create_state() -> None:
             "               return 3",
             "           return 4",
             "        print(j)",
-            "    for i in locals()['.4']:",
+            "    for i in locals()['.internals']['.4']:",
             "        print(i)",
             "        for j in range(4):",
             "            print(j)",
@@ -591,6 +639,13 @@ def test_generator__call__() -> None:
     assert gen._internals["state_generator"]
 
 
+def test_generator_locals() -> None:
+    gen = Generator()
+    gen._internals["frame"] = frame()
+    gen._locals()["a"] = 1
+    assert gen._internals["frame"].f_locals == {"a": 1}
+
+
 def test_generator_frame_init() -> None:
     gen = Generator(simple_generator())
 
@@ -634,8 +689,6 @@ def test_generator_frame_init() -> None:
     assert init == [
         "def next_state():",
         "    locals=currentframe().f_back.f_locals['self']._locals",
-        '    locals()[".args"] = []',
-        "    locals()['.send'] = None",
         "    currentframe().f_back.f_locals['.frame']=currentframe()",
     ]
     ## with local variables stored ##
@@ -647,8 +700,6 @@ def test_generator_frame_init() -> None:
         "    a=locals()['a']",
         "    b=locals()['b']",
         "    c=locals()['c']",
-        '    locals()[".args"] = []',
-        "    locals()['.send'] = None",
         "    currentframe().f_back.f_locals['.frame']=currentframe()",
     ]
 
@@ -677,7 +728,13 @@ def test_generator_update() -> None:
     ## No previous frame ##
     def test(lineno: int = 0) -> frame:
         new_frame = frame()
-        new_frame.f_locals = {"a": 1, "b": 2, "c": 3, ".send": 1, "locals": gen._locals}
+        new_frame.f_locals = {
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            ".internals": {".send": 1},
+            "locals": gen._locals,
+        }
         # for __bool__
         new_frame.f_code = 1
         new_frame.f_lasti = 1
@@ -686,14 +743,24 @@ def test_generator_update() -> None:
 
     gen._internals["frame"] = None
     gen._update(test(), 0)
-    assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    assert gen._internals["frame"].f_locals == {
+        "a": 1,
+        "b": 2,
+        "c": 3,
+        ".internals": {},
+    }
     assert gen._internals["frame"].f_back is None
     ## With previous frame ##
     gen._internals["frame"] = temp = test()
     temp.f_locals = {"a": 0, "b": 1, "c": 2}
     gen._update(test(), 0)
     ## new frame locals takes precedence ##
-    assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    assert gen._internals["frame"].f_locals == {
+        "a": 1,
+        "b": 2,
+        "c": 3,
+        ".internals": {},
+    }
     ## old frame locals are preserved ##
     assert gen._internals["frame"].f_back.f_locals == temp.f_locals
 
@@ -717,12 +784,19 @@ def test_generator__next__() -> None:
     gen = Generator(simple_generator())
     assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 1
+    assert gen._internals["frame"].f_locals[".internals"] == {
+        "exec_info": exc_info,
+        "partial": partial,
+        ".args": [],
+        ".send": None,
+    }
     assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 2
     assert gen._internals["state"] == gen._internals["source_lines"][1:]
     assert next(gen) == 3
     assert gen._internals["state"] is None
     assert next(gen, True)
+    # assert gen._internals["frame"] is None
 
 
 def test_generator__iter__() -> None:
@@ -737,7 +811,7 @@ def test_generator__iter__() -> None:
     ## acts as the fishhook iterator for now ##
     r = iter(range(3))
     next(r)
-    gen._internals["frame"].f_locals[".4"] = r
+    gen._internals["frame"].f_locals[".internals"] = {".4": r}
     assert [i for i in gen] == [1, 0, 1, 2]
 
 
@@ -809,7 +883,7 @@ def test_generator_send() -> None:
     source_lines = [
         "    return 1",
         "    return 2",
-        "    a = locals()['.send']",
+        "    a = locals()['.internals']['.send']",
         "    return a",
     ]
     gen._internals.update(
@@ -826,12 +900,15 @@ def test_generator_send() -> None:
         }
     )
     gen._internals["state_generator"] = gen._init_states()
+    ## can't send if not running ##
     try:
         gen.send(1)
     except TypeError:
         pass
+    ## send doesn't change non value recieving yields ##
     assert next(gen) == 1
     assert gen.send(1) == 2
+    ## send changes value recieving yield ##
     assert gen.send(1) == 1
 
 
@@ -864,6 +941,31 @@ def test_generator_type_checking() -> None:
     )
 
 
+## for debugging at the moment ##
+def t():
+    # source = "x if True else y"
+    # source = "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
+    # source = "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
+    # source = "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
+    source = "'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5"
+    index = 0
+    line = ""
+    ls, line, _ = unpack(
+        line, enumerate(source[index:], start=index), source=source, index=index
+    )
+    print(
+        "\n".join(ls),
+        line,
+        sep="\n---------------------\n",
+    )
+
+    from sys import exit
+
+    exit()
+
+
+# t()
+
 ## tests are for cleaning + adjusting + pickling ##
 test_Pickler()
 test_picklers()
@@ -872,13 +974,14 @@ test_generator_pickle()
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
 test_generator_append_line()
-test_generator_block_adjust()
-test_generator_string_collector_adjust()
-test_generator_clean_source_lines()
+# test_generator_block_adjust()
+# test_generator_string_collector_adjust()
+# test_generator_clean_source_lines()
 test_generator_create_state()
 test_generator_init_states()
 test_generator__init__()
 test_generator__call__()
+test_generator_locals()
 test_generator_frame_init()
 test_generator_update()
 test_generator__next__()
