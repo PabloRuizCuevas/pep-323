@@ -55,7 +55,10 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
         #     or is_definition(temp)
         # ) and lineno_adjust(frame) == 0:
         #     key += 4
-    frame.f_locals[".%s" % key] = obj
+    f_locals = frame.f_locals
+    if ".internals" not in f_locals:
+        f_locals[".internals"] = {}
+    f_locals[".internals"][".%s" % key] = obj
     return obj
 
 
