@@ -828,6 +828,9 @@ class Generator(Pickler):
         """
         ## for the api setup ##
         self._api_setup()
+        ## For some reason the __call__ doesn't want to be dynamically overrided ##
+        ## which is maybe strange since it's treating it like it's immutable to the type ##
+        self.__call__ = Generator__call__
         ## __setstate__ from Pickler._copier ##
         if FUNC:
             ## needed to identify certain attributes ##
@@ -875,7 +878,8 @@ class Generator(Pickler):
                     ## since it's uninitialized we can bind the signature to __call__ ##
                     ## and overwrite the __call__ signature + other metadata with the functions ##
                     self._internals["binding"] = binding(FUNC)
-                    self.__call__ = sign(self.__call__, FUNC)
+                    self.__call__ = sign(Generator__call__, FUNC, True)
+                    # self._internals["binding"] = binding(self.__call__)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
                         self._internals["source_lines"] = unpack_lambda(
@@ -916,22 +920,15 @@ class Generator(Pickler):
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
         """
-        initializes the generators locals with arguements and keyword arguements
-        but is also a shorthand method to initialize the state generator
+        Calls the instances __call__ method since it seems
+        immutable by the type but mutable by the instance
+        (is my inital speculative guess)
         """
-        ## for the api setup ##
-        prefix = self._internals["prefix"]
-        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
-            setattr(self, prefix + key, self._internals[key])
-        binding = self._internals.get("binding", None)
-        if binding:
-            ## if binding to the binding fails it will raise an error ##
-            binding = binding.bind(*args, **kwargs)
-            ## makes sure default arguments are applied ##
-            binding.apply_defaults()
-            self._internals["frame"].f_locals.update(binding.arguments)
-        self._internals["state_generator"] = self._init_states()
-        return self
+        if isinstance(self, type):
+            raise TypeError(
+                "Only instances of types/classes are allowed (Note: this method is for instances of the Generator type)"
+            )
+        return self.__call__(self, *args, **kwargs)
 
     def __iter__(self) -> GeneratorType:
         """Converts the generator function into an iterable"""
@@ -1075,3 +1072,33 @@ class Generator(Pickler):
         Pickler.__setstate__(self, state)
         ## setup the state generator + api ##
         self._internals["state_generator"] = self._init_states()
+
+
+def Generator__call__(self, *args, **kwargs) -> GeneratorType:
+    """
+    initializes the generators locals with arguements and keyword arguements
+    but is also a shorthand method to initialize the state generator
+
+    Note: this method must be set on initialisation otherwise for some reason
+    it still tries to call this method rather than what sometimes should be
+    called is the dynamically created method
+    """
+    ## get the arguments from the function call ##
+    arguments = locals()
+    ## for the api setup ##
+    prefix = self._internals["prefix"]
+    for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+        setattr(self, prefix + key, self._internals[key])
+    if arguments:
+        try:
+            binding = self._internals["binding"]
+        except KeyError:
+            raise TypeError("Generator type has no binding")
+        del arguments["self"]
+        ## if binding to the binding fails it will raise an error ##
+        binding = binding.bind(**arguments)
+        ## makes sure default arguments are applied ##
+        binding.apply_defaults()
+        self._internals["frame"].f_locals.update(binding.arguments)
+    self._internals["state_generator"] = self._init_states()
+    return self
