@@ -109,7 +109,7 @@ def hook_iter(iterator: Iterator | Iterable) -> None:
             return track_iter(iterator, frame)
 
 
-def patch_iterators():
+def patch_iterators() -> None:
     #############################
     #### patch all iterators ####
     #############################
