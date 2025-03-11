@@ -22,7 +22,7 @@ except:
 ## for lower versions this will have to be 3.11 ##
 # if version_info < (3, 5):
 if version_info < (3, 11):
-    raise ImportError("Python version 3.5 or above is required")
+    raise ImportError("Python version 3.11 or above is required")
 
 
 class Pickler:
@@ -573,6 +573,7 @@ class Generator(Pickler):
                     line += " "
                     space = index
             ## create new line ##
+            ## should be able to go depth == 0 ... like in unpack ##
             elif char in "#\n;" or (
                 char == ":" and source[index + 1 : index + 2] != "="
             ):
@@ -849,6 +850,7 @@ class Generator(Pickler):
                         self._internals["frame"].f_locals
                     )
                     self._internals["lineno"] = len(self._internals["source_lines"])
+                ## must be a function ##
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     self._internals["source_lines"] = self._clean_source_lines(True)
@@ -870,7 +872,10 @@ class Generator(Pickler):
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
                     self._internals["code"] = code(FUNC.__code__)
+                    ## since it's uninitialized we can bind the signature to __call__ ##
+                    ## and overwrite the __call__ signature + other metadata with the functions ##
                     self._internals["binding"] = binding(FUNC)
+                    self.__call__ = sign(self.__call__, FUNC)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
                         self._internals["source_lines"] = unpack_lambda(
@@ -908,10 +913,6 @@ class Generator(Pickler):
             if initialized:
                 for key in ("code", "frame", "suspended", "yieldfrom", "running"):
                     setattr(self, prefix + key, self._internals[key])
-            ## add additional relevant attributes where applicable ##
-            if isinstance(FUNC, FunctionType):
-                self.__annotations__ = FUNC.__annotations__
-                self.__doc__ = FUNC.__doc__
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
         """
