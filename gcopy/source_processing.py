@@ -6,6 +6,9 @@ from inspect import getsource, findsource
 from typing import Iterable, Any
 from types import GeneratorType, FunctionType  # , FrameType ## lineno_adjust
 
+## to ensure gcopy.custom_generator.Generator can be used in exec for sign ##
+import gcopy
+
 
 def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:
     """Updates the depth of brackets"""
@@ -336,6 +339,8 @@ def named_adjust(
     source: str = "",
     index: int = 0,
     unwrapping: bool = False,
+    depth_total: int = 0,
+    depths: dict = {},
 ) -> tuple[list[str], str, str, int]:
     """
     Adjusts the lines and final line for named expressions
@@ -365,6 +370,8 @@ def named_adjust(
         source=source,
         index=index,
         unwrapping=True,
+        depth_total=depth_total,
+        depths=depths,
     )
     lines += temp
     return line, lines, final_line, False
@@ -394,6 +401,8 @@ def update_lines(
     source: str = "",
     index: int = 0,
     unwrapping: bool = False,
+    depth_total: int = 0,
+    depths: dict = {},
 ) -> tuple[list[str], str]:
     """
     adds the current line or the unwrapped line to the lines
@@ -409,15 +418,16 @@ def update_lines(
                 unwrapping=True,
                 named=named,
                 index=index,
+                # depth_total=depth_total,
+                # depths=depths,
             )
             if yielding:
-                temp_final_line = "yield " + temp_final_line
+                ## we have to :-1 since the end bracket gets added ##
+                temp_final_line = "yield " + temp_final_line[:-1]
                 adjust = unpack_adjust(temp_final_line.strip())
                 lines += temp_lines + adjust
                 ## unwrapping should pop from the end (current expression) ##
                 line = line[:bracket_index] + "locals()['.internals']['.args'].pop()"
-                if named and not unwrapping:
-                    line += ")"
             else:
                 lines += temp_lines
                 line += temp_final_line
@@ -437,6 +447,12 @@ def update_lines(
     return line, lines, final_line, named
 
 
+def try_delete(depths: dict, depth_total: int) -> None:
+    """Resusable function specific to unpack for updating the depths dict"""
+    if depth_total in depths:
+        del depths[depth_total]
+
+
 def unpack(
     line: str = None,
     source_iter: Iterable = empty_generator(),
@@ -444,32 +460,31 @@ def unpack(
     unwrapping: bool = False,
     named: bool = False,
     index: int = 0,
+    depth_total: int = 0,
+    depths: dict = {},
 ) -> tuple[list[str], str, int]:
     """
     Unpacks value yields from a line into a
     list of lines going towards its right side
     """
     if line is None:
-        line = empty_generator()
-        index = 0
+        line_iter = empty_generator()
     else:
-        index = index - len(line) + 1
-    line_iter = chain(enumerate(line, start=index), source_iter)
+        line_iter = enumerate(line, start=index - len(line) + 1)
+    line_iter = chain(line_iter, source_iter)
     ## make sure 'space' == -1 for indentation ##
     (
         depth,
-        depth_total,
         end_index,
         space,
         lines,
-        bracket,
         ID,
         line,
         final_line,
         prev,
         operator,
         bracket_index,
-    ) = (0, 0, 0, -1, [], "", "", "", "", (0, 0, ""), 0, None)
+    ) = (0, 0, -1, [], "", "", "", (0, 0, ""), 0, None)
     indented = True
     if not unwrapping:
         indented = False
@@ -494,6 +509,8 @@ def unpack(
                 line_iter,
                 source=source,
                 index=end_index,
+                depth_total=depth_total,
+                depths=depths,
             )
         elif char == "\\":
             skip_line_continuation(line_iter, line, end_index)
@@ -512,6 +529,8 @@ def unpack(
                     operator=char,
                     source=source,
                     index=end_index,
+                    depth_total=depth_total,
+                    depths=depths,
                 )
             else:
                 final_line += char
@@ -520,9 +539,6 @@ def unpack(
         elif depth == 0 and char in "#:;\n":
             if char == ":":
                 line += ":"
-            ## not sure if this is needed or not yet ... ##
-            # if lines:
-            #     lines += [line]
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
             line, lines, final_line, named = named_adjust(
@@ -534,21 +550,30 @@ def unpack(
                 source,
                 index=end_index,
                 unwrapping=unwrapping,
+                depth_total=depth_total,
+                depths=depths,
             )
             named = False
             ## since we're going to skip some chars ##
             ID, prev = "", prev[:-1] + (char,)
             depth -= 1
+            try_delete(depths, depth_total)
             depth_total -= 1
             continue
         else:
             ## record the current depth ##
             if char in "([{":
                 depth_total += 1
-                bracket = char
+                depths[depth] = (end_index, char)
             elif char in ")}]":
+                try_delete(depths, depth_total)
                 depth_total -= 1
-                if unwrapping and depth_total < 0 or char != inverse_bracket(bracket):
+                if (
+                    unwrapping
+                    and depth_total < 0
+                    or char != inverse_bracket(depths.get(depth_total, (0, ""))[1])
+                ):
+                    line += char
                     break
             if char == "(":
                 depth += 1
@@ -563,8 +588,10 @@ def unpack(
                     ID = ""
                 ID += char
                 next_char = source[end_index + 1 : end_index + 2]
+                adjusted = False
                 if ID == "lambda" and next_char in " :\\":
                     char, lines = collect_lambda(line, source_iter, source, (0, 0, ""))
+                    adjusted = True
                 ## unwrapping ##
                 elif depth and ID == "yield" and next_char in " )]}\n;\\":
                     ## what should happen when we unwrap? ##
@@ -579,12 +606,16 @@ def unpack(
                         yielding=True,
                         source=source,
                         index=end_index,
+                        depth_total=depth_total,
+                        depths=depths,
                     )
-                    ID, prev, bracket_index = "", prev[:-1] + (char,), None
+                    bracket_index = None
+                    adjusted = True
                     ## since the unwrapping will accumulate up to the next bracket this ##
                     ## will go unrecorded on this stack frame recieving but recorded and ##
                     ## garbage collected on the recursed stack frame used on unwrapping ##
                     depth -= 1
+                    try_delete(depths, depth_total)
                     depth_total -= 1
                     continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
                 elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
@@ -596,20 +627,38 @@ def unpack(
                         operator=ID,
                         source=source,
                         index=end_index,
+                        depth_total=depth_total,
+                        depths=depths,
                     )
-                    ID, prev = "", prev[:-1] + (char,)
-                    continue
+                    adjusted = True
                 ## adjust for ternary statements ##
+                elif unwrapping and ID in ("if", "else"):
+                    pass
                 ## I don't think you can have a value yield in a 'case' statement otherwise this too is in here ##
                 elif ID in ("if", "elif", "while", "for") and next_char in " :\\":
                     ## i.e. ID='while' will have 'whil' but no 'e' since the char has not been added ##
                     temp_line = line[: -len(ID) + 1]
                     if ID == "if" and temp_line.lstrip():
-                        unpack(source_iter=line_iter, source=source, index=index)
+                        line, lines, final_line, named = update_lines(
+                            line,
+                            lines,
+                            final_line,
+                            named,
+                            line_iter,
+                            bracket_index,
+                            source=source,
+                            index=end_index,
+                            depth_total=depth_total,
+                            depths=depths,
+                        )
+                        adjusted = True
                     else:
                         final_line += ID + " "
                         line = temp_line
+                    adjusted = True
+                if adjusted:
                     ID, prev = "", prev[:-1] + (char,)
+                    del next_char, adjusted
                     continue
             else:
                 ID = ""
@@ -1325,3 +1374,14 @@ def collect_lambda(
                     break
             line += char
     return char, line
+
+
+def sign(FUNC: FunctionType, FUNC2: FunctionType) -> FunctionType:
+    """signs a function with the signature of another function"""
+    _signature = FUNC2.__name__ + format(signature(FUNC2)) + ":\n"
+    source = skip_source_definition(getsource(FUNC))
+    exec("def %s%s" % (_signature, source), globals(), locals())
+    temp = locals()[FUNC2.__name__]
+    temp.__source__ = source
+    temp.__doc__ = FUNC2.__doc__
+    return temp
