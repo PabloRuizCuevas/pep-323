@@ -1,5 +1,5 @@
 from sys import version_info
-from inspect import getframeinfo, signature, Signature, BoundArguments
+from inspect import getframeinfo, signature, Signature, BoundArguments, getsource
 from readline import get_history_item, get_current_history_length
 from dis import get_instructions
 from types import FrameType, GeneratorType, CodeType, FunctionType
@@ -16,7 +16,7 @@ def is_cli() -> bool:
         return False
 
 
-def cli_findsource():
+def cli_findsource() -> list[str]:
     """Finds the source assuming CLI"""
     length = get_current_history_length()
     return [get_history_item(-i) for i in range(length - 1, 0, -1)]
@@ -159,7 +159,7 @@ class binding:
     def __repr__(self) -> str:
         return repr(self.signature)
 
-    def __eq__(self, obj) -> bool:
+    def __eq__(self, obj: Any) -> bool:
         if hasattr(obj, "parameters") and isinstance(obj, binding):
             return obj.parameters == self.parameters
         return False
