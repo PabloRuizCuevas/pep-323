@@ -651,7 +651,6 @@ def unpack(
                             depth_total=depth_total,
                             depths=depths,
                         )
-                        adjusted = True
                     else:
                         final_line += ID + " "
                         line = temp_line
@@ -1376,11 +1375,18 @@ def collect_lambda(
     return char, line
 
 
-def sign(FUNC: FunctionType, FUNC2: FunctionType) -> FunctionType:
+def sign(
+    FUNC: FunctionType, FUNC2: FunctionType, boundmethod: bool = False
+) -> FunctionType:
     """signs a function with the signature of another function"""
-    _signature = FUNC2.__name__ + format(signature(FUNC2)) + ":\n"
+    _signature = format(signature(FUNC2))
+    if boundmethod:
+        _signature = "(self, " + _signature[1:]
+    _signature = FUNC2.__name__ + _signature + ":"
     source = skip_source_definition(getsource(FUNC))
-    exec("def %s%s" % (_signature, source), globals(), locals())
+    ## create the function ##
+    source = "def %s%s" % (_signature, source)
+    exec(source, globals(), locals())
     temp = locals()[FUNC2.__name__]
     temp.__source__ = source
     temp.__doc__ = FUNC2.__doc__
