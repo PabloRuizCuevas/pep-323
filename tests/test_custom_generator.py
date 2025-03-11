@@ -25,7 +25,7 @@ def setup() -> Generator:
     return gen
 
 
-def simple_generator() -> GeneratorType:
+def simple_generator() -> Generator:
     yield 1
     yield 2
     yield 3
@@ -612,7 +612,7 @@ def test_generator__init__() -> None:
                 assert isinstance(obj, value)
 
     ## function generator ##
-    # uninitilized #
+    # uninitilized - this should imply that use as a decorator works also ##
     test(simple_generator, False)
     # initilized #
     test(simple_generator(), True)
@@ -621,6 +621,17 @@ def test_generator__init__() -> None:
     test(gen, True)
     ## string ##
     test("(i for i in range(3))", False)
+
+    """""" """""" """""" """""" """""" """"""
+
+    ## test if the function related attrs get transferred ##
+    def test2(FUNC: Any) -> None:
+        """docstring"""
+        pass
+
+    # gen = Generator(test2)
+    # assert gen.__annotations__ == test2.__annotations__
+    # assert gen.__doc__ == test2.__doc__
 
 
 def test_generator__call__() -> None:
@@ -802,6 +813,14 @@ def test_generator__next__() -> None:
 def test_generator__iter__() -> None:
     assert [i for i in Generator(simple_generator())] == [1, 2, 3]
 
+    @Generator
+    def gen(*args, **kwargs) -> Generator:
+        yield 1
+        yield 2
+        return 3
+
+    assert [i for i in gen] == [1, 2]
+
     def test_case():
         yield 1
         for i in range(3):
@@ -837,7 +856,7 @@ def test_generator_close() -> None:
     assert gen.close() is None
     assert gen._internals["frame"] is None
 
-    def test(case: int = 0) -> GeneratorType:
+    def test(case: int = 0) -> Generator:
         yield 0
         try:
             yield 1
@@ -943,11 +962,7 @@ def test_generator_type_checking() -> None:
 
 ## for debugging at the moment ##
 def t():
-    # source = "x if True else y"
-    # source = "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
-    # source = "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
-    # source = "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
-    source = "'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5"
+    source = "x if True else y"
     index = 0
     line = ""
     ls, line, _ = unpack(
@@ -973,10 +988,10 @@ test_generator_pickle()
 # record_jumps is tested in test_custom_adjustment
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
-test_generator_append_line()
+test_generator_append_line()  ## need to test decorated functions ##
 # test_generator_block_adjust()
 # test_generator_string_collector_adjust()
-# test_generator_clean_source_lines()
+# test_generator_clean_source_lines() ## need to implement ternary statements in unpack and fix any other minor problems ##
 test_generator_create_state()
 test_generator_init_states()
 test_generator__init__()
