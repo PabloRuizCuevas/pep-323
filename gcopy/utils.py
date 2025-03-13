@@ -173,3 +173,12 @@ def get_nonlocals(FUNC: FunctionType) -> dict:
         for key, value in zip(FUNC.__code__.co_freevars, cells):
             nonlocals[key] = value.cell_contents
     return nonlocals
+
+
+def try_set(self, key: Any, value: Any, default: Any = None) -> None:
+    """
+    Tries to set a value to a key on an
+    object if the object is not the default
+    """
+    if self != default:
+        self[key] = value
