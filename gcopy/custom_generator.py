@@ -759,7 +759,7 @@ class Generator(Pickler):
                 self._internals["linetable"] = [
                     self._internals["linetable"][0] - 1
                 ] + self._internals["linetable"]
-        ## initilize the internal locals ##s
+        ## initialize the internal locals ##s
         f_locals = self._internals["frame"].f_locals
         if not sending:
             if ".internals" not in f_locals:
@@ -879,7 +879,6 @@ class Generator(Pickler):
                     ## and overwrite the __call__ signature + other metadata with the functions ##
                     self._internals["binding"] = binding(FUNC)
                     self.__call__ = sign(Generator__call__, FUNC, True)
-                    # self._internals["binding"] = binding(self.__call__)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
                         self._internals["source_lines"] = unpack_lambda(
@@ -907,9 +906,13 @@ class Generator(Pickler):
                 self._internals["yieldfrom"] = None
                 ## modified every time __next__ is called; always start at line 1 ##
                 self._internals["lineno"] = 1
-                ## for uninitialized generators we have to inject its nonlocals into ##
-                ## its local scope since its current bindings will not work in exec ##
-                self._internals["frame"].f_locals.update(get_nonlocals(FUNC))
+                ## add its closure if it has one. It shouldn't ##
+                ## effect the existing locals, only adds the attribute ##
+                if hasattr(FUNC, "__closure__"):
+                    self.__closure__ = FUNC.__closure__
+                    ## for uninitialized generators we have to inject its nonlocals into ##
+                    ## its local scope since its current bindings will not work in exec ##
+                    self._internals["frame"].f_locals.update(get_nonlocals(FUNC))
             self._internals["running"] = False
             self._internals["state"] = self._internals["source_lines"]
             self._internals["state_generator"] = self._init_states()
@@ -972,8 +975,7 @@ class Generator(Pickler):
             del _frame.f_locals["locals"]
             ## '.send' reference is not needed ##
             if ".internals" in _frame.f_locals:
-                if ".send" in _frame.f_locals[".internals"]:
-                    del _frame.f_locals[".internals"][".send"]
+                _frame.f_locals[".internals"].pop(".send", None)
                 if ".yieldfrom" in _frame.f_locals[".internals"]:
                     self._internals["yieldfrom"] = _frame.f_locals[".internals"][
                         ".yieldfrom"
