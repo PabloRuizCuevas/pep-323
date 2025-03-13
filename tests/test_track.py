@@ -1,7 +1,8 @@
 from gcopy.track import *
+from inspect import currentframe
 
 
-def test_track_iter():
+def test_track_iter() -> None:
     patch_iterators()
     for i in range(1):
         for j in range(1):
@@ -13,7 +14,7 @@ def test_track_iter():
     )
 
 
-def test_offset_adjust():
+def test_offset_adjust() -> None:
     assert list(offset_adjust({".1": None, ".2": None, ".3": None}).keys()) == [
         ".4",
         ".8",
@@ -21,8 +22,45 @@ def test_offset_adjust():
     ]
 
 
+def test_track_iter_inside_exec() -> None:
+    FUNC_code = compile(
+        """def test():
+    for i in range(3):
+         return locals()[".internals"][".0"]
+""",
+        currentframe().f_code.co_filename,
+        "exec",
+    )
+    exec(FUNC_code, globals(), locals())
+    range_iterator = locals()["test"]()
+    assert [i for i in range_iterator] == [1, 2]
+
+
+def test_track_iter_inside_Generator() -> None:
+    from gcopy.custom_generator import Generator
+
+    @Generator
+    def test2():
+        yield 1
+        for i in range(3):
+            yield i
+
+    gen = test2()
+    next(gen)
+    next(gen)
+    gen2 = gen.copy()
+    assert next(gen._locals()[".internals"][".4"]) == 1
+    assert next(gen2._locals()[".internals"][".4"]) == 1
+    ## need to fix the loops for some reason it's not being picked up when the loop starts ##
+    ## on the first line? But it does work if line 1 is i.e. yield 1 like in test_custom_generator ##
+    # print(gen._internals["state"])
+    # print(gen._internals["jump_positions"])
+
+
 ## Note: instance checks will fail because of the monkey patching i.e.    ##
 ## isinstance("hi",str) will fail because of the fishhook monkey patching ##
 ## therefore I've ran the tests backwards so that it works
 test_offset_adjust()
 test_track_iter()
+test_track_iter_inside_exec()
+test_track_iter_inside_Generator()
