@@ -32,6 +32,7 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
     Using in generator expressions uses the col_offset instead
     """
     obj = iter(obj)
+    f_locals = frame.f_locals
     if frame.f_code.co_name == "<genexpr>":
         ## we don't need to concern about interference with indent adjusts since the frames ##
         ## are separate  e.g. we don't need to include the line and the offset just the offset ##
@@ -40,7 +41,13 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
         if is_cli():
             code_context = get_history_item(-frame.f_lineno)
         else:
-            code_context = getframeinfo(frame).code_context[0]
+            ## specific to the Generator class ##
+            if frame.f_code.co_filename == "<Generator>":
+                source = frame.f_back.f_locals["self"].__source__
+                code_context = source[frame.f_lineno - 1]
+                f_locals = frame.f_locals["locals"]()
+            else:
+                code_context = getframeinfo(frame).code_context[0]
         key = get_indent(code_context)
         ## won't work for compound statements that are in block statements ##
         ## therefore, we check for a block statement and add 4 if so ##
@@ -55,7 +62,6 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
         #     or is_definition(temp)
         # ) and lineno_adjust(frame) == 0:
         #     key += 4
-    f_locals = frame.f_locals
     if ".internals" not in f_locals:
         f_locals[".internals"] = {}
     f_locals[".internals"][".%s" % key] = obj
