@@ -148,6 +148,14 @@ def test_get_nonlocals() -> None:
     assert get_nonlocals(f2) == {"a": 3, "b": None}
 
 
+def test_try_set() -> None:
+    dct = {"a": 3}
+    try_set(dct, "a", 4)
+    assert dct == {"a": 4}
+    try_set(None, "a", 4)
+    assert dct == {"a": 4}
+
+
 test_is_cli()
 # test_cli_findsource()
 test_skip()
@@ -166,3 +174,4 @@ test_hasattrs()
 test_chain()
 test_binding()
 test_get_nonlocals()
+test_try_set()
