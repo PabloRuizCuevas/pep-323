@@ -759,7 +759,7 @@ class Generator(Pickler):
                 self._internals["linetable"] = [
                     self._internals["linetable"][0] - 1
                 ] + self._internals["linetable"]
-        ## initialize the internal locals ##s
+        ## initialize the internal locals ##
         f_locals = self._internals["frame"].f_locals
         if not sending:
             if ".internals" not in f_locals:
@@ -772,9 +772,10 @@ class Generator(Pickler):
             else:
                 ## initialize variables for the frame ##
                 f_locals[".internals"].update({".send": None})
+        name = self._internals.get("name", "next_state")
         ## adjust the initializers ##
         init = [
-            self._internals["version"] + "def next_state():",
+            self._internals["version"] + "def %s():" % name,
             " " * 4 + "locals=currentframe().f_back.f_locals['self']._locals",
         ]
         for key in f_locals:
@@ -784,13 +785,14 @@ class Generator(Pickler):
         init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
         ## try not to use variables here (otherwise it can mess with the state); ##
         ## 'return EOF()' is appended to help return after a loop ##
-        exec(
-            "\n".join(init + self._internals["state"] + ["    return EOF()"]),
-            globals(),
-            locals(),
-        )
+        ######################################################################
+        ## we need to give the original filename before using exec for the code_context to ##
+        ## be correct in track_iter therefore we compile first to provide a filename then exec ##
+        self.__source__ = init + self._internals["state"] + ["    return EOF()"]
+        code_obj = compile("\n".join(self.__source__), "<Generator>", "exec")
+        exec(code_obj, globals(), locals())
         self._internals["running"] = True
-        return init, locals()["next_state"]
+        return init, locals()[name]
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
@@ -887,6 +889,7 @@ class Generator(Pickler):
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
                         self._internals["source_lines"] = self._clean_source_lines()
+                        self._internals["name"] = self._internals["code"].co_name
                 ## source code string ##
                 elif isinstance(FUNC, str):
                     self._internals["source"] = FUNC
