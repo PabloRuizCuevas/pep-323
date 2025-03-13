@@ -287,7 +287,7 @@ def string_collector_proxy(
     iterable: Iterable,
     line: str = None,
     f_string: bool = False,
-) -> tuple[list[str], str, int]:
+) -> tuple[str, tuple[int, int, str], list[str]]:
     """Proxy function for usage when collecting strings since this block of code gets used repeatedly"""
     ## get the string collector type ##
     if prev[0] + 2 == prev[1] + 1 == index and prev[2] == char:
@@ -338,10 +338,9 @@ def named_adjust(
     ID: str,
     source: str = "",
     index: int = 0,
-    unwrapping: bool = False,
     depth_total: int = 0,
     depths: dict = {},
-) -> tuple[list[str], str, str, int]:
+) -> tuple[str, list[str], str, dict]:
     """
     Adjusts the lines and final line for named expressions
     and named expressions within named expressions
@@ -361,7 +360,7 @@ def named_adjust(
     temp = []
     if ID and lines:
         temp = [lines.pop()]
-    line, lines, final_line, named = update_lines(
+    line, lines, final_line, named, depths = update_lines(
         line,
         lines,
         final_line,
@@ -374,7 +373,7 @@ def named_adjust(
         depths=depths,
     )
     lines += temp
-    return line, lines, final_line, False
+    return line, lines, final_line, depths
 
 
 def unpack_adjust(line: str) -> list[str]:
@@ -403,7 +402,7 @@ def update_lines(
     unwrapping: bool = False,
     depth_total: int = 0,
     depths: dict = {},
-) -> tuple[list[str], str]:
+) -> tuple[str, list[str], str, bool, dict]:
     """
     adds the current line or the unwrapped line to the lines
     if it's not a variable or constant otherwise the line is
@@ -424,11 +423,13 @@ def update_lines(
             if yielding:
                 ## we have to :-1 since the end bracket gets added ##
                 temp_final_line = "yield " + temp_final_line[:-1]
-                adjust = unpack_adjust(temp_final_line.strip())
-                lines += temp_lines + adjust
+                try_set(depths.get(depth_total, None), -1, len(lines))
+                lines += temp_lines + unpack_adjust(temp_final_line.strip())
                 ## unwrapping should pop from the end (current expression) ##
+                ## Note: bracket_index is relative to the current line length not soruce index ##
                 line = line[:bracket_index] + "locals()['.internals']['.args'].pop()"
             else:
+                try_set(depths.get(depth_total, None), -1, len(lines))
                 lines += temp_lines
                 line += temp_final_line
         ## unpacking ##
@@ -440,17 +441,12 @@ def update_lines(
             else:
                 ## unpacking should pop from the start (since the line is in this order) ##
                 final_line += "locals()['.internals']['.args'].pop(0)"
+                try_set(depths.get(depth_total, None), -1, len(lines))
                 lines += unpack_adjust(line.strip())
             line = ""
     if operator:
         final_line += " " + operator
-    return line, lines, final_line, named
-
-
-def try_delete(depths: dict, depth_total: int) -> None:
-    """Resusable function specific to unpack for updating the depths dict"""
-    if depth_total in depths:
-        del depths[depth_total]
+    return line, lines, final_line, named, depths
 
 
 def unpack(
@@ -466,6 +462,9 @@ def unpack(
     """
     Unpacks value yields from a line into a
     list of lines going towards its right side
+
+    Note:
+    depths = {index of the last depth, bracket, equals position, comma position, lines indexes}
     """
     if line is None:
         line_iter = empty_generator()
@@ -484,7 +483,8 @@ def unpack(
         prev,
         operator,
         bracket_index,
-    ) = (0, 0, -1, [], "", "", "", (0, 0, ""), 0, None)
+        in_ternary_else,
+    ) = (0, 0, -1, [], "", "", "", (0, 0, ""), 0, None, False)
     indented = True
     if not unwrapping:
         indented = False
@@ -501,7 +501,7 @@ def unpack(
             line, space, indented = singly_space(end_index, char, line, space, indented)
         ## dictionary assignment ##
         elif char == "[" and prev[-1] not in (" ", ""):
-            line, lines, final_line, named = update_lines(
+            line, lines, final_line, named, depths = update_lines(
                 line + char,
                 lines,
                 final_line,
@@ -519,9 +519,14 @@ def unpack(
                 space = end_index
         ## splitting operators ##
         elif char in operators:
+
+            ## maybe replace operator with next_char ##
+
             ## since we can have i.e. ** or %= etc. ##
             if end_index - 1 != operator:
-                line, lines, final_line, named = update_lines(
+                if char == "=":
+                    try_set(depths.get(depth_total, None), 2, None)
+                line, lines, final_line, named, depths = update_lines(
                     line,
                     lines,
                     final_line,
@@ -533,40 +538,47 @@ def unpack(
                     depths=depths,
                 )
             else:
+                key = {"=": 2, ",": 3}.get(char, None)
+                try_set(depths.get(depth_total, None), key, end_index)
                 final_line += char
             operator = end_index
         ## split and break condition ##
         elif depth == 0 and char in "#:;\n":
             if char == ":":
                 line += ":"
+            if in_ternary_else:
+                pass
             break
         elif char == ":":  ## must be a named expression if depth is not zero ##
-            line, lines, final_line, named = named_adjust(
+            line, lines, final_line, depths = named_adjust(
                 line,
                 lines,
                 final_line,
                 line_iter,
                 ID,
                 source,
-                index=end_index,
-                unwrapping=unwrapping,
-                depth_total=depth_total,
-                depths=depths,
+                end_index,
+                depth_total,
+                depths,
             )
             named = False
             ## since we're going to skip some chars ##
             ID, prev = "", prev[:-1] + (char,)
             depth -= 1
-            try_delete(depths, depth_total)
+            depths.pop(depth_total, None)
             depth_total -= 1
             continue
         else:
             ## record the current depth ##
             if char in "([{":
                 depth_total += 1
-                depths[depth] = (end_index, char)
+                depths[depth] = [end_index, char, None, None, None]
+                if char == "(":
+                    depth += 1
+                    ## the index is in relation to the current line ##
+                    bracket_index = len(line)
             elif char in ")}]":
-                try_delete(depths, depth_total)
+                depths.pop(depth_total, None)
                 depth_total -= 1
                 if (
                     unwrapping
@@ -574,90 +586,37 @@ def unpack(
                     or char != inverse_bracket(depths.get(depth_total, (0, ""))[1])
                 ):
                     line += char
+                    if in_ternary_else:
+                        pass
                     break
-            if char == "(":
-                depth += 1
-                ## the index is in relation to the current line ##
-                bracket_index = len(line)
-            elif char == ")":
-                depth -= 1
+                if char == ")":
+                    depth -= 1
             ## check for unwrapping/updating ##
             if char.isalnum():
                 ## in case of ... ... (otherwise you keep appending the ID) ##
                 if space + 1 == end_index:
                     ID = ""
                 ID += char
-                next_char = source[end_index + 1 : end_index + 2]
-                adjusted = False
-                if ID == "lambda" and next_char in " :\\":
-                    char, lines = collect_lambda(line, source_iter, source, (0, 0, ""))
-                    adjusted = True
-                ## unwrapping ##
-                elif depth and ID == "yield" and next_char in " )]}\n;\\":
-                    ## what should happen when we unwrap? ##
-                    ## go from the last bracket onwards for the replacement ##
-                    line, lines, final_line, named = update_lines(
-                        line,
-                        lines,
-                        final_line,
-                        named,
-                        line_iter,
-                        bracket_index,
-                        yielding=True,
-                        source=source,
-                        index=end_index,
-                        depth_total=depth_total,
-                        depths=depths,
-                    )
-                    bracket_index = None
-                    adjusted = True
-                    ## since the unwrapping will accumulate up to the next bracket this ##
-                    ## will go unrecorded on this stack frame recieving but recorded and ##
-                    ## garbage collected on the recursed stack frame used on unwrapping ##
-                    depth -= 1
-                    try_delete(depths, depth_total)
-                    depth_total -= 1
-                    continue  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
-                elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
-                    line, lines, final_line, named = update_lines(
-                        line,
-                        lines,
-                        final_line,
-                        named,
-                        operator=ID,
-                        source=source,
-                        index=end_index,
-                        depth_total=depth_total,
-                        depths=depths,
-                    )
-                    adjusted = True
-                ## adjust for ternary statements ##
-                elif unwrapping and ID in ("if", "else"):
-                    pass
-                ## I don't think you can have a value yield in a 'case' statement otherwise this too is in here ##
-                elif ID in ("if", "elif", "while", "for") and next_char in " :\\":
-                    ## i.e. ID='while' will have 'whil' but no 'e' since the char has not been added ##
-                    temp_line = line[: -len(ID) + 1]
-                    if ID == "if" and temp_line.lstrip():
-                        line, lines, final_line, named = update_lines(
-                            line,
-                            lines,
-                            final_line,
-                            named,
-                            line_iter,
-                            bracket_index,
-                            source=source,
-                            index=end_index,
-                            depth_total=depth_total,
-                            depths=depths,
-                        )
-                    else:
-                        final_line += ID + " "
-                        line = temp_line
-                    adjusted = True
+                adjusted, line, lines, final_line, named, depth, depth_total = check_ID(
+                    ID,
+                    source_iter,
+                    source,
+                    line_iter,
+                    source[end_index + 1 : end_index + 2],
+                    end_index,
+                    depths,
+                    unwrapping,
+                    line,
+                    lines,
+                    final_line,
+                    named,
+                    bracket_index,
+                    depth,
+                    depth_total,
+                )
                 if adjusted:
                     ID, prev = "", prev[:-1] + (char,)
-                    del next_char, adjusted
+                    del adjusted
                     continue
             else:
                 ID = ""
@@ -666,6 +625,104 @@ def unpack(
     if line:
         final_line += line
     return lines, final_line, end_index
+
+
+def check_ID(
+    ID: str,
+    source_iter: Iterable,
+    source: str,
+    line_iter: Iterable,
+    next_char: str,
+    end_index: int,
+    depths: dict,
+    unwrapping: bool,
+    line: str,
+    lines: list[str],
+    final_line: str,
+    named: bool,
+    bracket_index: int,
+    depth: int = 0,
+    depth_total: int = 0,
+) -> tuple[str, bool, bool]:
+    adjusted = False
+    if ID == "lambda" and next_char in " :\\":
+        _, lines = collect_lambda(line, source_iter, source, (0, 0, ""))
+        adjusted = True
+    ## unwrapping ##
+    elif depth and ID == "yield" and next_char in " )]}\n;\\":
+        ## what should happen when we unwrap? ##
+        ## go from the last bracket onwards for the replacement ##
+        line, lines, final_line, named, depths = update_lines(
+            line,
+            lines,
+            final_line,
+            named,
+            line_iter,
+            bracket_index,
+            yielding=True,
+            source=source,
+            index=end_index,
+            depth_total=depth_total,
+            depths=depths,
+        )
+        bracket_index = None
+        ## since the unwrapping will accumulate up to the next bracket this ##
+        ## will go unrecorded on this stack frame recieving but recorded and ##
+        ## garbage collected on the recursed stack frame used on unwrapping ##
+        depth -= 1
+        depths.pop(depth_total, None)
+        depth_total -= 1
+        adjusted = True  ## to avoid: line += char (we include it in the final_line as the operator or in unwrapping)
+    elif 1 < len(ID) < 4 and ID in ("and", "or", "is", "in"):
+        line, lines, final_line, named = update_lines(
+            line,
+            lines,
+            final_line,
+            named,
+            operator=ID,
+            source=source,
+            index=end_index,
+            depth_total=depth_total,
+            depths=depths,
+        )
+        adjusted = True
+    ## adjust for ternary statements ##
+    elif ID == "if" and unwrapping:
+        ## adjust the lines ##
+        # print(line)
+        # print("//////////////")
+        pass
+    elif ID == "else" and unwrapping:
+        ## adjust for the if statement that will have just been adjusted ##
+        # lines = ternary_adjust(lines, ...)
+        in_ternary_else = True
+    ## I don't think you can have a value yield in a 'case' statement otherwise this too is in here ##
+    elif (
+        next_char in " :\\" and 1 < len(ID) < 6 and ID in ("if", "elif", "while", "for")
+    ):
+        ## i.e. ID='while' will have 'whil' but no 'e' since the char has not been added ##
+        temp_line = line[: -len(ID) + 1]
+        if ID == "if" and temp_line.lstrip():
+            # 1. once you hit an if make sure the unpacking of it and itself
+            ## comes before the last unpacking
+            # 2. else statements just get added to the new lines
+            line, lines, final_line, named, depths = update_lines(
+                line,
+                lines,
+                final_line,
+                named,
+                line_iter,
+                bracket_index,
+                source=source,
+                index=end_index,
+                depth_total=depth_total,
+                depths=depths,
+            )
+        else:
+            final_line += ID + " "
+            line = temp_line
+        adjusted = True
+    return adjusted, line, lines, final_line, named, depth, depth_total
 
 
 def collect_definition(
