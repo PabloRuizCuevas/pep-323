@@ -170,12 +170,6 @@ def test_inverse_bracket():
     assert_cases(inverse_bracket, *compare[:3], compare=compare[3:][::-1])
 
 
-def test_try_delete() -> None:
-    dct = {0: (None, "(")}
-    try_delete(dct, 0)
-    assert dct.get(0, None) is None
-
-
 def test_unpack() -> None:
     """
     Note:
@@ -838,8 +832,7 @@ test_collect_string()
 test_collect_multiline_string()
 test_string_collector_proxy()
 test_inverse_bracket()
-## tested in test_unpack: named_adjust, unpack_adjust, update_lines
-test_try_delete()
+## tested in test_unpack: named_adjust, unpack_adjust, update_lines, check_ID
 test_unpack()
 test_collect_definition()
 test_is_alternative_statement()
