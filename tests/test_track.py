@@ -41,20 +41,14 @@ def test_track_iter_inside_Generator() -> None:
 
     @Generator
     def test2():
-        yield 1
         for i in range(3):
             yield i
 
     gen = test2()
     next(gen)
-    next(gen)
     gen2 = gen.copy()
     assert next(gen._locals()[".internals"][".4"]) == 1
     assert next(gen2._locals()[".internals"][".4"]) == 1
-    ## need to fix the loops for some reason it's not being picked up when the loop starts ##
-    ## on the first line? But it does work if line 1 is i.e. yield 1 like in test_custom_generator ##
-    # print(gen._internals["state"])
-    # print(gen._internals["jump_positions"])
 
 
 ## Note: instance checks will fail because of the monkey patching i.e.    ##
