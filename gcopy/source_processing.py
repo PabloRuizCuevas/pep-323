@@ -1358,7 +1358,8 @@ def outer_loop_adjust(
             if temp_line[number_of_indents:].startswith("for "):
                 block[0] = iter_adjust(temp_line, number_of_indents)
         blocks += indent_lines(block, 4 - number_of_indents)
-        indexes += list(range(start_pos, end_pos))
+        ## we need to add 1 to the end position since it's 0 based ( e.g. to be inclusive) ##
+        indexes += list(range(start_pos, end_pos + 1))
     return blocks + source_lines[end_pos:], indexes
 
 
