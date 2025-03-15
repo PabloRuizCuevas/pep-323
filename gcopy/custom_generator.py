@@ -692,10 +692,10 @@ class Generator(Pickler):
         if loops:
             start_pos, end_pos = loops.pop()
             ## adjustment ##
-            blocks, indexes = [], []
-            if index < end_pos:
+            blocks, indexes = self._internals["source_lines"][index:end_pos], []
+            if index < end_pos and blocks:
                 blocks, indexes = control_flow_adjust(
-                    self._internals["source_lines"][index:end_pos],
+                    blocks,
                     list(range(index, end_pos)),
                     get_indent(self._internals["source_lines"][start_pos]),
                 )
@@ -725,7 +725,7 @@ class Generator(Pickler):
         self._internals["frame"].f_locals since this method
         initializes other internally used variables for the frame
         """
-        return self._internals["frame"].f_locals
+        return self._internals["frame"].f_locals | currentframe().f_back.f_locals
 
     def _frame_init(
         self, exception: str = "", close: bool = False, sending=False
@@ -992,23 +992,29 @@ class Generator(Pickler):
             #### update lineno ####
 
             ## update the frames lineno in accordance with its state ##
-            _frame.f_lineno = _frame.f_lineno - init_length
-            self._internals["loops"] = get_loops(
-                _frame.f_lineno + 1, self._internals["jump_positions"]
-            )
-            ## update the lineno in accordance with the linetable ##
-            if len(self._internals["linetable"]) > _frame.f_lineno:
-                ## +1 to get the next lineno after returning ##
-                self._internals["lineno"] = (
-                    self._internals["linetable"][_frame.f_lineno] + 1
-                )
-            elif self._internals["loops"]:
-                self._internals["lineno"] = _frame.f_lineno + 1
-            else:
+            adjusted_lineno = _frame.f_lineno - init_length - 1
+            end_index = len(self._internals["linetable"]) - 1
+            ## empty linetable ##
+            if end_index == -1:
                 ## EOF ##
                 self._internals["state"] = None
                 self._internals["lineno"] = len(self._internals["source_lines"])
-
+            else:
+                self._internals["lineno"] = (
+                    self._internals["linetable"][adjusted_lineno] + 1
+                )
+                loops = self._internals["loops"] = get_loops(
+                    self._internals["lineno"], self._internals["jump_positions"]
+                )
+                if not loops:
+                    if end_index > adjusted_lineno:
+                        self._internals["lineno"] += 1
+                    else:
+                        ## EOF ##
+                        self._internals["state"] = None
+                        self._internals["lineno"] = len(self._internals["source_lines"])
+                elif self._internals["lineno"] < loops[-1][1]:
+                    self._internals["lineno"] += 1
         else:
             ## exception was raised e.g. _frame == frame() ##
             self._internals["state"] = None
