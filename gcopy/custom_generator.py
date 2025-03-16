@@ -778,6 +778,8 @@ class Generator(Pickler):
             else:
                 ## initialize variables for the frame ##
                 f_locals[".internals"].update({".send": None})
+        ## make sure if it has a closure that it's updating the locals ##
+        f_locals.update(get_nonlocals(self))
         name = self._internals.get("name", "next_state")
         ## adjust the initializers ##
         indent = " " * 4
@@ -793,7 +795,7 @@ class Generator(Pickler):
         ]
         ## make sure variables are initialized ##
         for key in f_locals:
-            if isinstance(key, str) and key.isalnum() and key != "locals":
+            if isinstance(key, str) and key.isidentifier() and key != "locals":
                 init += [
                     " " * 4
                     + "%s=locals()['.internals']['.self']._locals()[%s]"
@@ -892,7 +894,7 @@ class Generator(Pickler):
             else:
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
-                    self._internals["code"] = code(FUNC.__code__)
+                    self.__code__ = self._internals["code"] = code(FUNC.__code__)
                     ## since it's uninitialized we can bind the signature to __call__ ##
                     ## and overwrite the __call__ signature + other metadata with the functions ##
                     self._internals["binding"] = binding(FUNC)
