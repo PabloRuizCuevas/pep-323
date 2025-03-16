@@ -45,7 +45,8 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
             if frame.f_code.co_filename == "<Generator>":
                 source = frame.f_back.f_locals["self"].__source__
                 code_context = source[frame.f_lineno - 1]
-                f_locals = frame.f_locals["locals"]()
+                ## we have to do it this way since '.internals' is not initiailized in the current f_locals ##
+                f_locals = frame.f_locals[".internals"][".self"]._locals()
             else:
                 code_context = getframeinfo(frame).code_context[0]
         key = get_indent(code_context)
