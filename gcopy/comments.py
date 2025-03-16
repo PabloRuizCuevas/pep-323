@@ -4,7 +4,6 @@ TODO:
   1. implement ternary statement handling in unpack
   2. finish testing
 
-
     Currently not working (_clean_source_lines):
      - some value yields in f-strings in statements
      - ternary expressions with and without value yields
@@ -29,18 +28,10 @@ TODO:
          - ternary statements with and without value yields
          - check collect_lambda
 
-      - reseting a generator is possible but no gurantees are made on saving the initial f_locals
-        including nonlocals e.g. closure cells. - maybe copy over the __closure__ cells
-
-        Other testing:
-        Make sure track_iter is tested in application with generators and generator expresssions
-
         Non-priority (at the moment) but will be needed later:
         - When do i.e. gi_running and gi_suspended change?
         - check all the documentation + docstrings
         - remove any unncesesary code, comments etc.
-        - maybe export all the cleaning stuff to a cleaner class so the Generator class is
-          only Generator related. Same might be desired with the code adjustments maybe
 
 
     Expansion to other types of generators:
@@ -82,4 +73,7 @@ TODO:
     has a binding to a closure the copied generator will be independent of it e.g. removing
     the closure binding and retaining it's version in the state it was copied from.
 
+  - no reinitializing supported. It's expected that users either have a function that acts
+    as a factory pattern or may copy the generator after initializing e.g. cannot use __call__
+    on an initialized generator.
 """
