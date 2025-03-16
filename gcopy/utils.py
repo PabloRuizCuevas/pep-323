@@ -122,45 +122,6 @@ def chain(*iterators: tuple[Iterable]) -> GeneratorType:
             yield value
 
 
-class binding:
-    """
-    To make Signature types pickleable (this class is only needed for binding)
-
-    Note: ensure default args are pickleable if wanting to pickle
-    """
-
-    _bound_arguments_cls = BoundArguments
-
-    def __init__(self, FUNC: FunctionType) -> None:
-        self.parameters = signature(FUNC).parameters
-
-    def __getstate__(self) -> dict:
-        return {
-            "keys": tuple(self.parameters.keys()),
-            "values": tuple(self.parameters.values()),
-        }
-
-    def __setstate__(self, state: dict) -> None:
-        self.parameters = OrderedDict(zip(state["keys"], state["values"]))
-
-    def bind(self, *args, **kwargs) -> BoundArguments:
-        """Convenience method to get the signature"""
-        return Signature._bind(self, args, kwargs)
-
-    @property
-    def signature(self) -> Signature:
-        """Convenience method to get the signature if desired"""
-        return Signature(self.parameters.values())
-
-    def __repr__(self) -> str:
-        return repr(self.signature)
-
-    def __eq__(self, obj: Any) -> bool:
-        if hasattr(obj, "parameters") and isinstance(obj, binding):
-            return obj.parameters == self.parameters
-        return False
-
-
 def get_nonlocals(FUNC: FunctionType) -> dict:
     """Gets the nonlocals or closure variables of a function"""
     cells = getattr(FUNC, "__closure__", [])
