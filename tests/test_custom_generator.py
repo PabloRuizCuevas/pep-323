@@ -105,12 +105,15 @@ def test_generator_pickle() -> None:
     gen3 = gen.copy()
     assert next(gen) == next(gen2) == next(gen3)
     assert next(gen) == next(gen2) == next(gen3)
+    prefix = gen._internals["prefix"]
+    for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+        assert hasattr(gen2, prefix + key)
 
 
 def test_generator_custom_adjustment() -> None:
     gen = Generator()
     gen._internals["lineno"] = 0
-    test = gen._custom_adjustment
+    test = partial(custom_adjustment, gen)
     ## yield ##
     assert test("yield ... ") == ["return ... "]
     ## yield from ##
@@ -146,11 +149,11 @@ def test_generator_update_jump_positions() -> None:
     gen._internals["lineno"] += 1  ## it won't occur on the same lineno ##
     ## only positions ##
     # with reference indent #
-    assert gen._update_jump_positions([], 4) == []
+    assert update_jump_positions(gen, [], 4) == []
     assert gen._internals["jump_positions"] == [[1, None], [1, None]]
     assert gen._internals["jump_stack"] == [(0, 0), (0, 1)]
     # without reference indent #
-    assert gen._update_jump_positions([]) == []
+    assert update_jump_positions(gen, []) == []
     assert gen._internals["jump_positions"] == [[1, 2], [1, 2]]
     assert gen._internals["jump_stack"] == []
     ## with stack adjuster ##
@@ -159,7 +162,7 @@ def test_generator_update_jump_positions() -> None:
     new_lines = ["    pass", "    for i in range(3)", "        pass"]
     gen._internals["jump_stack_adjuster"] = [[1, new_lines]]
     ## check: lines, lineno, linetable, jump_positions, jump_stack_adjuster ##
-    assert gen._update_jump_positions([]) == new_lines
+    assert update_jump_positions(gen, []) == new_lines
     assert gen._internals["jump_stack_adjuster"] == []
     ## since we're on lineno == 2 the new_lines will be 3, 4, 5 ##
     assert gen._internals["linetable"] == [3, 4, 5]
@@ -171,7 +174,8 @@ def test_generator_append_line() -> None:
 
     def test(start: int, index: int, indentation: int = 0) -> None:
         source = "    print('hi')\n    print('hi');\nprint('hi')\n    def hi():\n        print('hi')\n print() ## comment\n    if True:"
-        return gen._append_line(
+        return append_line(
+            gen,
             index,
             source[index],
             source,
@@ -186,7 +190,7 @@ def test_generator_append_line() -> None:
     ## empty line ##
 
     gen = setup()
-    assert gen._append_line(0, "", "", "", "", "", [], 0, 0) == (
+    assert append_line(gen, 0, "", "", "", "", "", [], 0, 0) == (
         0,
         "",
         [],
@@ -195,7 +199,7 @@ def test_generator_append_line() -> None:
         0,
         0,
     )
-    assert gen._append_line(0, "", "", "", "", "         ", [], 0, 0) == (
+    assert append_line(gen, 0, "", "", "", "", "         ", [], 0, 0) == (
         0,
         "",
         [],
@@ -234,8 +238,8 @@ def test_generator_block_adjust() -> None:
     gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
     ## if ##
     ## Note: definitions fall under the same as if statements ##
-    test = lambda line, current=[]: gen._block_adjust(
-        current, *unpack(source_iter=enumerate(line))[:-1]
+    test = lambda line, current=[]: block_adjust(
+        gen, current, *unpack(source_iter=enumerate(line))[:-1]
     )
     assert test("    if     (yield 3):\n        return 4\n") == [
         "    return  3",
@@ -305,13 +309,13 @@ def test_generator_string_collector_adjust() -> None:
         line = source[line_start:start]
         source_iter = enumerate(source[start:], start=start)
         print(
-            gen._string_collector_adjust(
-                *next(source_iter), (0, 0, ""), source_iter, line, source, []
+            string_collector_adjust(
+                gen, *next(source_iter), (0, 0, ""), source_iter, line, source, []
             )
         )
         assert (
-            gen._string_collector_adjust(
-                *next(source_iter), (0, 0, ""), source_iter, line, source, []
+            string_collector_adjust(
+                gen, *next(source_iter), (0, 0, ""), source_iter, line, source, []
             )
             == answer
         )
@@ -634,6 +638,7 @@ def test_generator__init__() -> None:
 
     assert gen.__call__.__annotations__ == test2.__annotations__
     assert gen.__call__.__doc__ == test2.__doc__
+    assert get_nonlocals(gen.__closure__) == get_nonlocals(test2.__closure__)
 
 
 def test_generator__call__() -> None:
