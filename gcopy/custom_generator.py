@@ -725,18 +725,22 @@ class Generator(Pickler):
         self._internals["frame"].f_locals since this method
         initializes other internally used variables for the frame
         """
-        return self._internals["frame"].f_locals | currentframe().f_back.f_locals
+        return self._internals["frame"].f_locals
 
     def _frame_init(
         self, exception: str = "", close: bool = False, sending=False
-    ) -> tuple[list[str], FunctionType]:
+    ) -> tuple[int, FunctionType]:
         """
         initializes the frame with the current
         states variables and the _locals proxy
         but also adjusts the current state
         """
-        # set the next state and setup the function; it will raise a StopIteration for us
-        next(self._internals["state_generator"])
+        try:
+            # set the next state and setup the function; it will raise a StopIteration for us
+            next(self._internals["state_generator"])
+        except StopIteration as e:
+            self._close()
+            raise e
         ## adjust the current state ##
         if close:
             self._internals["state"] = exit_adjust(self._internals["state"])
@@ -762,6 +766,8 @@ class Generator(Pickler):
         ## initialize the internal locals ##
         f_locals = self._internals["frame"].f_locals
         if not sending:
+            ## we can have this inside the not sending clause since .send is
+            ## used only when the generator has been initialized ##
             if ".internals" not in f_locals:
                 f_locals[".internals"] = {
                     "exec_info": exc_info,
@@ -774,15 +780,26 @@ class Generator(Pickler):
                 f_locals[".internals"].update({".send": None})
         name = self._internals.get("name", "next_state")
         ## adjust the initializers ##
+        indent = " " * 4
         init = [
             self._internals["version"] + "def %s():" % name,
-            " " * 4 + "locals=currentframe().f_back.f_locals['self']._locals",
+            ## get the variables to update the frame
+            indent + "frame = currentframe()",
+            indent + "self = frame.f_back.f_locals['self']",
+            indent + "self._locals()['.internals']['.frame'] = frame",
+            indent + "locals().update(self._locals())",
+            indent + "locals()['.internals']['.self'] = self",
+            indent + "del frame, self",
         ]
+        ## make sure variables are initialized ##
         for key in f_locals:
             if isinstance(key, str) and key.isalnum() and key != "locals":
-                init += [" " * 4 + "%s=locals()[%s]" % (key, repr(key))]
+                init += [
+                    " " * 4
+                    + "%s=locals()['.internals']['.self']._locals()[%s]"
+                    % (key, repr(key))
+                ]
         ## needs to be added if not already there so it can be appended to ##
-        init += ["    currentframe().f_back.f_locals['.frame']=currentframe()"]
         ## try not to use variables here (otherwise it can mess with the state); ##
         ## 'return EOF()' is appended to help return after a loop ##
         ######################################################################
@@ -791,8 +808,7 @@ class Generator(Pickler):
         self.__source__ = init + self._internals["state"] + ["    return EOF()"]
         code_obj = compile("\n".join(self.__source__), "<Generator>", "exec")
         exec(code_obj, globals(), locals())
-        self._internals["running"] = True
-        return init, locals()[name]
+        return len(init), locals()[name]
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
@@ -949,75 +965,70 @@ class Generator(Pickler):
     ) -> Any:
         """updates the current state and returns the result"""
         ## update with the new state and get the frame ##
-        init, next_state = self._frame_init(exception, close, sending)
+        init_length, next_state = self._frame_init(exception, close, sending)
         try:
+            self._internals["running"] = True
             result = next_state()
             if isinstance(result, EOF):
                 raise result
-            return result
         except Exception as e:
             self._close()
-            locals()[".frame"] = None
             raise e
-        finally:
-            self._update(locals()[".frame"], len(init))
-
-    def _update(self, _frame: FrameType, init_length: int) -> None:
-        """Update the line position and frame"""
         self._internals["running"] = False
+        self._update(init_length)
+        return result
 
-        ### update the frame ###
+    def _update(self, init_length: int) -> None:
+        """Update the line position and frame"""
+        _frame = self._internals["frame"] = frame(
+            self._locals()[".internals"][".frame"]
+        )
 
-        f_back = self._internals["frame"]
-        if _frame:
+        #### update f_locals ####
 
-            #### update f_locals ####
+        ## '.send' reference is not needed ##
 
-            _frame = self._internals["frame"] = frame(_frame)
-            ## remove 'locals' variable from memory since it interferes with pickling ##
-            del _frame.f_locals["locals"]
-            ## '.send' reference is not needed ##
-            if ".internals" in _frame.f_locals:
-                _frame.f_locals[".internals"].pop(".send", None)
-                if ".yieldfrom" in _frame.f_locals[".internals"]:
-                    self._internals["yieldfrom"] = _frame.f_locals[".internals"][
-                        ".yieldfrom"
-                    ]
+        f_locals = _frame.f_locals
+        ## remove 'locals' variable from memory since it interferes with pickling ##
+        f_locals.pop("locals", None)
+        ## update the send and frame ##
+        if ".internals" in f_locals:
+            f_locals[".internals"].pop(".send", None)
+            f_locals[".internals"].pop(".frame", None)
+            f_locals[".internals"].pop(".self", None)
 
-            if hasattr(f_back, "f_locals"):
-                ## make sure the new frames locals are on the right hand side to take presedence ##
-                _frame.f_locals = f_back.f_locals | _frame.f_locals
-            _frame.f_back = f_back
+        ## update the f_locals ##
 
-            #### update lineno ####
+        _frame.f_back = None
+        if ".yieldfrom" in _frame.f_locals[".internals"]:
+            self._internals["yieldfrom"] = _frame.f_locals[".internals"][".yieldfrom"]
 
-            ## update the frames lineno in accordance with its state ##
-            adjusted_lineno = _frame.f_lineno - init_length - 1
-            end_index = len(self._internals["linetable"]) - 1
-            ## empty linetable ##
-            if end_index == -1:
-                ## EOF ##
-                self._internals["state"] = None
-                self._internals["lineno"] = len(self._internals["source_lines"])
-            else:
-                self._internals["lineno"] = (
-                    self._internals["linetable"][adjusted_lineno] + 1
-                )
-                loops = self._internals["loops"] = get_loops(
-                    self._internals["lineno"], self._internals["jump_positions"]
-                )
-                if not loops:
-                    if end_index > adjusted_lineno:
-                        self._internals["lineno"] += 1
-                    else:
-                        ## EOF ##
-                        self._internals["state"] = None
-                        self._internals["lineno"] = len(self._internals["source_lines"])
-                elif self._internals["lineno"] < loops[-1][1]:
-                    self._internals["lineno"] += 1
-        else:
-            ## exception was raised e.g. _frame == frame() ##
+        #### update lineno ####
+
+        ## update the frames lineno in accordance with its state ##
+        adjusted_lineno = _frame.f_lineno - init_length - 1
+        end_index = len(self._internals["linetable"]) - 1
+        ## empty linetable ##
+        if end_index == -1:
+            ## EOF ##
             self._internals["state"] = None
+            self._internals["lineno"] = len(self._internals["source_lines"])
+        else:
+            self._internals["lineno"] = (
+                self._internals["linetable"][adjusted_lineno] + 1
+            )
+            loops = self._internals["loops"] = get_loops(
+                self._internals["lineno"], self._internals["jump_positions"]
+            )
+            if not loops:
+                if end_index > adjusted_lineno:
+                    self._internals["lineno"] += 1
+                else:
+                    ## EOF ##
+                    self._internals["state"] = None
+                    self._internals["lineno"] = len(self._internals["source_lines"])
+            elif self._internals["lineno"] < loops[-1][1]:
+                self._internals["lineno"] += 1
 
     def send(self, arg: Any) -> Any:
         """
@@ -1033,6 +1044,7 @@ class Generator(Pickler):
         self._internals.update(
             {
                 "state_generator": empty_generator(),
+                "state": None,
                 "frame": None,
                 "running": False,
                 "suspended": False,
