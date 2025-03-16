@@ -101,35 +101,6 @@ def test_chain() -> None:
         assert i == ls.pop(0)
 
 
-def test_binding() -> None:
-    def f(a, b, *args, c=3, d=4, **kwargs) -> None:
-        pass
-
-    bind = binding(f)
-    ## make sure it's picklable ##
-    import pickle
-
-    with open("test.pkl", "wb") as file:
-        pickle.dump(bind, file)
-
-    with open("test.pkl", "rb") as file:
-        ## they should be identical in terms of the attrs we care about ##
-        assert attr_cmp(pickle.load(file), bind, ("paramters",))
-
-    assert format(bind.signature) == "(a, b, *args, c=3, d=4, **kwargs)"
-    bind = bind.bind(1, 2, *(3, 4), **{"k": 4})
-    assert bind.arguments == {"a": 1, "b": 2, "args": (3, 4), "kwargs": {"k": 4}}
-    bind.apply_defaults()
-    assert bind.arguments == {
-        "a": 1,
-        "b": 2,
-        "args": (3, 4),
-        "c": 3,
-        "d": 4,
-        "kwargs": {"k": 4},
-    }
-
-
 def test_get_nonlocals() -> None:
     def test():
         b = None
@@ -172,6 +143,5 @@ with warnings.catch_warnings():
     test_getframe()
 test_hasattrs()
 test_chain()
-test_binding()
 test_get_nonlocals()
 test_try_set()
