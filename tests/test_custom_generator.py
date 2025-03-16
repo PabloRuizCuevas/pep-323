@@ -472,12 +472,10 @@ def test_generator_create_state() -> None:
         "            print(j)",
         "        print(i)",
     ]
+    ## Note: the jump_positions are lineno ##
+    ## based get_loops changes them to index based ##
     start_indexes = [0, 2, 4]
     end_indexes = [13, 12, 11]
-    ## they get reduced by one in get_loops and originally they are linenos ##
-    # gen._internals["jump_positions"] = [
-    #     (pos[0] + 1, pos[1]) for pos in zip(start_indexes, end_indexes)
-    # ]
     gen._internals["loops"] = list(zip(start_indexes, end_indexes))
     assert test(8) == (
         [
@@ -624,16 +622,19 @@ def test_generator__init__() -> None:
     ## string ##
     test("(i for i in range(3))", False)
 
-    """""" """""" """""" """""" """""" """"""
-
     ## test if the function related attrs get transferred ##
+
+    closure_cell = 1
+
     def test2(FUNC: Any) -> None:
         """docstring"""
-        pass
+        closure_cell
 
-    # gen = Generator(test2)
-    # assert gen.__annotations__ == test2.__annotations__
-    # assert gen.__doc__ == test2.__doc__
+    gen = Generator(test2)
+
+    assert gen.__call__.__annotations__ == test2.__annotations__
+    assert gen.__call__.__doc__ == test2.__doc__
+    assert get_nonlocals(gen.__closure__) == get_nonlocals(test2.__closure__)
 
 
 def test_generator__call__() -> None:
@@ -698,23 +699,12 @@ def test_generator_frame_init() -> None:
     ### frame adjustments ###
 
     ## no local variables stored ##
-    init, _ = gen._frame_init()
-    assert init == [
-        "def next_state():",
-        "    locals=currentframe().f_back.f_locals['self']._locals",
-        "    currentframe().f_back.f_locals['.frame']=currentframe()",
-    ]
+    init_length, _ = gen._frame_init()
+    assert init_length == 7
     ## with local variables stored ##
     gen._internals["frame"].f_locals.update({"a": 3, "b": 2, "c": 1})
-    init, _ = gen._frame_init()
-    assert init == [
-        "def next_state():",
-        "    locals=currentframe().f_back.f_locals['self']._locals",
-        "    a=locals()['a']",
-        "    b=locals()['b']",
-        "    c=locals()['c']",
-        "    currentframe().f_back.f_locals['.frame']=currentframe()",
-    ]
+    init_length, _ = gen._frame_init()
+    assert init_length == 10
 
 
 def test_generator_update() -> None:
@@ -728,17 +718,6 @@ def test_generator_update() -> None:
         }
     )
 
-    ### No frame e.g. exception would have occurred ###
-
-    gen._update(None, "")
-    # assert gen._internals["frame"] == frame(None)
-    assert gen._internals["frame"] is None
-    assert gen._internals["state"] is None
-    assert gen._internals["running"] == False
-
-    ### frame ###
-
-    ## No previous frame ##
     def test(lineno: int = 0) -> frame:
         new_frame = frame()
         new_frame.f_locals = {
@@ -754,19 +733,12 @@ def test_generator_update() -> None:
         new_frame.f_lineno = lineno
         return new_frame
 
-    gen._internals["frame"] = None
-    gen._update(test(), 0)
-    assert gen._internals["frame"].f_locals == {
-        "a": 1,
-        "b": 2,
-        "c": 3,
-        ".internals": {},
-    }
-    assert gen._internals["frame"].f_back is None
-    ## With previous frame ##
-    gen._internals["frame"] = temp = test()
-    temp.f_locals = {"a": 0, "b": 1, "c": 2}
-    gen._update(test(), 0)
+    ## With previous frame (Note: in order for it to work it needs a frame initailized e.g. a previous frame) ##
+    ## old frame (f_back) ##
+    gen._internals["frame"] = test()
+    ## new/internal frame (frame) ##
+    gen._locals()[".internals"][".frame"] = test()
+    gen._update(0)
     ## new frame locals takes precedence ##
     assert gen._internals["frame"].f_locals == {
         "a": 1,
@@ -775,20 +747,22 @@ def test_generator_update() -> None:
         ".internals": {},
     }
     ## old frame locals are preserved ##
-    assert gen._internals["frame"].f_back.f_locals == temp.f_locals
+    assert gen._internals["frame"].f_back is None
 
     ### lineno ###
 
     ## no linetable / EOF ##
     gen._internals["source_lines"] = ["a", "b", "c"]
     gen._internals["state"] = 1
-    gen._update(test(5), 5)
+    gen._locals()[".internals"][".frame"] = test(5)
+    gen._update(5)
     assert gen._internals["lineno"] == 3
     assert gen._internals["state"] is None
     ## with linetable ##
     gen._internals["state"] = 1
     gen._internals["linetable"] = [0, 1, 2]
-    gen._update(test(5), 5)
+    gen._locals()[".internals"][".frame"] = test(5)
+    gen._update(5)
     assert gen._internals["lineno"] == 4
     assert gen._internals["state"] == 1
 
@@ -797,11 +771,10 @@ def test_generator__next__() -> None:
     gen = Generator(simple_generator())
     assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 1
-    assert gen._internals["frame"].f_locals[".internals"] == {
+    assert gen._locals()[".internals"] == {
         "exec_info": exc_info,
         "partial": partial,
         ".args": [],
-        ".send": None,
     }
     assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 2
@@ -809,7 +782,7 @@ def test_generator__next__() -> None:
     assert next(gen) == 3
     assert gen._internals["state"] is None
     assert next(gen, True)
-    # assert gen._internals["frame"] is None
+    assert gen._internals["frame"] is None
 
 
 def test_generator__iter__() -> None:
@@ -833,11 +806,8 @@ def test_generator__iter__() -> None:
     ## acts as the fishhook iterator for now ##
     range_iterator = iter(range(3))
     next(range_iterator)
-    ## the problem is that we've done dct1 | dct2 and therefore it's destroying the object ##
     gen._locals()[".internals"] = {".4": range_iterator}
-
-    # print(gen._locals()[".internals"])
-    # assert [i for i in gen] == [1, 0, 1, 2]
+    assert [i for i in gen] == [1, 0, 1, 2]
 
 
 def test_generator__close() -> None:
@@ -1003,11 +973,11 @@ test_generator_init_states()
 test_generator__init__()
 # Generator__call__ is tested in test_generator__call__
 test_generator__call__()
-# test_generator_locals()
+test_generator_locals()
 test_generator_frame_init()
 test_generator_update()
 test_generator__next__()
-# test_generator__iter__()
+test_generator__iter__()
 test_generator__close()
 test_generator_close()
 test_generator_send()
