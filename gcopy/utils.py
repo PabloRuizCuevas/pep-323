@@ -9,11 +9,7 @@ from collections import OrderedDict
 
 def is_cli() -> bool:
     """Determines if using get_history_item is possible e.g. for CLIs"""
-    try:
-        get_history_item(0)
-        return True
-    except IndexError:
-        return False
+    return bool(get_current_history_length())
 
 
 def cli_findsource() -> list[str]:
