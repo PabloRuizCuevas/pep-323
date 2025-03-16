@@ -861,3 +861,4 @@ test_unpack_lambda()
 test_get_signature()
 test_collect_lambda()
 test_sign()
+## Generator source cleaning is tested in test_custom_generator ##
