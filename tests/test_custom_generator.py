@@ -634,7 +634,6 @@ def test_generator__init__() -> None:
 
     assert gen.__call__.__annotations__ == test2.__annotations__
     assert gen.__call__.__doc__ == test2.__doc__
-    assert get_nonlocals(gen.__closure__) == get_nonlocals(test2.__closure__)
 
 
 def test_generator__call__() -> None:
@@ -936,6 +935,30 @@ def test_generator_type_checking() -> None:
     )
 
 
+def test_closure() -> None:
+    def test():
+
+        closure_cell = 1
+
+        @Generator
+        def test_case():
+            yield closure_cell
+            yield closure_cell
+            yield closure_cell
+
+        gen = test_case()
+        assert next(gen) == 1
+        closure_cell = 2
+        assert next(gen) == 2
+        gen_copy = gen.copy()
+        closure_cell = 3
+        ## copies don't retain the closure binding ##
+        assert next(gen_copy) == 2
+        assert next(gen) == 3
+
+    test()
+
+
 ## for debugging at the moment ##
 def t():
     source = "forge=x+3+3 if True else y"
@@ -983,3 +1006,4 @@ test_generator_close()
 test_generator_send()
 test_generator_throw()
 test_generator_type_checking()
+test_closure()
