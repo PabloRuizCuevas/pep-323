@@ -77,4 +77,9 @@ TODO:
     not just copy the generator then (as this software was designed for)? So it seems
     unnecessary to save as f_back.
 
+  - __closure__ attributes if available will be added as attribute to the Generator and
+    into its f_locals via get_nonlocals but it will mean that though the original generator
+    has a binding to a closure the copied generator will be independent of it e.g. removing
+    the closure binding and retaining it's version in the state it was copied from.
+
 """
