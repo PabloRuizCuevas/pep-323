@@ -656,7 +656,7 @@ def test_yield_adjust() -> None:
     assert yield_adjust("yield 3", "") == ["return 3"]
 
     assert yield_adjust("yield from range(3)", "") == [
-        "locals()['.internals']['.yieldfrom']=range(3)",
+        "locals()['.internals']['.0']=locals()['.internals']['.yieldfrom']=iter(range(3))",
         "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
         "    return locals()['.internals']['.i']",
         "    if locals()['.internals']['.send']:",

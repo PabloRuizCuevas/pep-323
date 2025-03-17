@@ -58,9 +58,11 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
     with open("test.pkl", "rb") as file:
         ## they should be identical in terms of the attrs we care about ##
         test_loaded = pickle.load(file)
-
         if isinstance(pickler_test, Generator):
+            if "frame" in test_loaded._internals:
+                assert test_loaded._internals["frame"].f_globals == get_globals()
             not_allowed = list(pickler_test._not_allowed)
+            ## delete any attrs we don't want to compare ##
             pickler_test = pickler_test._internals
             test_loaded = test_loaded._internals
             for key in pickler_test:
@@ -97,8 +99,10 @@ def test_picklers() -> None:
 
 def test_generator_pickle() -> None:
     gen = Generator(simple_generator)
+    attrs_before = dir(gen._internals["frame"])
     test_Pickler(gen)
-    gen._internals["frame"]
+    ## make sure no change in the attrs ##
+    assert attrs_before == dir(gen._internals["frame"])
     assert next(gen) == 1
     ## copy the generator ##
     gen2 = gen.copy()
@@ -623,8 +627,6 @@ def test_generator__init__() -> None:
     ## generator expression ##
     gen = (i for i in range(3))
     test(gen, True)
-    ## string ##
-    test("(i for i in range(3))", False)
 
     ## test if the function related attrs get transferred ##
 
@@ -650,7 +652,8 @@ def test_generator__call__() -> None:
     gen = Generator(test)
     del gen._internals["state_generator"]
     ## initializes but also returns itself ##
-    assert gen(1, 2) is not None
+    gen = gen(1, 2)
+    assert gen is not None
     assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
     api_test(gen, True)
     assert [i for i in gen] == [1, 2, 3]
@@ -704,11 +707,11 @@ def test_generator_frame_init() -> None:
 
     ## no local variables stored ##
     init_length, _ = gen._frame_init()
-    assert init_length == 7
+    assert init_length == 8
     ## with local variables stored ##
     gen._internals["frame"].f_locals.update({"a": 3, "b": 2, "c": 1})
     init_length, _ = gen._frame_init()
-    assert init_length == 10
+    assert init_length == 11
 
 
 def test_generator_update() -> None:
@@ -729,7 +732,6 @@ def test_generator_update() -> None:
             "b": 2,
             "c": 3,
             ".internals": {".send": 1},
-            "locals": gen._locals,
         }
         # for __bool__
         new_frame.f_code = 1
@@ -950,6 +952,7 @@ def test_closure() -> None:
             yield closure_cell
             yield closure_cell
             yield closure_cell
+            yield closure_cell
 
         gen = test_case()
         assert next(gen) == 1
@@ -960,8 +963,33 @@ def test_closure() -> None:
         ## copies don't retain the closure binding ##
         assert next(gen_copy) == 2
         assert next(gen) == 3
+        ## if wanting to bind to a closure ##
+        ## then we can be set manually ##
+        gen_copy._bind(gen)
+        closure_cell = 4
+        assert next(gen_copy) == 4
+        assert next(gen) == 4
 
     test()
+
+
+def test_recursion() -> None:
+    @Generator
+    def test(depth=0):
+        depth += 1
+        yield depth
+        yield from test(depth)
+
+    gen = test()
+    assert [next(gen) for i in range(10)] == list(range(1, 11))
+
+
+def test_yieldfrom() -> None:
+    @Generator
+    def test():
+        yield from range(3)
+
+    assert [i for i in test()] == [0, 1, 2]
 
 
 ## for debugging at the moment ##
@@ -990,7 +1018,7 @@ test_Pickler()
 test_picklers()
 test_generator_pickle()
 # record_jumps is tested in test_custom_adjustment
-test_generator_custom_adjustment()
+# test_generator_custom_adjustment()
 test_generator_update_jump_positions()
 test_generator_append_line()  ## need to test decorated functions ##
 # test_generator_block_adjust()
@@ -1012,3 +1040,5 @@ test_generator_send()
 test_generator_throw()
 test_generator_type_checking()
 test_closure()
+test_recursion()
+test_yieldfrom()

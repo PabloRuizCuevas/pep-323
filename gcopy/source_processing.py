@@ -2,9 +2,9 @@
 ### cleaning/extracting/adjusting source code ###
 #################################################
 from .utils import *
-from inspect import getsource, findsource
+from inspect import getsource, findsource, signature
 from typing import Iterable, Any
-from types import GeneratorType, FunctionType  # , FrameType ## lineno_adjust
+from types import GeneratorType, FunctionType, CellType  # , FrameType ## lineno_adjust
 
 ## to ensure gcopy.custom_generator.Generator can be used in exec for sign ##
 import gcopy
@@ -1095,7 +1095,9 @@ def yield_adjust(temp_line: str, indent: str) -> list[str]:
     if temp_line.startswith("yield from "):
         return [
             ## 11 to get past the yield from
-            indent + "locals()['.internals']['.yieldfrom']=" + temp_line[11:],
+            indent
+            + "locals()['.internals']['.%s']=locals()['.internals']['.yieldfrom']=iter(%s)"
+            % (len(indent), temp_line[11:]),
             indent
             + "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
             indent + "    return locals()['.internals']['.i']",
@@ -1434,7 +1436,11 @@ def collect_lambda(
 
 
 def sign(
-    FUNC: FunctionType, FUNC2: FunctionType, boundmethod: bool = False
+    FUNC: FunctionType,
+    FUNC2: FunctionType,
+    globals: dict = None,
+    boundmethod: bool = False,
+    closure: tuple[CellType] = None,
 ) -> FunctionType:
     """signs a function with the signature of another function"""
     _signature = format(signature(FUNC2))
@@ -1444,7 +1450,7 @@ def sign(
     source = skip_source_definition(getsource(FUNC))
     ## create the function ##
     source = "def %s%s" % (_signature, source)
-    exec(source, globals(), locals())
+    exec(source, globals, locals(), closure=None)
     temp = locals()[FUNC2.__name__]
     temp.__source__ = source
     temp.__doc__ = FUNC2.__doc__
@@ -1483,6 +1489,10 @@ def custom_adjustment(self, line: str, number_of_indents: int = 0) -> list[str]:
         return [line]
     ## yield ##
     result = yield_adjust(temp_line, indent)
+    if temp_line.startswith("yield from "):
+        lineno = self._internals["lineno"]
+        ## lineno + 1 since this is not a loop ##
+        self._internals["jump_positions"] += [[lineno + 1, lineno + len(result)]]
     if result is not None:
         return result
     ## loops ##
@@ -1638,13 +1648,20 @@ def block_adjust(
     """
     ## make sure any loops are recorded (necessary for 'yield from ...' adjustment) ##
     ## and the lineno is updated ##
-
+    is_loop = False
     for self._internals["lineno"], line in enumerate(
         new_lines, start=self._internals["lineno"] + 1
     ):
         number_of_indents = get_indent(line)
         if is_loop(line[number_of_indents:]):
             record_jumps(self, self._internals["lineno"], number_of_indents)
+            is_loop = number_of_indents
+            continue
+        if number_of_indents <= is_loop:
+            self._internals["jump_positions"][-1][1] = self._internals["lineno"]
+            is_loop = False
+    if is_loop:
+        self._internals["jump_positions"][-1][1] = self._internals["lineno"]
     ## check for adjustments in the final line ##
     number_of_indents = get_indent(final_line)
     temp_line = final_line[number_of_indents:]

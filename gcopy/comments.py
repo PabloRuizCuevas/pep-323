@@ -34,46 +34,41 @@ TODO:
         - remove any unncesesary code, comments etc.
 
 
+      - check if 'async for ...' messes with anything
+      - Async should in concept integrate with what we have
+        so far but just need to test this.
+
     Expansion to other types of generators:
 
-     - Add some async features to AsyncGenerator - will need to work out how I want to do the async stuff
-       async has renamings of the dunders as well i.e. methods of interest are __iter__ is __aiter__, __next__
-       is __anext__, and it will probably need an __await__ implementation.
+     - async generators can't be used in await (all await does is pause for the return vaulue;
+       generators only yield on next (in this case anext()))
 
-     - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
+     - they can use anext() does the same as next but uses anext and returns an awaitable object
+       e.g. async_generator_asend type
 
-     - Maybe need to make an internal generator and then use this generally?
+     - they can use aiter(); make sure it's StopAsyncIteration
 
-  Documentation notes:
+     - athrow, asend, aclose basically does the same things as generator but uses anext
 
-  - Make a Note in the documentation that while loops don't need tracking and
-    indentation is enough as an identifier for tracking
+     - ag_await and cr_await are when you use i.e asyncio.create_task:
 
-  - Make a note in the documentation that yields in comprehension expressions and exec/eval don't occur
-    in python syntax
+        import asyncio
 
-  - write in the documentation that there is a .internal and it has 'args', 'yieldfrom', 'send',
-   'exec_info', .decorator, 'partial', '.continue', '.i', '.error', and the tracking variables (indents e.g. '.4' etc.)
+        async def some_task():
+            await asyncio.sleep(0.1)
 
-    at the moment only 'partial', 'exec_info', '.args', and '.send' are initialized with '.send'
-    being initialized with 'None' every iteration except when the user sends an argument
+        task = asyncio.create_task(some_task())
+        ## delay to allow it to start ##
+        await asyncio.sleep(0.1)
+        print(task._coro.cr_await)
 
-  - I've decided that we don't record f_back for each state since if you really need
-    to record the states then you should do that separately before/after each state is
-    used because it's generally considered better that way, the bigger downside is the
-    memory consumption of saving all the states as f_back on frames when really we're
-    usually only interested in it running and it's current state. The previous states
-    variables should be the current versions and the linenos can be recorded in between
-    states easily. The other exploration one could do is rerunning states again but why
-    not just copy the generator then (as this software was designed for)? So it seems
-    unnecessary to save as f_back.
+        This and the fact that you can have i.e.
+        await (await ... ), await (await ... ), ...
 
-  - __closure__ attributes if available will be added as attribute to the Generator and
-    into its f_locals via get_nonlocals but it will mean that though the original generator
-    has a binding to a closure the copied generator will be independent of it e.g. removing
-    the closure binding and retaining it's version in the state it was copied from.
+        Means we'd need to us the unpack function exactly how we would for
+        yields but instead of adjusting for yields it would be adjusting
+        for awaits (just to know what object is currently being awaited)
 
-  - no reinitializing supported. It's expected that users either have a function that acts
-    as a factory pattern or may copy the generator after initializing e.g. cannot use __call__
-    on an initialized generator.
+     - coroutines are now using await/async syntax since 3.8 deprecated asycnio.coroutine that now
+       disallows generator based coroutines e.g. only generators and async generators are possible.
 """

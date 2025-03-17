@@ -1,8 +1,8 @@
 ##################################
 ### picklable/copyable objects ###
 ##################################
-from types import FunctionType, GeneratorType, CodeType
-from inspect import currentframe
+from types import FunctionType, GeneratorType, CodeType, CellType
+from inspect import currentframe  ## used in _frame_init
 from copy import deepcopy, copy
 from textwrap import dedent
 from gcopy.source_processing import *
@@ -53,7 +53,10 @@ class Pickler:
         return copy(self)
 
     def _pickler_get(obj):
+        """Used on recursive pickling of objects"""
         if issubclass(type(obj), Pickler):
+            ## we create a copy to avoid affecting the the original Pickler instances attributes ##
+            obj = obj.copy()
             ## subclasses of Pickler will remove attributes on pickling ##
             for attr in obj._not_allowed:
                 if hasattr(obj, attr):
@@ -140,6 +143,7 @@ class frame(Pickler):
                 self.f_code = code()
             return
         self.f_locals = {}
+        self.f_globals = get_globals()
 
     def clear(self) -> None:
         """clears f_locals e.g. 'most references held by the frame'"""
@@ -156,6 +160,10 @@ class frame(Pickler):
             attrs.remove(attr)
         attrs.remove("f_back")
         return attr_cmp(self, obj, attrs)
+
+    def __setstate__(self, state: dict) -> None:
+        Pickler.__setstate__(self, state)
+        self.f_globals = get_globals()
 
 
 class EOF(StopIteration):
@@ -239,8 +247,13 @@ class Generator(Pickler):
         """
         ## for the api setup ##
         self._api_setup()
+        ## unused attribute for initialized generator (but will be set to a callable for uninitialized generators) ##
+        self.__call__ = Generator_call_error
         ## __setstate__ from Pickler._copier ##
         if FUNC:
+
+            ## Note: make sure lineno is set after clean_source lines since clean_source lines uses it ##
+
             ## needed to identify certain attributes ##
             prefix = self._internals["prefix"]
             ## running generator ##
@@ -290,14 +303,12 @@ class Generator(Pickler):
             else:
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
-                    ## add its closure if it has one. It shouldn't ##
-                    ## effect the existing locals, only adds the attribute ##
-                    if hasattr(FUNC, "__closure__"):
-                        self.__closure__ = FUNC.__closure__
-                    self.__code__ = self._internals["code"] = code(FUNC.__code__)
+                    self._internals["code"] = code(FUNC.__code__)
+                    self.__name__ = FUNC.__name__
+                    self.__defaults__ = FUNC.__defaults__
                     ## since it's uninitialized we can bind the signature to __call__ ##
                     ## and overwrite the __call__ signature + other metadata with the functions ##
-                    self.__call__ = sign(Generator__call__, FUNC, True)
+                    self.__call__ = sign(Generator__call__, FUNC, globals(), True)
                     if FUNC.__code__.co_name == "<lambda>":
                         self._internals["source"] = expr_getsource(FUNC)
                         self._internals["source_lines"] = unpack_lambda(
@@ -307,14 +318,6 @@ class Generator(Pickler):
                         self._internals["source"] = dedent(getsource(FUNC))
                         self._internals["source_lines"] = clean_source_lines(self)
                         self._internals["name"] = self._internals["code"].co_name
-                ## source code string ##
-                elif isinstance(FUNC, str):
-                    self._internals["source"] = FUNC
-                    self._internals["source_lines"] = clean_source_lines(self)
-                    self._internals["code"] = code(
-                        compile(FUNC, currentframe().f_code.co_filename, "exec")
-                    )
-                ## code object - use a decompilation library and send in as a string ##
                 else:
                     raise TypeError(
                         "type '%s' is an invalid initializer for a Generator"
@@ -330,6 +333,14 @@ class Generator(Pickler):
                         "running": False,
                     }
                 )
+            if hasattr(FUNC, "__closure__"):
+                ## add its closure if it has one. It shouldn't ##
+                ## effect the existing locals, only adds the attribute ##
+                self._bind(FUNC)
+                ## only update locals with nonlocals on init ##
+                ## every other instance should require the variables ##
+                ## to exist in the local scope first ##
+                self._locals().update(get_nonlocals(self))
             ## create the states ##
             self._internals["state"] = self._internals["source_lines"]
             self._internals["state_generator"] = self._init_states()
@@ -452,20 +463,22 @@ class Generator(Pickler):
             else:
                 ## initialize variables for the frame ##
                 f_locals[".internals"].update({".send": None})
-        ## make sure if it has a closure that it's updating the locals ##
-        f_locals.update(get_nonlocals(self))
-        name = self._internals.get("name", "next_state")
+        ## make sure if it has a closure that it's updating the locals (only if it still exists) ##
+        for key, value in get_nonlocals(self).items():
+            if key in f_locals:
+                f_locals[key] = value
         ## adjust the initializers ##
         indent = " " * 4
         init = [
-            self._internals["version"] + "def %s():" % name,
+            self._internals["version"] + "def next_state():",
             ## get the variables to update the frame
+            indent + "from inspect import currentframe",
             indent + "frame = currentframe()",
             indent + "self = frame.f_back.f_locals['self']",
             indent + "self._locals()['.internals']['.frame'] = frame",
             indent + "locals().update(self._locals())",
             indent + "locals()['.internals']['.self'] = self",
-            indent + "del frame, self",
+            indent + "del frame, self, currentframe",
         ]
         ## make sure variables are initialized ##
         for key in f_locals:
@@ -483,8 +496,9 @@ class Generator(Pickler):
         ## be correct in track_iter therefore we compile first to provide a filename then exec ##
         self.__source__ = init + self._internals["state"] + ["    return EOF()"]
         code_obj = compile("\n".join(self.__source__), "<Generator>", "exec")
-        exec(code_obj, globals(), locals())
-        return len(init), locals()[name]
+        ## make sure the globals are there ##
+        exec(code_obj, self._internals["frame"].f_globals, locals())
+        return len(init), locals()["next_state"]
 
     def __iter__(self) -> GeneratorType:
         """Converts the generator function into an iterable"""
@@ -522,7 +536,6 @@ class Generator(Pickler):
 
         f_locals = _frame.f_locals
         ## remove variables that interfere with pickling ##
-        f_locals.pop("locals", None)
         if ".internals" in f_locals:
             f_locals[".internals"].pop(".send", None)
             f_locals[".internals"].pop(".frame", None)
@@ -617,6 +630,10 @@ class Generator(Pickler):
     def __call__(self, *args, **kwargs) -> GeneratorType:
         """
         Calls the instances call method if it has one (only for unintialized Function generators)
+        and does type checking before calling
+
+        Note: Having a __call__ method on a Generator also
+        allows Generator.__init__ to be used as a decorator
         """
         if isinstance(self, type):
             raise TypeError(
@@ -642,6 +659,45 @@ class Generator(Pickler):
                 break
         self._internals["state_generator"] = self._init_states()
 
+    def _bind(self, FUNC: FunctionType) -> None:
+        """Convenience method to bind a generator to closure cells"""
+        self.__closure__ = FUNC.__closure__
+        self.__code__ = self._internals["code"]
+        ## in case it's doing i.e. recursion and it's caught as a nonlocal ##
+        ## this means we need to replace it with its Generator version ##
+        if FUNC.__name__ in FUNC.__code__.co_freevars:
+            index = FUNC.__code__.co_freevars.index(FUNC.__name__)
+            ## we need a copy of the function without itself being in its closure cell ##
+            ## then wrap this in a Generator ##
+            closure = FUNC.__closure__
+            ## remove the function from the closure and replace the current scope with the Generator version ##
+            ## we have to modify the code object since FunctionType picks up on this ##
+            _code = FUNC.__code__
+            kwargs = {attr: getattr(_code, attr) for attr in code_attrs()}
+            kwargs["co_freevars"] = (
+                kwargs["co_freevars"][:index] + kwargs["co_freevars"][index + 1 :]
+            )
+            _code = CodeType(*kwargs.values())
+            ## create the new function ##
+            FUNC = FunctionType(
+                _code,
+                get_globals(),
+                FUNC.__name__,
+                FUNC.__defaults__,
+                closure[:index] + closure[index + 1 :],
+            )
+            GEN_FUNC = Generator(FUNC)
+            ## you need to add itself to the closure; importantly, its __call__ method ##
+            GEN_FUNC.__closure__ += (CellType(GEN_FUNC.__call__),)
+            GEN_FUNC._internals["code"].co_freevars += (FUNC.__name__,)
+            ## initialize its locals since this is an unintialized generator ##
+            GEN_FUNC._locals()[FUNC.__name__] = GEN_FUNC.__call__
+            ## replace the function with the Generator version ##
+            closure = self.__closure__
+            self.__closure__ = (
+                closure[:index] + (CellType(GEN_FUNC),) + closure[index + 1 :]
+            )
+
 
 def Generator__call__(self, *args, **kwargs) -> GeneratorType:
     """
@@ -654,12 +710,27 @@ def Generator__call__(self, *args, **kwargs) -> GeneratorType:
     """
     ## get the arguments from the function call ##
     arguments = locals()
+    ## we have to make a copy to retain the unintialisation ##
+    self_copy = self.copy()
+    self_copy.__name__ = self.__name__
+    self_copy.__defaults__ = self.__defaults__
+    ## since it's an intialization we bind it to the closure?
+    if hasattr(self, "__closure__"):
+        self_copy._bind(self)
     ## for the api setup ##
-    prefix = self._internals["prefix"]
+    prefix = self_copy._internals["prefix"]
     for key in ("code", "frame", "suspended", "yieldfrom", "running"):
-        setattr(self, prefix + key, self._internals[key])
+        setattr(self_copy, prefix + key, self_copy._internals[key])
     if len(arguments) > 1:
         del arguments["self"]
-        self._locals().update(arguments)
-    self._internals["state_generator"] = self._init_states()
-    return self
+        self_copy._locals().update(arguments)
+    self_copy._internals["state_generator"] = self_copy._init_states()
+    self_copy.__call__ = Generator_call_error
+    return self_copy
+
+
+def Generator_call_error(*args, **kwargs) -> NoReturn:
+    """Error for when an initialized generator is called"""
+    raise TypeError(
+        "Initialized generators cannot be called, only unintialized Function generators may be called"
+    )

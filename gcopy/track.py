@@ -7,7 +7,7 @@ from inspect import currentframe, getframeinfo
 
 ## for the monkey patching ##
 from fishhook import hook, orig  ## pip install fishhook
-from typing import Iterator, Iterable
+from typing import Iterator, Iterable, Any
 from types import FrameType
 
 
@@ -31,7 +31,9 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
 
     Using in generator expressions uses the col_offset instead
     """
-    obj = iter(obj)
+    # if not isinstance(obj, GeneratorWrapper):
+    #     obj = GeneratorWrapper(obj)
+
     f_locals = frame.f_locals
     if frame.f_code.co_name == "<genexpr>":
         ## we don't need to concern about interference with indent adjusts since the frames ##
@@ -97,29 +99,43 @@ def offset_adjust(f_locals: dict) -> dict:
 ####################
 ## monkey patches ##
 ####################
-def hook_iter(iterator: Iterator | Iterable) -> None:
+
+
+def track(obj: Any) -> Any:
+    frame = currentframe().f_back
+    return track_iter(iter(obj), frame)
+
+
+def hook_iter(iterator: Iterator | Iterable, _globals: dict) -> None:
+    """
+    Replaces the iter of an iterator with track_iter wrapper
+
+    Note: requires _globals e.g. your frames globals dictionary
+    in order to make sure it's setup in the correct scope
+    """
     try:
         name = iterator.__name__
-        exec("class %s(%s):pass" % (name, name), globals())
+        orig = iterator.__iter__
+        exec("class %s(%s):pass" % (name, name), _globals)
+        _globals[name].orig = orig
 
         def __iter__(self) -> Iterator:
             frame = currentframe().f_back
-            return track_iter(iterator, frame)
+            return track_iter(self.orig(), frame)
 
-        globals()[name].__iter__ = __iter__
+        _globals[name].__iter__ = __iter__
     except:
 
         @hook(iterator)
         def __iter__(self) -> Iterator:
-            iterator = orig(self)
+            iterator = iter(orig(self))
+            # print(self)
             frame = currentframe().f_back
             return track_iter(iterator, frame)
 
 
-def patch_iterators() -> None:
-    #############################
-    #### patch all iterators ####
-    #############################
+def patch_iterators(_globals: dict) -> None:
+    """Sets all builtin iterators in the current scope to their tracked versions"""
     ## Note: Can't change syntactical initiations e.g. (,), [], {}, and {...:...} ##
     if isinstance(__builtins__, dict):
         objs = __builtins__.items()
@@ -127,5 +143,4 @@ def patch_iterators() -> None:
         objs = vars(__builtins__).items()
     for name, obj in objs:
         if isinstance(obj, type) and issubclass(obj, Iterator | Iterable):
-            ## for some reason 'range' is not working??
-            hook_iter(obj)
+            hook_iter(obj, _globals)

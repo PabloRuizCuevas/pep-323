@@ -127,6 +127,10 @@ def test_try_set() -> None:
     assert dct == {"a": 4}
 
 
+def test_get_globals() -> None:
+    assert get_globals() == globals()
+
+
 test_is_cli()
 # test_cli_findsource()
 test_skip()
@@ -145,3 +149,4 @@ test_hasattrs()
 test_chain()
 test_get_nonlocals()
 test_try_set()
+test_get_globals()
