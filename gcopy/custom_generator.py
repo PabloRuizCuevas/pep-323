@@ -1,7 +1,14 @@
 ##################################
 ### picklable/copyable objects ###
 ##################################
-from types import FunctionType, GeneratorType, CodeType, CellType
+from types import (
+    FunctionType,
+    GeneratorType,
+    AsyncGeneratorType,
+    CodeType,
+    CellType,
+    CoroutineType,
+)
 from inspect import currentframe  ## used in _frame_init
 from copy import deepcopy, copy
 from textwrap import dedent
@@ -166,8 +173,11 @@ class frame(Pickler):
         self.f_globals = get_globals()
 
 
-class EOF(StopIteration):
-    """Custom exception to exit out of the generator on return statements"""
+class EOF(StopIteration, StopAsyncIteration):
+    """
+    Custom exception to exit out of the generator on return statements.
+    For consistency, this class is only used for instance checking
+    """
 
     pass
 
@@ -175,7 +185,7 @@ class EOF(StopIteration):
 #################
 ### Generator ###
 #################
-class Generator(Pickler):
+class BaseGenerator(Pickler):
     """
     Converts a generator function into a generator
     function that is copyable (e.g. shallow and deepcopy)
@@ -222,11 +232,7 @@ class Generator(Pickler):
 
     def _api_setup(self) -> None:
         """sets up the api; subclasses should override this method for alternate api setup"""
-        self._internals = {
-            "prefix": "gi_",
-            "type": "GeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
-            "version": "",  ## specific to 'async ' Generators for _frame_init ##
-        }
+        pass
 
     def __init__(
         self,
@@ -266,7 +272,7 @@ class Generator(Pickler):
                     }
                 )
                 ## co_name is readonly e.g. can't be changed by user ##
-                if FUNC.gi_code.co_name == "<genexpr>":
+                if self._internals["code"].co_name == "<genexpr>":
                     self._internals["source"] = expr_getsource(FUNC)
                     self._internals["source_lines"] = unpack_genexpr(
                         self._internals["source"]
@@ -406,19 +412,15 @@ class Generator(Pickler):
         )
 
     def _locals(self) -> dict:
-        """
-        proxy to replace locals within 'next_state' within
-        __next__ while still retaining the same functionality
-        """
+        """Short hand method for the current states/frames locals"""
         return self._internals["frame"].f_locals
 
     def _frame_init(
         self, exception: str = "", close: bool = False, sending=False
     ) -> tuple[int, FunctionType]:
         """
-        initializes the frame with the current
-        states variables and the _locals proxy
-        but also adjusts the current state
+        initializes the frame with the current states
+        variables but also adjusts the current state
         """
         try:
             # set the next state and setup the function; it will raise a StopIteration for us
@@ -427,8 +429,6 @@ class Generator(Pickler):
             self._close()
             raise e
         ## adjust the current state ##
-        if close:
-            self._internals["state"] = exit_adjust(self._internals["state"])
         temp = get_indent(self._internals["state"][0])
         if exception:
             if self._internals["state"][0][temp:].startswith("try:"):
@@ -482,7 +482,7 @@ class Generator(Pickler):
         ]
         ## make sure variables are initialized ##
         for key in f_locals:
-            if isinstance(key, str) and key.isidentifier() and key != "locals":
+            if isinstance(key, str) and key.isidentifier():
                 init += [
                     " " * 4
                     + "%s=locals()['.internals']['.self']._locals()[%s]"
@@ -499,32 +499,6 @@ class Generator(Pickler):
         ## make sure the globals are there ##
         exec(code_obj, self._internals["frame"].f_globals, locals())
         return len(init), locals()["next_state"]
-
-    def __iter__(self) -> GeneratorType:
-        """Converts the generator function into an iterable"""
-        while True:
-            try:
-                yield next(self)
-            except StopIteration:
-                break
-
-    def __next__(
-        self, exception: str = "", close: bool = False, sending: bool = False
-    ) -> Any:
-        """updates the current state and returns the result"""
-        ## update with the new state and get the frame ##
-        init_length, next_state = self._frame_init(exception, close, sending)
-        try:
-            self._internals["running"] = True
-            result = next_state()
-            if isinstance(result, EOF):
-                raise result
-        except Exception as e:
-            self._close()
-            raise e
-        self._internals["running"] = False
-        self._update(init_length)
-        return result
 
     def _update(self, init_length: int) -> None:
         """Update the line position and frame"""
@@ -572,16 +546,6 @@ class Generator(Pickler):
             elif self._internals["lineno"] < loops[-1][1]:
                 self._internals["lineno"] += 1
 
-    def send(self, arg: Any) -> Any:
-        """
-        Send takes exactly one arguement 'arg' that
-        is sent to the functions yield variable
-        """
-        if arg is not None and self._internals["lineno"] == 1:
-            raise TypeError("can't send non-None value to a just-started generator")
-        self._locals()[".internals"][".send"] = arg
-        return self.__next__(sending=True)
-
     def _close(self) -> None:
         self._internals.update(
             {
@@ -592,39 +556,6 @@ class Generator(Pickler):
                 "suspended": False,
                 "yieldfrom": None,
             }
-        )
-
-    def close(self) -> None:
-        """
-        Throws a GeneratorExit and closes the generator clearing its
-        frame, state_generator, and yieldfrom
-
-        return = return
-        yield  = return 1
-        """
-        try:
-            if self.__next__("GeneratorExit()", True):
-                raise RuntimeError("generator ignored GeneratorExit")
-        except GeneratorExit:
-            ## This error is internally ignored by generators during closing ##
-            pass
-        finally:
-            self._close()
-
-    def throw(self, exception: Exception) -> NoReturn:
-        """
-        Raises an exception from the last line in the
-        current state e.g. only from what has been
-        """
-        if issubclass(exception, BaseException):
-            if isinstance(exception, type):
-                exception = exception.__name__
-            else:
-                exception = repr(exception)
-            return self.__next__(exception)
-        raise TypeError(
-            "exceptions must be classes or instances deriving from BaseException, not %s"
-            % type(exception)
         )
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
@@ -686,7 +617,7 @@ class Generator(Pickler):
                 FUNC.__defaults__,
                 closure[:index] + closure[index + 1 :],
             )
-            GEN_FUNC = Generator(FUNC)
+            GEN_FUNC = type(self)(FUNC)
             ## you need to add itself to the closure; importantly, its __call__ method ##
             GEN_FUNC.__closure__ += (CellType(GEN_FUNC.__call__),)
             GEN_FUNC._internals["code"].co_freevars += (FUNC.__name__,)
@@ -734,3 +665,165 @@ def Generator_call_error(*args, **kwargs) -> NoReturn:
     raise TypeError(
         "Initialized generators cannot be called, only unintialized Function generators may be called"
     )
+
+
+class Generator(BaseGenerator):
+
+    def _api_setup(self) -> None:
+        """sets up the api; subclasses should override this method for alternate api setup"""
+        self._internals = {
+            "prefix": "gi_",
+            "type": "GeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
+            "version": "",  ## specific to 'async ' Generators for _frame_init (don't change) ##
+        }
+
+    def __iter__(self) -> GeneratorType:
+        """Converts the generator function into an iterable"""
+        while True:
+            try:
+                yield next(self)
+            except StopIteration:
+                break
+
+    def __next__(
+        self, exception: str = "", close: bool = False, sending: bool = False
+    ) -> Any:
+        """updates the current state and returns the result"""
+        ## update with the new state and get the frame ##
+        init_length, next_state = self._frame_init(exception, close, sending)
+        try:
+            self._internals["running"] = True
+            result = next_state()
+            if isinstance(result, EOF):
+                raise StopIteration(result.args[0:1])
+        except Exception as e:
+            self._close()
+            raise e
+        self._internals["running"] = False
+        self._update(init_length)
+        return result
+
+    def send(self, arg: Any) -> Any:
+        """
+        Send takes exactly one arguement 'arg' that
+        is sent to the functions yield variable
+        """
+        if arg is not None and self._internals["lineno"] == 1:
+            raise TypeError("can't send non-None value to a just-started generator")
+        self._locals()[".internals"][".send"] = arg
+        return self.__next__(sending=True)
+
+    def close(self) -> None:
+        """
+        Throws a GeneratorExit and closes the generator clearing its
+        frame, state_generator, and yieldfrom
+
+        return = return
+        yield  = return 1
+        """
+        try:
+            if self.__next__("GeneratorExit()", True):
+                raise RuntimeError("generator ignored GeneratorExit")
+        except (GeneratorExit, StopIteration):
+            ## This error is internally ignored by generators during closing ##
+            pass
+        finally:
+            self._close()
+
+    def throw(self, exception: Exception) -> NoReturn:
+        """
+        Raises an exception from the last line in the
+        current state e.g. only from what has been
+        """
+        if issubclass(exception, BaseException):
+            if isinstance(exception, type):
+                exception = exception.__name__
+            else:
+                exception = repr(exception)
+            return self.__next__(exception)
+        raise TypeError(
+            "exceptions must be classes or instances deriving from BaseException, not %s"
+            % type(exception)
+        )
+
+
+class AsyncGenerator(BaseGenerator):
+
+    def _api_setup(self) -> None:
+        """sets up the api; subclasses should override this method for alternate api setup"""
+        self._internals = {
+            "prefix": "ag_",
+            "type": "AsyncGeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
+            "version": "async ",  ## specific to 'async ' Generators for _frame_init ##
+        }
+
+    async def __aiter__(self) -> AsyncGeneratorType:
+        while True:
+            try:
+                yield (await anext(self))
+            except StopAsyncIteration:
+                break
+
+    async def __anext__(
+        self, exception: str = "", close: bool = False, sending: bool = False
+    ) -> Any:
+        """updates the current state and returns the result"""
+        ## catch StopIteration on next(self._internals["state_generator"]) ##
+        ## and instead raise a StopAsyncIteration ##
+        try:
+            ## update with the new state and get the frame ##
+            init_length, next_state = self._frame_init(exception, close, sending)
+        except StopIteration as e:
+            raise StopAsyncIteration(e.args[0:1])
+        try:
+            self._internals["running"] = True
+            result = await next_state()
+            if isinstance(result, EOF):
+                ## coroutines can't throw StopIterations, EOF throws a StopIteration e.g. in accordance with its __mro__ ##
+                raise StopAsyncIteration(result.args[0:1])
+        except Exception as e:
+            self._close()
+            raise e
+        self._internals["running"] = False
+        self._update(init_length)
+        return result
+
+    async def asend(self, arg: Any) -> Any:
+        """
+        Send takes exactly one arguement 'arg' that
+        is sent to the functions yield variable
+        """
+        if arg is not None and self._internals["lineno"] == 1:
+            raise TypeError("can't send non-None value to a just-started generator")
+        self._locals()[".internals"][".send"] = arg
+        return await self.__anext__(sending=True)
+
+    async def aclose(self) -> None:
+        """
+        Throws a GeneratorExit and closes the generator clearing its
+        frame, state_generator, and yieldfrom
+        """
+        try:
+            if await self.__anext__("GeneratorExit()", True):
+                raise RuntimeError("generator ignored GeneratorExit")
+        except (GeneratorExit, StopAsyncIteration):
+            ## This error is internally ignored by generators during closing ##
+            pass
+        finally:
+            self._close()
+
+    async def athrow(self, exception: Exception) -> NoReturn:
+        """
+        Raises an exception from the last line in the
+        current state e.g. only from what has been
+        """
+        if issubclass(exception, BaseException):
+            if isinstance(exception, type):
+                exception = exception.__name__
+            else:
+                exception = repr(exception)
+            return await self.__anext__(exception)
+        raise TypeError(
+            "exceptions must be classes or instances deriving from BaseException, not %s"
+            % type(exception)
+        )

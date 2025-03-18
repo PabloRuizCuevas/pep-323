@@ -3,12 +3,17 @@ from types import FunctionType
 
 
 def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:
-    if compare:
+    try:
+        if compare:
+            for arg in args:
+                assert FUNC(arg) == compare.pop(0)
+            return
         for arg in args:
-            assert FUNC(arg) == compare.pop(0)
-        return
-    for arg in args:
-        assert FUNC(arg)
+            assert FUNC(arg)
+    except AssertionError:
+        raise AssertionError(
+            f"{FUNC.__name__} failed on {arg}" + " on compare" * bool(compare)
+        )
 
 
 def test_update_depth() -> None:
@@ -386,7 +391,7 @@ def test_collect_definition() -> None:
 
 
 def test_is_loop() -> None:
-    assert_cases(is_loop, "for ", "while ")
+    assert_cases(is_loop, "for ", "while ", "async     for ")
 
 
 def test_is_alternative_statement() -> None:
@@ -738,11 +743,6 @@ def test_singly_space() -> None:
     assert source == "    for i in [1 , 3 , 5]: "
 
 
-def test_exit_adjust() -> None:
-    case = "return   ...\nreturn    EOF(...)"
-    assert exit_adjust(case.split("\n")) == ["return 1", "return"]
-
-
 def test_outer_loop_adjust() -> None:
     source_lines = [
         "    for i in range(3):",
@@ -854,7 +854,6 @@ test_extract_genexpr()
 test_extract_lambda()
 test_except_adjust()
 test_singly_space()
-test_exit_adjust()
 test_outer_loop_adjust()
 test_setup_next_line()
 test_unpack_lambda()

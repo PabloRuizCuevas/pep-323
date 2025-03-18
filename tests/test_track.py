@@ -82,8 +82,27 @@ def test_track_iter_inside_Generator() -> None:
     assert next(gen2._locals()[".internals"][".4"]) == 1
 
 
+def test_track() -> None:
+    track([1, 2, 3])
+    assert [i for i in locals()[".internals"][".4"]] == [1, 2, 3]
+
+
+async def test_atrack() -> None:
+    async def iterator():
+        yield 1
+        yield 2
+        yield 3
+
+    atrack(iterator())
+    assert [i async for i in locals()[".internals"][".4"]] == [1, 2, 3]
+
+
 test_patch_iters()
 test_track_iter()
 test_track_iter_inside_exec()
 test_track_iter_inside_Generator()
 test_offset_adjust()
+test_track()
+import asyncio
+
+asyncio.run(test_atrack())

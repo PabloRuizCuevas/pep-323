@@ -102,8 +102,15 @@ def offset_adjust(f_locals: dict) -> dict:
 
 
 def track(obj: Any) -> Any:
+    """tracks iterators"""
     frame = currentframe().f_back
     return track_iter(iter(obj), frame)
+
+
+def atrack(obj: Any) -> Any:
+    """tracks async iterators (not needed for internal use but as an option left for the user)"""
+    frame = currentframe().f_back
+    return track_iter(aiter(obj), frame)
 
 
 def hook_iter(iterator: Iterator | Iterable, _globals: dict) -> None:
@@ -134,8 +141,10 @@ def hook_iter(iterator: Iterator | Iterable, _globals: dict) -> None:
             return track_iter(iterator, frame)
 
 
-def patch_iterators(_globals: dict) -> None:
+def patch_iterators(_globals: dict = None) -> None:
     """Sets all builtin iterators in the current scope to their tracked versions"""
+    if _globals is None:
+        _globals = currentframe().f_back.f_globals
     ## Note: Can't change syntactical initiations e.g. (,), [], {}, and {...:...} ##
     if isinstance(__builtins__, dict):
         objs = __builtins__.items()

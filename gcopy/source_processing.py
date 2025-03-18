@@ -175,21 +175,21 @@ def skip_source_definition(source: str) -> str:
     """Skips the function definition and decorators in the source code"""
     ID, source_iter = "", enumerate(source)
     for index, char in source_iter:
-        ## decorators are ignored ##
+        ## skip decorators ##
         while char == "@":
             while char != "\n":
                 index, char = next(source_iter)
             index, char = next(source_iter)
+        ## collect the ID ##
         if char.isalnum():
             ID += char
-            if len(ID) == 3:
-                if ID == "def" and next(source_iter)[1] == " ":
-                    while char != "(":
-                        index, char = next(source_iter)
-                    break
-                return source
         else:
+            if ID == "def" and char in " \\":
+                while char != "(":
+                    index, char = next(source_iter)
+                break
             ID = ""
+    ## skip to the end of the function definition ##
     depth = 1
     for index, char in source_iter:
         if char == ":" and depth == 0:
@@ -775,16 +775,18 @@ def is_alternative_statement(line: str) -> bool:
 
 def is_loop(line: str) -> bool:
     """Checks if a line is a loop"""
+    if line.startswith("async "):
+        line = line[5:]
+        return line[get_indent(line) :].startswith("for ")
     return line.startswith("for ") or line.startswith("while ")
 
 
 def is_definition(line: str) -> bool:
     """Checks if a line is a definition"""
-    return (
-        line.startswith("def ")
-        or line.startswith("async def ")
-        or line.startswith("class ")
-    )
+    if line.startswith("async "):
+        line = line[5:]
+        return line[get_indent(line) :].startswith("def ")
+    return line.startswith("def ") or line.startswith("class ")
 
 
 ########################
@@ -1135,7 +1137,7 @@ def get_loops(
 
 
 def extract_source_from_comparison(
-    code_obj: CodeType, source: str, extractor: FunctionType
+    code_obj: CodeType, source: str, extractor: FunctionType, variables: dict = None
 ) -> str:
     """
     Extracts source via a comparison of
@@ -1159,7 +1161,7 @@ def extract_source_from_comparison(
         try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
             temp_source = source[col_offset:end_col_offset]
-            temp_code = getcode(eval(temp_source))
+            temp_code = getcode(eval(temp_source, variables))
             if attr_cmp(temp_code, code_obj, attrs):
                 return temp_source
         except SyntaxError:
@@ -1188,15 +1190,19 @@ def expr_getsource(FUNC: Any) -> str:
         else:
             source = getsource(code_obj)
         extractor = extract_lambda
+        ## functions don't need their variables defined right away ##
+        variables = None
     else:
+        frame = getframe(FUNC)
         ## here source is a : list[str]
         if is_cli():
             source = cli_findsource()
         else:
-            lineno = getframe(FUNC).f_lineno - 1
+            lineno = frame.f_lineno - 1
             source = findsource(code_obj)[0][lineno:]
         extractor = extract_genexpr
-    return extract_source_from_comparison(code_obj, source, extractor)
+        variables = frame.f_globals | frame.f_locals
+    return extract_source_from_comparison(code_obj, source, extractor, variables)
 
 
 def extract_genexpr(source: str, recursion: bool = False) -> GeneratorType:
@@ -1324,23 +1330,6 @@ def singly_space(
         if space + 1 != index:
             indented = True
     return line, index, indented
-
-
-def exit_adjust(state: str) -> str:
-    """
-    Adjusts the source code for the generator exit
-    e.g. replaces all 'return ...' with
-    raise RuntimeError("generator ignored GeneratorExit")
-    """
-    for index, line in enumerate(state):
-        number_of_indents = get_indent(line)
-        temp = line[number_of_indents:]
-        if temp == "return" or temp.startswith("return "):
-            line = " " * number_of_indents + "return"
-            if not temp[7:].lstrip().startswith("EOF("):
-                line += " 1"
-        state[index] = line
-    return state
 
 
 def outer_loop_adjust(

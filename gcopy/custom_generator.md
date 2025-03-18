@@ -335,4 +335,40 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
   - if a closure cell is deleted from the originating scope this will raise an error at get_nonlocals
     for the scope using it since the cell no longer exists which is correct. If you delete a nonlocal in the inner scope, python throws an error on compilation and disallows exec/eval to take effect. If you delete a nonlocal in a ```Generator``` state it gets deleted how a regular deletion of a variable would be deleted; which is perhaps unexpected behavior relative to how it should be.
 
- - unintialized Generators will return copies of instantiated ones when called. This is to preserve the decorator functionality and thus acts as a function would. Whereas initialized generators act as objects.
+  - unintialized Generators will return copies of instantiated ones when called. This is to preserve the decorator functionality and thus acts as a function would. Whereas initialized generators act as objects.
+
+  - the current states full source is available under the Generator instances ```__source__``` attribute after calling ```__next__```.
+
+  - At a high level, ```AsyncGenerator``` differs by the an additional capacity to use the ```await``` keyword that pauses the current execution to wait for the asynchronous function to return first, stopping is done on an exception raised as ```StopAsyncIteration``` instead of ```StopIteration```, and it uses the ```aiter``` and ```anext``` functions rather than ```iter``` and ```next``` respectively; this is also seen/reflected in the dunders with ```__aiter__``` and ```__anext__``` for the asynchronous version.
+
+    i.e. ```async for i in ...:``` will wrap ```...``` in ```aiter``` e.g. performing ```aiter(...)```.
+
+    Additionally, the return types will be coroutines if ```aiter```, ```anext```, and other asynchronous functions are not awaited.
+
+    Async Generators don't have an ```__await__``` method implementation but they do record the object they are currently awaiting i.e.
+
+     - ag_await and cr_await are when you use i.e asyncio.create_task:
+        ```python
+        import asyncio
+
+        async def some_task():
+            await asyncio.sleep(0.1)
+
+        task = asyncio.create_task(some_task())
+        ## delay to allow it to start ##
+        await asyncio.sleep(0.1)
+        print(task._coro.cr_await)
+        ```
+        This and the fact that you can have i.e.
+        ```await (await ... ), await (await ... ), ...```
+        
+        Means we'd need to use the unpack function exactly how we would for
+        yields but instead of adjusting for yields it would be adjusting
+        for awaits (just to know what object is currently being awaited)
+
+        You can't do ```yield from *async iterator*``` because ```yield from``` use ```iter``` when async generators use ```aiter``` and you can't try ```yield from``` in async functions because they're not allowed e.g. causes syntax / compilation error.
+
+      So, in summary, an async generator type should integrate nicely with the current implementation. The only significant adjustments will be utilizing the await keyword in the relevant functions and if desired implementing an ```ag_await``` attribute requiring additional implementation in custom_adjustment and unpack to unpack and/or unwrap awaits.
+
+  - coroutines are now using await/async syntax since 3.8 deprecated asycnio.coroutine that now
+  disallows generator based coroutines e.g. only generators and async generators are possible. If this was not the case I suspect it'd be close to working with the current implementation (if it becomes backwards compatible).

@@ -48,6 +48,18 @@ def api_test(gen, flag: bool) -> None:
 #############
 
 
+def test_EOF() -> None:
+    try:
+        raise EOF()
+    except StopAsyncIteration:
+        pass
+
+    try:
+        raise EOF()
+    except StopIteration:
+        pass
+
+
 def test_Pickler(pickler_test: Pickler = None) -> None:
     if pickler_test is None:
         pickler_test = pickler()
@@ -672,9 +684,6 @@ def test_generator_frame_init() -> None:
 
     ### state adjustments ###
 
-    ## close/exit ##
-    gen._frame_init(close=True)
-    assert gen._internals["state"] == ["    return 1" for _ in range(3)]
     ## exception ##
     gen._frame_init("Exception")
     assert gen._internals["state"] == [
@@ -992,6 +1001,47 @@ def test_yieldfrom() -> None:
     assert [i for i in test()] == [0, 1, 2]
 
 
+####################################
+### asynchronous generator tests ###
+####################################
+
+
+async def async_generator_tests() -> None:
+
+    async def test_asyncgenerator_pickle() -> None:
+        pass
+
+    async def test_asyncgenerator_send() -> None:
+        pass
+
+    async def test_asyncgenerator_close() -> None:
+        pass
+
+    async def test_asyncgenerator_throw() -> None:
+        pass
+
+    async def test_asyncgenerator_type_checking() -> None:
+        pass
+
+    async def test_asyncgenerator__init__() -> None:
+        pass
+
+    async def test_asyncgenerator__anext__() -> None:
+        pass
+
+    async def test_asyncgenerator__aiter__() -> None:
+        pass
+
+    await test_asyncgenerator_pickle()
+    await test_asyncgenerator_send()
+    await test_asyncgenerator_close()
+    await test_asyncgenerator_throw()
+    await test_asyncgenerator_type_checking()
+    await test_asyncgenerator__init__()
+    await test_asyncgenerator__anext__()
+    await test_asyncgenerator__aiter__()
+
+
 ## for debugging at the moment ##
 def t():
     source = "forge=x+3+3 if True else y"
@@ -1014,6 +1064,7 @@ def t():
 # t()
 
 ## tests are for cleaning + adjusting + pickling ##
+test_EOF()
 test_Pickler()
 test_picklers()
 test_generator_pickle()
@@ -1042,3 +1093,6 @@ test_generator_type_checking()
 test_closure()
 test_recursion()
 test_yieldfrom()
+import asyncio
+
+asyncio.run(async_generator_tests())
