@@ -8,7 +8,7 @@ In general, generators in python are considered single use only and only iterate
 
 This file implements a class called Generator to emulate what a function generator does in cpython.
 
-Note: it's currently not finished yet; see the TODO comment on top of the Generator class.
+Note: it's currently not finished yet; see the TODO comment in ```comments.py```.
 
 ## approach:
 
@@ -58,12 +58,21 @@ This makes determining where in memory ```iter(range(3))``` is more difficult bu
 
 For now this means using our ```track``` function; for ease of use we recommend importing the monkey patches e.g. calling ```patch_iterators(globals())```.
 
-5. Avoid overriding ```locals()[".internals"]``` in your generator (unless there's a particular reason why doing so makes sense).
+5. Avoid overriding ```locals()[".internals"]``` and gen._internals in your generator (unless there's a particular reason why doing so makes sense).
 
 ```locals()[".internals"]``` is assumed to be a reserved namespace for all internally stored variables (i.e. track_iter uses it to store the implict iterators) and other adjustments needed at execution to help make the Generator instance work on running \_\_next\_\_. 
 
-If it's not being used or some of the keys are unused then yes you can modify it but I would recommend against using it if you don't understand when it needs to be reserved because failure in doing so may see you overriding a variable that breaks expected execution and thus your code won't work as expected. Specificaly, overriding any of the variables mentioned in the third bullet point in the last section of this document called **Other notes** when it's used for a current adjustment.
+If it's not being used or some of the keys are unused then yes you can modify it but I would recommend against using it if you don't understand when it needs to be reserved because failure in doing so may see you overriding a variable that breaks expected execution and thus your code won't work as expected. Specifically, overriding any of the variables mentioned in the third bullet point in the last section of this document called **Other notes** when it's used for a current adjustment.
 
+As for gen._internals, this is a dictionary holding important references used in code adjustment:
+ - lineno
+ - frame
+ - jump_positions
+ - code
+ - yieldfrom
+ and others
+
+Therefore, if you modify any one of these (especially the first two), expect the code adjusters not to work and your code not to run as expected.
 
 When these assumptions hold the following conceptual design framework follows:
 
@@ -291,7 +300,7 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
 
   - yields in comprehension expressions and exec/eval don't occur in python syntax
 
-  - there is a .internal and it has 'args', 'yieldfrom', 'send', 'exec_info', .decorator, 'partial', '.continue', '.i', '.error', and the tracking variables (indents e.g. '.4' etc.)
+  - there is a .internal and it has 'EOF', 'args', 'yieldfrom', 'send', 'exec_info', .decorator, 'partial', '.continue', '.i', '.error', and the tracking variables (indents e.g. '.4' etc.)
 
     at the moment only 'partial', 'exec_info', '.args', and '.send' are initialized with '.send'
     being initialized with 'None' every iteration except when the user sends an argument
@@ -306,12 +315,12 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
     not just copy the generator then (as this software was designed for)? So it seems
     unnecessary to save as f_back.
 
-  - \_\_closure\_\_ attributes if available will be added as attribute to the Generator and
+  - if the \_\_closure\_\_ attribute is available will be added as attribute to the Generator and
     into its f_locals via get_nonlocals but it will mean that though the original generator
     has a binding to a closure the copied generator will be independent of it e.g. removing
     the closure binding and retaining its version in the state it was copied from. You can
     rebind to a closure if you want by setting a \_\_closure\_\_ attribute and \_\_code\_\_ attribute
-    manually that will allow _frame_init to rebind to the desired closure.
+    manually that will allow _frame_init to rebind to the desired closure or use the ```_bind``` method. This is not the case when calling an uninitialized generator as the user shouldn't be expected to manually bind to a closure after calling; copying/pickling requires manual binding and calling will already bind the copied generator to the original closure.
 
   - no reinitializing supported. It's expected that users either have a function that acts
     as a factory pattern or may copy the generator after initializing e.g. cannot use \_\_call\_\_
@@ -322,15 +331,17 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
     a recursion to create a new generator object and not a recursion on the same state. To 
     do a recursion on the same state would mean to copy the current state and run that which 
     would be running ```locals()[".internals"][".self"].copy()```. 
+
+    Also, by default, next_state is not defined in the next_state frame therefore it will raise an ```UnboundlocalError``` expecting it defined in any of the local, global, or nonlocal scopes.
     
-    Recursion is done for us by python via doing an attribute lookup to the globals dict if we're not in a closure. However, if we are in a closure things are more complex because the function is saved in the closure and we don't want that but this causes issues but essentially we replace this cell from the closure with a generator version copy of the original function and ensure that it's own closure has the Generator.__call__ under its name so that this problem resolves itself if the recursions continue to go deeper.
+    Recursion is done for us by python via doing an attribute lookup to the globals dict if we're not in a closure. However, if we are in a closure things are more complex because the function is saved in the closure and we don't want that but this causes issues. Essentially we replace this cell from the closure with a generator version copy of the original function and ensure it's own closure has the ```Generator.__call__``` under its name for this problem to resolve itself if the recursions continue to go deeper.
   
   - If your Generator/frame references global variables then these variables are expected by the
     state when it's called to exist. These should be set manually by the user and pickled separately with unpickling done before the generator runs its \_\_next\_\_ method. 
     
     The reason why the responsibility has been delegated to the user is because of any references made or propogating to other references via exec or eval, which would require a more extensive analysis to determine what globals are being required. Even if you did i.e. compile the expressions in exec/eval you still wouldn't be able to account for anything done dynamically e.g. f-strings or other processes during run time. Thus, in order to know what globals you need to save you also need to run the state i.e. copy it, but this would maybe change the globals values and thus it's not clear what an exact approach would be that generalizes. To an extent a get_globals function could be implemented that goes through f_code.co_names (global names) and sieves through to the names that are not builtins but as aforementioned this doesn't account for anything dynamic. Thus, it's up to the user for pickling the globals.
 
-    On the other hand if users don't mind the potentially high memory consumption and assuming all the the global objects are all pickleable then it shouldn't be difficult to do this even if it requires creating a class with a \_\_getstate\_\_ and \_\_setstate\_\_. So it will be considered an option to save the globals if users want this but would be more efficient/effective to manually decide what variables that are a part of the global scope are necessary.
+    On the other hand if users don't mind the potentially high memory consumption and assuming all the the global objects are all pickleable then it shouldn't be difficult to save the current global scope (e.g. pickling ```globals()```) even if it requires creating a class with a \_\_getstate\_\_ and \_\_setstate\_\_. So it will be considered an option to save the globals if users want this but would be more efficient/effective to manually decide what variables that are a part of the global scope are necessary.
 
   - if a closure cell is deleted from the originating scope this will raise an error at get_nonlocals
     for the scope using it since the cell no longer exists which is correct. If you delete a nonlocal in the inner scope, python throws an error on compilation and disallows exec/eval to take effect. If you delete a nonlocal in a ```Generator``` state it gets deleted how a regular deletion of a variable would be deleted; which is perhaps unexpected behavior relative to how it should be.
@@ -341,34 +352,40 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
 
   - At a high level, ```AsyncGenerator``` differs by the an additional capacity to use the ```await``` keyword that pauses the current execution to wait for the asynchronous function to return first, stopping is done on an exception raised as ```StopAsyncIteration``` instead of ```StopIteration```, and it uses the ```aiter``` and ```anext``` functions rather than ```iter``` and ```next``` respectively; this is also seen/reflected in the dunders with ```__aiter__``` and ```__anext__``` for the asynchronous version.
 
-    i.e. ```async for i in ...:``` will wrap ```...``` in ```aiter``` e.g. performing ```aiter(...)```.
+  i.e. ```async for i in ...:``` will wrap ```...``` in ```aiter``` e.g. performing ```aiter(...)```.
 
-    Additionally, the return types will be coroutines if ```aiter```, ```anext```, and other asynchronous functions are not awaited.
+  Additionally, the return types will be coroutines if ```aiter```, ```anext```, and other asynchronous functions are not awaited.
 
-    Async Generators don't have an ```__await__``` method implementation but they do record the object they are currently awaiting i.e.
+  Async Generators don't have an ```__await__``` method implementation but they do record the object they are currently awaiting i.e.
 
-     - ag_await and cr_await are when you use i.e asyncio.create_task:
-        ```python
-        import asyncio
+  - ag_await and cr_await are when you use i.e asyncio.create_task:
+    ```python
+    import asyncio
 
-        async def some_task():
-            await asyncio.sleep(0.1)
-
-        task = asyncio.create_task(some_task())
-        ## delay to allow it to start ##
+    async def some_task():
         await asyncio.sleep(0.1)
-        print(task._coro.cr_await)
-        ```
-        This and the fact that you can have i.e.
-        ```await (await ... ), await (await ... ), ...```
-        
-        Means we'd need to use the unpack function exactly how we would for
-        yields but instead of adjusting for yields it would be adjusting
-        for awaits (just to know what object is currently being awaited)
 
-        You can't do ```yield from *async iterator*``` because ```yield from``` use ```iter``` when async generators use ```aiter``` and you can't try ```yield from``` in async functions because they're not allowed e.g. causes syntax / compilation error.
+    task = asyncio.create_task(some_task())
+    ## delay to allow it to start ##
+    await asyncio.sleep(0.1)
+    print(task._coro.cr_await)
+    ```
+    This and the fact that you can have i.e.
+    ```await (await ... ), await (await ... ), ...```
 
-      So, in summary, an async generator type should integrate nicely with the current implementation. The only significant adjustments will be utilizing the await keyword in the relevant functions and if desired implementing an ```ag_await``` attribute requiring additional implementation in custom_adjustment and unpack to unpack and/or unwrap awaits.
+    Means we'd need to use the unpack function exactly how we would for
+    yields but instead of adjusting for yields it would be adjusting
+    for awaits (just to know what object is currently being awaited).
+    However, this doesn't seem to be the case with asynchronous generators? 
+    Therefore, until I figure out how it's used I will leave it out.
+
+    You can't do ```yield from *async iterator*``` because ```yield from``` use ```iter``` when async generators use ```aiter``` and you can't try ```yield from``` in async functions because they're not allowed e.g. causes syntax / compilation error.
+
+    So, in summary, an async generator type should integrate nicely with the current implementation. The only significant adjustments will be utilizing the await keyword in the relevant functions and if desired implementing an ```ag_await``` attribute requiring additional implementation in custom_adjustment and unpack to unpack and/or unwrap awaits.
 
   - coroutines are now using await/async syntax since 3.8 deprecated asycnio.coroutine that now
   disallows generator based coroutines e.g. only generators and async generators are possible. If this was not the case I suspect it'd be close to working with the current implementation (if it becomes backwards compatible).
+
+  - only need to record the frames globals upon initialization and pickling since these are the only times necessary. There won't be other times where your generator instance transfers into a new global scope that isn't via pickling from what I'm aware of.
+
+  - in the implementation every call to eval/exec made has tried to ensure the targeted scope is correct to be precise for the calls purpose otherwise there will be unbound local errors in some cases.

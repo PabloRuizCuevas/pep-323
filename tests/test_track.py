@@ -1,12 +1,20 @@
 from gcopy.track import *
+import asyncio
 
 
-def test_offset_adjust() -> None:
-    assert list(offset_adjust({".1": None, ".2": None, ".3": None}).keys()) == [
-        ".4",
-        ".8",
-        ".12",
-    ]
+def test_track_adjust() -> None:
+    dct = {".mapping": [34, 35, 74], ".34": None, ".35": None, ".74": None}
+    assert track_adjust(dct)
+    assert list(dct.keys()) == [".4", ".8", ".12"]
+
+
+def test_track_shift() -> None:
+    def test():
+        pass
+
+    dct = dict.fromkeys([".%s" % i for i in range(8, 20, 4)])
+    track_shift(test, dct)
+    assert list(dct.keys()) == [".4", ".8", ".12"]
 
 
 def test_patch_iters() -> None:
@@ -97,12 +105,11 @@ async def test_atrack() -> None:
     assert [i async for i in locals()[".internals"][".4"]] == [1, 2, 3]
 
 
+test_track_adjust()
+test_track_shift()
 test_patch_iters()
 test_track_iter()
 test_track_iter_inside_exec()
 test_track_iter_inside_Generator()
-test_offset_adjust()
 test_track()
-import asyncio
-
 asyncio.run(test_atrack())

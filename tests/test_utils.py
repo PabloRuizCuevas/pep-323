@@ -1,27 +1,17 @@
 from gcopy.utils import *
-
-
-def test_is_cli() -> None:
-    is_cli()  ## run it to make sure no errors ##
+import warnings
 
 
 def test_cli_findsource() -> None:
+    ## you need to be in a cli to test this ##
     if is_cli():
-        pass
+        print(cli_findsource())
 
 
 def test_skip() -> None:
     i = iter(range(3))
     skip(i, 2)
     assert next(i) == 2
-
-
-def test_get_col_offset() -> None:
-    from inspect import currentframe
-
-    frame = currentframe()
-    ## it's essentially the col_offset in this line up to the get_col_offset function ##
-    assert get_col_offset(frame) == 11
 
 
 def test_empty_generator() -> None:
@@ -131,15 +121,60 @@ def test_get_globals() -> None:
     assert get_globals() == globals()
 
 
-test_is_cli()
-# test_cli_findsource()
+def test_similar_opcode() -> None:
+    ## class for testing ##
+    class Test:
+        def __init__(self):
+            for attr in ("co_freevars", "co_cellvars", "co_varnames", "co_names"):
+                setattr(self, attr, [0])
+
+    ## same ##
+    assert similiar_opcode(
+        Test(),
+        Test(),
+        ## LOAD_GLOBAL ##
+        116,
+        ## LOAD_GLOBAL ##
+        116,
+        0,
+        0,
+    )
+    ## essentially the same (for our purposes) ##
+    assert similiar_opcode(
+        Test(),
+        Test(),
+        ## LOAD_GLOBAL ##
+        116,
+        ## LOAD_FAST ##
+        124,
+        0,
+        0,
+    )
+    ## different ##
+    assert similiar_opcode(Test(), Test(), 151, 1, 0, 0) == False
+
+
+def test_code_cmp() -> None:
+    test = lambda line: getcode(eval(line))
+    ## same code object ##
+    assert code_cmp(test("lambda x: x"), test("lambda x: x"))
+
+    ## essentially the same code object ##
+    def test_case():
+        j = 3
+        f = lambda: j
+        return getcode(f)
+
+    assert code_cmp(test("lambda: j"), test_case())
+    ## different code objects ##
+    assert code_cmp(test("lambda x: x"), test("lambda x: x + 1")) == False
+
+## is_cli is tested in test_cli_findsource ##
+test_cli_findsource()
 test_skip()
-test_get_col_offset()
 test_empty_generator()
 test_code_attrs()
 test_attr_cmp()
-import warnings
-
 with warnings.catch_warnings():
     ## raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
     warnings.simplefilter("ignore")
@@ -150,3 +185,5 @@ test_chain()
 test_get_nonlocals()
 test_try_set()
 test_get_globals()
+test_similar_opcode()
+test_code_cmp()

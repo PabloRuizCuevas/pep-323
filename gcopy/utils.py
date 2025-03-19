@@ -1,9 +1,13 @@
 from sys import version_info
-from inspect import getframeinfo, currentframe
+from inspect import currentframe
 from readline import get_history_item, get_current_history_length
-from dis import get_instructions
+from dis import _unpack_opargs
 from types import FrameType, GeneratorType, CodeType, FunctionType
 from typing import Iterable, Any
+from opcode import opmap
+
+
+_opmap = dict(zip(opmap.values(), opmap.keys()))
 
 
 def is_cli() -> bool:
@@ -13,28 +17,15 @@ def is_cli() -> bool:
 
 def cli_findsource() -> list[str]:
     """Finds the source assuming CLI"""
-    length = get_current_history_length()
-    return [get_history_item(-i) for i in range(length - 1, 0, -1)]
+    return [
+        get_history_item(-i) for i in range(get_current_history_length() - 1, 0, -1)
+    ]
 
 
 def skip(iter_val: Iterable, n: int) -> None:
     """Skips the next n iterations in a for loop"""
     for _ in range(n):
         next(iter_val)
-
-
-def get_col_offset(frame: FrameType) -> int:
-    """Gets the col offset from a frame"""
-    if version_info < (3, 11):
-        raise NotImplementedError(
-            "get_instructions does not provide positions, you have to rewrite the get_instructions function to allow so"
-        )
-        lasti = frame.f_lasti
-        for instruction in get_instructions(frame.f_code):
-            if instruction.offset == lasti:
-                return instruction.positions.col_offset
-        raise ValueError("f_lasti not encountered")
-    return getframeinfo(frame).positions.col_offset
 
 
 def empty_generator() -> GeneratorType:
@@ -148,7 +139,74 @@ def try_set(self, key: Any, value: Any, default: Any = None) -> None:
 
 
 def get_globals() -> dict:
+    """Gets the globals of the originating module that was called from"""
     frame = currentframe()
     while frame.f_code.co_name != "<module>":
         frame = frame.f_back
     return frame.f_globals
+
+
+def similiar_opcode(
+    code_obj1: CodeType,
+    code_obj2: CodeType,
+    opcode1: int,
+    opcode2: int,
+    item_index1: int,
+    item_index2: int,
+) -> bool:
+    """
+    Determines if the opcodes lead to pratically the same result
+    (for similarity between code objects that differ by the variable type attributed to it)
+    """
+    ## i.e. LOAD, STORE, DELETE ##
+    name1 = _opmap[opcode1].split("_")
+    name2 = _opmap[opcode2].split("_")
+    if name1[0] != name2[0]:
+        return False
+    mapping = {
+        "DEREF": "co_freevars",
+        "CLOSURE": "co_cellvars",
+        "FAST": "co_varnames",
+        "GLOBAL": "co_names",
+    }
+
+    # print(getattr(code_obj1, mapping[name1[1]])[item_index1], getattr(code_obj2, mapping[name2[1]])[item_index2])
+    def get_code_attr(code_obj: CodeType, name: list[str], item_index: int) -> Any:
+        attr = mapping[name[1]]
+        array = getattr(code_obj, attr)
+        if attr == "co_freevars":
+            item_index -= getattr(code_obj, "co_nlocals")
+        return array[item_index]
+
+    try:
+        return get_code_attr(code_obj1, name1, item_index1) == get_code_attr(
+            code_obj2, name2, item_index2
+        )
+    except (IndexError, KeyError):
+        return False
+
+
+def code_cmp(code_obj1: CodeType, code_obj2: CodeType) -> bool:
+    """compares 2 code objects to see if they are essentially the same"""
+
+    def code_setup(code_obj: CodeType) -> bytes:
+        count, RESUME = 0, opmap["RESUME"]
+        for index, opcode, item_index in _unpack_opargs(code_obj.co_code):
+            if opcode == RESUME:
+                break
+            count += 1
+        return _unpack_opargs(code_obj.co_code[count * 2 :])
+
+    try:
+        for (index1, opcode1, item_index1), (index2, opcode2, item_index2) in zip(
+            code_setup(code_obj1), code_setup(code_obj2), strict=True
+        ):
+            if opcode1 != opcode2:
+                if not similiar_opcode(
+                    code_obj1, code_obj2, opcode1, opcode2, item_index1, item_index2
+                ):
+                    return False
+    ## catch the error if the code objects are not the same length ##
+    except ValueError:
+        return False
+    return True

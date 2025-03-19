@@ -2,13 +2,13 @@
 ### tracking ###
 ################
 from .source_processing import get_indent  # , is_definition, lineno_adjust
-from .utils import is_cli, get_history_item, get_col_offset
-from inspect import currentframe, getframeinfo
+from .utils import is_cli, get_history_item, getcode
+from inspect import currentframe, getframeinfo, getsourcelines
 
 ## for the monkey patching ##
 from fishhook import hook, orig  ## pip install fishhook
 from typing import Iterator, Iterable, Any
-from types import FrameType
+from types import FrameType, FunctionType
 
 
 def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterable:
@@ -29,16 +29,32 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
     that are divisble by 4 should not be used in general usage
     by users.
 
-    Using in generator expressions uses the col_offset instead
+    When tracking generator expressions it uses the current
+    bytecode instruction index instead
     """
-    # if not isinstance(obj, GeneratorWrapper):
-    #     obj = GeneratorWrapper(obj)
-
     f_locals = frame.f_locals
+    ## in case we're checking if it's the same code object in source_processing.extract_source_from_comparison ##
+    try:
+        code = frame.f_back.f_code
+        if (
+            code.co_name == "extract_source_from_comparison"
+            and code.co_filename.split("\\")[-1] == "source_processing.py"
+        ):
+            return obj
+    except:
+        pass
     if frame.f_code.co_name == "<genexpr>":
-        ## we don't need to concern about interference with indent adjusts since the frames ##
-        ## are separate  e.g. we don't need to include the line and the offset just the offset ##
-        key = get_col_offset(frame)
+        if ".internals" not in frame.f_locals:
+            frame.f_locals[".internals"] = {}
+        if ".0" not in frame.f_locals[".internals"]:
+            frame.f_locals[".internals"] |= {
+                ".mapping": [0],
+                ".0": frame.f_locals[".0"],
+            }
+            del frame.f_locals[".0"]
+        key = frame.f_lasti
+        if key not in frame.f_locals[".internals"][".mapping"]:
+            frame.f_locals[".internals"][".mapping"] += [key]
     else:
         if is_cli():
             code_context = get_history_item(-frame.f_lineno)
@@ -71,7 +87,7 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
     return obj
 
 
-def offset_adjust(f_locals: dict) -> dict:
+def track_adjust(f_locals: dict) -> bool:
     """
     Adjusts the track_iter created variables
     used in generator expressions from offset
@@ -85,15 +101,20 @@ def offset_adjust(f_locals: dict) -> dict:
     Note: only needed on the current variables
     in the frame that use offset based trackers
     """
-    ## the first offset will probably get in the way ##
-    lineno = 0  ## every line will increase the indentation by 4 ##
-    new_dct = {}
-    for key, value in f_locals.items():
+    index = 0
+    for index, key in enumerate(f_locals.pop(".mapping", []), start=1):
+        f_locals[".%s" % (index * 4)] = f_locals.pop(".%s" % key)
+    return bool(index)
+
+
+def track_shift(FUNC: FunctionType, internals: dict) -> None:
+    ## adjust the indentation based trackers to a minimum of 4 ##
+    indent = get_indent(getsourcelines(getcode(FUNC))[0][0])
+    for key in tuple(internals.keys()):
         if isinstance(key, str) and key[0] == "." and key[1:].isdigit():
-            lineno += 1
-            key = ".%s" % (4 * lineno)
-        new_dct[key] = value
-    return new_dct
+            new_key = int(key[1:])
+            if new_key % 4 == 0:
+                internals[".%s" % (new_key - indent)] = internals.pop(key)
 
 
 ####################
@@ -136,7 +157,6 @@ def hook_iter(iterator: Iterator | Iterable, _globals: dict) -> None:
         @hook(iterator)
         def __iter__(self) -> Iterator:
             iterator = iter(orig(self))
-            # print(self)
             frame = currentframe().f_back
             return track_iter(iterator, frame)
 

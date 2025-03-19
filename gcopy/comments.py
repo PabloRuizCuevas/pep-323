@@ -1,52 +1,82 @@
 """
 TODO:
 
-  1. finish testing
-  2. implement ternary expression handling in unpack (needed but I'd consider it nieche)
-  3. implement await statement handling in unpack
-     (If we want to be as close to the orginal as possible then it's needed but the
-     only difference with it is the ag_await attr which tells the user what object
-     is currently being awaited similar to how .yieldfrom e.g. gi_yieldfrom would
-     tell the user what's currently being yielded from)
+  - review everything and check for any more relevant unforseen cases
 
-    Currently not working (_clean_source_lines):
-     - some value yields in f-strings in statements
-     - ternary expressions with and without value yields
-     - the decorator/definition adjustments needs testing
-     - collect_lambda needs testing
-     - a colon is added in a new line instead of the current
-       line for while loops adjusted by _block_adjust or unpack
+  - check lambda expressions with + without value yields and intialized + unintialized
 
-    Finish fixing and testing:
+    overview of nieche cases left to fix (value yield related):
+      - f-string with value yields needs handling first for the other special syntaxes it uses
+        before going ahead with any unpacking or not.
+        
+      - ternary expressions with value yields
 
-        _clean_source_lines (testing):
+      - decorators and function definitions with value yield arguments (lambda default args as well)
+        - check iteration when this is the case
 
-         - check _block_adjust
-           block_adjust - jump_positions e.g. for yield_adjust used during unpack
-         - check the resets in variables in _clean_source_lines
-           (i.e. after 'yield' and string_collector_adjust)
-         - test collect_lambda
-         - test the decorator/definition adjustments
-         - test ternary statements
-         - test cleaning of sourcelines for lambda expressions
+      - determining the correct lineno on a line of encapsualted value yields
+        e.g. (yield (yield (yield)))
 
-        unpack:
+    Niche use cases to fix (value yield related):
 
-         - ternary statements with and without value yields
-         - check collect_lambda
+        Currently not working (_clean_source_lines):
+        - some value yields in f-strings in statements
+        - ternary expressions with and without value yields
+        - the decorator/definition adjustments needs testing
+        - collect_lambda needs testing
+        - a colon is added in a new line instead of the current
+          line for while loops adjusted by _block_adjust or unpack
 
-        Non-priority (at the moment) but will be needed later:
-        - When do i.e. gi_running and gi_suspended change?
-        - clean up everything and document it well
+        source_processing:
 
-    - try-except-finally with and without multiple except catches
-      needs handling implemented in control_flow_adjust
+          string_collector_proxy (string + multiline_string):
+          - implement full checking of f-strings to format these correctly since 
+            there are different syntaxes allowable in f-strings. This will also
+            help with unpacking but is likely very niche.
 
-      - need to check except_adjust for this as well
+          unpack:
 
-    - expr_getsource + extract_source_from_comparison need to be made
-      more precise with eval usage since eval requires the scope used
-      e.g. will fail in nieche cases where i.e. there are cell_vars
-      or free_vars that are not categorized by the source correctly
-      even though they will be captured any way.
+          - fix nested ternary statements
+           - fix the contents recorded then it should work
+
+          - check collect_lambda
+
+          _clean_source_lines (testing):
+
+          - check _block_adjust
+            block_adjust - jump_positions e.g. for yield_adjust used during unpack
+
+          - test collect_lambda
+          - test the decorator/definition adjustments - can't test any ternary expressions until unpack is finished
+
+
+          - check the resets in variables in _clean_source_lines
+            (i.e. after 'yield' and string_collector_adjust)
+
+
+          - test ternary statements
+          - test cleaning of sourcelines for lambda expressions
+          - close all brackets up to the end of the line - implement this in unpack too
+
+          except_adjust:
+          - check except_adjust for multiple try-except catches and finally block
+
+        - lineno will need adjusting if wanting to consider value yield edge case via 
+          dis._unpack_opargs maybe. Also, will need getframeinfo().positions.col_offset
+          as well to determine where it is in i.e. a ternary expression. It's possible
+          to fix but it's going to require a lot more work just for a niche use case to
+          get working. If so, the minimum version will have to be back at 3.11 because
+          of the offset positions.
+
+  Non-priority (at the moment) but will be needed later:
+  - When do i.e. gi_running and gi_suspended change?
+  - I'm not sure about ag_await it seems to return None in testing.
+    Until I learn of an example of how it's used emerges I'll leave
+    it out for now; it's not important for most users anyway.
+    
+    utils:
+      - test utils.cli_getsource
+    
+    Track:
+      - fix any distrurbances from hooks created i.e. type checking was an issue previously
 """
