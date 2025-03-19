@@ -80,6 +80,10 @@ def test_skip_source_definition() -> None:
 @method2(*args,**kwargs)
 def function():pass"""
     assert skip_source_definition(source) == "pass"
+    source = """@method1
+@method2(*args,**kwargs)
+async def function():pass"""
+    assert skip_source_definition(source) == "pass"
 
 
 def test(source: str, f_string: bool = False) -> tuple[Iterable, str, str]:
