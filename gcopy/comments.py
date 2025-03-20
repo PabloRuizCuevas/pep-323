@@ -1,8 +1,13 @@
 """
 TODO:
 
-  1. implement ternary statement handling in unpack
-  2. finish testing
+  1. finish testing
+  2. implement ternary expression handling in unpack (needed but I'd consider it nieche)
+  3. implement await statement handling in unpack
+     (If we want to be as close to the orginal as possible then it's needed but the
+     only difference with it is the ag_await attr which tells the user what object
+     is currently being awaited similar to how .yieldfrom e.g. gi_yieldfrom would
+     tell the user what's currently being yielded from)
 
     Currently not working (_clean_source_lines):
      - some value yields in f-strings in statements
@@ -12,11 +17,12 @@ TODO:
      - a colon is added in a new line instead of the current
        line for while loops adjusted by _block_adjust or unpack
 
-    Finish fixing:
+    Finish fixing and testing:
 
         _clean_source_lines (testing):
 
          - check _block_adjust
+           block_adjust - jump_positions e.g. for yield_adjust used during unpack
          - check the resets in variables in _clean_source_lines
            (i.e. after 'yield' and string_collector_adjust)
          - test collect_lambda
@@ -25,55 +31,22 @@ TODO:
          - test cleaning of sourcelines for lambda expressions
 
         unpack:
+
          - ternary statements with and without value yields
          - check collect_lambda
 
         Non-priority (at the moment) but will be needed later:
         - When do i.e. gi_running and gi_suspended change?
-        - check all the documentation + docstrings
-        - remove any unncesesary code, comments etc.
+        - clean up everything and document it well
 
+    - try-except-finally with and without multiple except catches
+      needs handling implemented in control_flow_adjust
 
-    Expansion to other types of generators:
+      - need to check except_adjust for this as well
 
-     - Add some async features to AsyncGenerator - will need to work out how I want to do the async stuff
-       async has renamings of the dunders as well i.e. methods of interest are __iter__ is __aiter__, __next__
-       is __anext__, and it will probably need an __await__ implementation.
-
-     - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
-
-     - Maybe need to make an internal generator and then use this generally?
-
-  Documentation notes:
-
-  - Make a Note in the documentation that while loops don't need tracking and
-    indentation is enough as an identifier for tracking
-
-  - Make a note in the documentation that yields in comprehension expressions and exec/eval don't occur
-    in python syntax
-
-  - write in the documentation that there is a .internal and it has 'args', 'yieldfrom', 'send',
-   'exec_info', .decorator, 'partial', '.continue', '.i', '.error', and the tracking variables (indents e.g. '.4' etc.)
-
-    at the moment only 'partial', 'exec_info', '.args', and '.send' are initialized with '.send'
-    being initialized with 'None' every iteration except when the user sends an argument
-
-  - I've decided that we don't record f_back for each state since if you really need
-    to record the states then you should do that separately before/after each state is
-    used because it's generally considered better that way, the bigger downside is the
-    memory consumption of saving all the states as f_back on frames when really we're
-    usually only interested in it running and it's current state. The previous states
-    variables should be the current versions and the linenos can be recorded in between
-    states easily. The other exploration one could do is rerunning states again but why
-    not just copy the generator then (as this software was designed for)? So it seems
-    unnecessary to save as f_back.
-
-  - __closure__ attributes if available will be added as attribute to the Generator and
-    into its f_locals via get_nonlocals but it will mean that though the original generator
-    has a binding to a closure the copied generator will be independent of it e.g. removing
-    the closure binding and retaining it's version in the state it was copied from.
-
-  - no reinitializing supported. It's expected that users either have a function that acts
-    as a factory pattern or may copy the generator after initializing e.g. cannot use __call__
-    on an initialized generator.
+    - expr_getsource + extract_source_from_comparison need to be made
+      more precise with eval usage since eval requires the scope used
+      e.g. will fail in nieche cases where i.e. there are cell_vars
+      or free_vars that are not categorized by the source correctly
+      even though they will be captured any way.
 """

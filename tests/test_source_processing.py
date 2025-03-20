@@ -3,12 +3,17 @@ from types import FunctionType
 
 
 def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:
-    if compare:
+    try:
+        if compare:
+            for arg in args:
+                assert FUNC(arg) == compare.pop(0)
+            return
         for arg in args:
-            assert FUNC(arg) == compare.pop(0)
-        return
-    for arg in args:
-        assert FUNC(arg)
+            assert FUNC(arg)
+    except AssertionError:
+        raise AssertionError(
+            f"{FUNC.__name__} failed on {arg}" + " on compare" * bool(compare)
+        )
 
 
 def test_update_depth() -> None:
@@ -74,6 +79,10 @@ def test_skip_source_definition() -> None:
     source = """@method1
 @method2(*args,**kwargs)
 def function():pass"""
+    assert skip_source_definition(source) == "pass"
+    source = """@method1
+@method2(*args,**kwargs)
+async def function():pass"""
     assert skip_source_definition(source) == "pass"
 
 
@@ -386,7 +395,7 @@ def test_collect_definition() -> None:
 
 
 def test_is_loop() -> None:
-    assert_cases(is_loop, "for ", "while ")
+    assert_cases(is_loop, "for ", "while ", "async     for ")
 
 
 def test_is_alternative_statement() -> None:
@@ -656,7 +665,7 @@ def test_yield_adjust() -> None:
     assert yield_adjust("yield 3", "") == ["return 3"]
 
     assert yield_adjust("yield from range(3)", "") == [
-        "locals()['.internals']['.yieldfrom']=range(3)",
+        "locals()['.internals']['.0']=locals()['.internals']['.yieldfrom']=iter(range(3))",
         "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
         "    return locals()['.internals']['.i']",
         "    if locals()['.internals']['.send']:",
@@ -736,11 +745,6 @@ def test_singly_space() -> None:
             source += char
 
     assert source == "    for i in [1 , 3 , 5]: "
-
-
-def test_exit_adjust() -> None:
-    case = "return   ...\nreturn    EOF(...)"
-    assert exit_adjust(case.split("\n")) == ["return 1", "return"]
 
 
 def test_outer_loop_adjust() -> None:
@@ -854,7 +858,6 @@ test_extract_genexpr()
 test_extract_lambda()
 test_except_adjust()
 test_singly_space()
-test_exit_adjust()
 test_outer_loop_adjust()
 test_setup_next_line()
 test_unpack_lambda()

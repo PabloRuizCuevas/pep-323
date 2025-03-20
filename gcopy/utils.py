@@ -1,10 +1,9 @@
 from sys import version_info
-from inspect import getframeinfo, signature, Signature, BoundArguments, getsource
+from inspect import getframeinfo, currentframe
 from readline import get_history_item, get_current_history_length
 from dis import get_instructions
 from types import FrameType, GeneratorType, CodeType, FunctionType
 from typing import Iterable, Any
-from collections import OrderedDict
 
 
 def is_cli() -> bool:
@@ -127,8 +126,15 @@ def get_nonlocals(FUNC: FunctionType) -> dict:
     cells = getattr(FUNC, "__closure__", [])
     nonlocals = {}
     if cells:
-        for key, value in zip(FUNC.__code__.co_freevars, cells):
-            nonlocals[key] = value.cell_contents
+        for key, value in zip(FUNC.__code__.co_freevars, cells, strict=True):
+            try:
+                nonlocals[key] = value.cell_contents
+            except ValueError as e:
+                ## if doing recursion, the function can get recorded as nonlocal ##
+                if key == FUNC.__name__:
+                    nonlocals[key] = FUNC
+                    continue
+                raise e
     return nonlocals
 
 
@@ -139,3 +145,10 @@ def try_set(self, key: Any, value: Any, default: Any = None) -> None:
     """
     if self != default:
         self[key] = value
+
+
+def get_globals() -> dict:
+    frame = currentframe()
+    while frame.f_code.co_name != "<module>":
+        frame = frame.f_back
+    return frame.f_globals
