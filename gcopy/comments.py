@@ -1,79 +1,82 @@
 """
 TODO:
 
-  1. implement ternary statement handling in unpack
-  2. finish testing
+  - review everything and check for any more relevant unforseen cases
 
-    Currently not working (_clean_source_lines):
-     - some value yields in f-strings in statements
-     - ternary expressions with and without value yields
-     - the decorator/definition adjustments needs testing
-     - collect_lambda needs testing
-     - a colon is added in a new line instead of the current
-       line for while loops adjusted by _block_adjust or unpack
+  - check lambda expressions with + without value yields and intialized + unintialized
 
-    Finish fixing:
+    overview of nieche cases left to fix (value yield related):
+      - f-string with value yields needs handling first for the other special syntaxes it uses
+        before going ahead with any unpacking or not.
+        
+      - ternary expressions with value yields
 
-        _clean_source_lines (testing):
+      - decorators and function definitions with value yield arguments (lambda default args as well)
+        - check iteration when this is the case
 
-         - check _block_adjust
-         - check the resets in variables in _clean_source_lines
-           (i.e. after 'yield' and string_collector_adjust)
-         - test collect_lambda
-         - test the decorator/definition adjustments
-         - test ternary statements
-         - test cleaning of sourcelines for lambda expressions
+      - determining the correct lineno on a line of encapsualted value yields
+        e.g. (yield (yield (yield)))
 
-        unpack:
-         - ternary statements with and without value yields
-         - check collect_lambda
+    Niche use cases to fix (value yield related):
 
-        Non-priority (at the moment) but will be needed later:
-        - When do i.e. gi_running and gi_suspended change?
-        - check all the documentation + docstrings
-        - remove any unncesesary code, comments etc.
+        Currently not working (_clean_source_lines):
+        - some value yields in f-strings in statements
+        - ternary expressions with and without value yields
+        - the decorator/definition adjustments needs testing
+        - collect_lambda needs testing
+        - a colon is added in a new line instead of the current
+          line for while loops adjusted by _block_adjust or unpack
+
+        source_processing:
+
+          string_collector_proxy (string + multiline_string):
+          - implement full checking of f-strings to format these correctly since 
+            there are different syntaxes allowable in f-strings. This will also
+            help with unpacking but is likely very niche.
+
+          unpack:
+
+          - fix nested ternary statements
+           - fix the contents recorded then it should work
+
+          - check collect_lambda
+
+          _clean_source_lines (testing):
+
+          - check _block_adjust
+            block_adjust - jump_positions e.g. for yield_adjust used during unpack
+
+          - test collect_lambda
+          - test the decorator/definition adjustments - can't test any ternary expressions until unpack is finished
 
 
-    Expansion to other types of generators:
+          - check the resets in variables in _clean_source_lines
+            (i.e. after 'yield' and string_collector_adjust)
 
-     - Add some async features to AsyncGenerator - will need to work out how I want to do the async stuff
-       async has renamings of the dunders as well i.e. methods of interest are __iter__ is __aiter__, __next__
-       is __anext__, and it will probably need an __await__ implementation.
 
-     - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
+          - test ternary statements
+          - test cleaning of sourcelines for lambda expressions
+          - close all brackets up to the end of the line - implement this in unpack too
 
-     - Maybe need to make an internal generator and then use this generally?
+          except_adjust:
+          - check except_adjust for multiple try-except catches and finally block
 
-  Documentation notes:
+        - lineno will need adjusting if wanting to consider value yield edge case via 
+          dis._unpack_opargs maybe. Also, will need getframeinfo().positions.col_offset
+          as well to determine where it is in i.e. a ternary expression. It's possible
+          to fix but it's going to require a lot more work just for a niche use case to
+          get working. If so, the minimum version will have to be back at 3.11 because
+          of the offset positions.
 
-  - Make a Note in the documentation that while loops don't need tracking and
-    indentation is enough as an identifier for tracking
-
-  - Make a note in the documentation that yields in comprehension expressions and exec/eval don't occur
-    in python syntax
-
-  - write in the documentation that there is a .internal and it has 'args', 'yieldfrom', 'send',
-   'exec_info', .decorator, 'partial', '.continue', '.i', '.error', and the tracking variables (indents e.g. '.4' etc.)
-
-    at the moment only 'partial', 'exec_info', '.args', and '.send' are initialized with '.send'
-    being initialized with 'None' every iteration except when the user sends an argument
-
-  - I've decided that we don't record f_back for each state since if you really need
-    to record the states then you should do that separately before/after each state is
-    used because it's generally considered better that way, the bigger downside is the
-    memory consumption of saving all the states as f_back on frames when really we're
-    usually only interested in it running and it's current state. The previous states
-    variables should be the current versions and the linenos can be recorded in between
-    states easily. The other exploration one could do is rerunning states again but why
-    not just copy the generator then (as this software was designed for)? So it seems
-    unnecessary to save as f_back.
-
-  - __closure__ attributes if available will be added as attribute to the Generator and
-    into its f_locals via get_nonlocals but it will mean that though the original generator
-    has a binding to a closure the copied generator will be independent of it e.g. removing
-    the closure binding and retaining it's version in the state it was copied from.
-
-  - no reinitializing supported. It's expected that users either have a function that acts
-    as a factory pattern or may copy the generator after initializing e.g. cannot use __call__
-    on an initialized generator.
+  Non-priority (at the moment) but will be needed later:
+  - When do i.e. gi_running and gi_suspended change?
+  - I'm not sure about ag_await it seems to return None in testing.
+    Until I learn of an example of how it's used emerges I'll leave
+    it out for now; it's not important for most users anyway.
+    
+    utils:
+      - test utils.cli_getsource
+    
+    Track:
+      - fix any distrurbances from hooks created i.e. type checking was an issue previously
 """

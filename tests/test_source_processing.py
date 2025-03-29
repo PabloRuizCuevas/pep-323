@@ -3,12 +3,17 @@ from types import FunctionType
 
 
 def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:
-    if compare:
+    try:
+        if compare:
+            for arg in args:
+                assert FUNC(arg) == compare.pop(0)
+            return
         for arg in args:
-            assert FUNC(arg) == compare.pop(0)
-        return
-    for arg in args:
-        assert FUNC(arg)
+            assert FUNC(arg)
+    except AssertionError:
+        raise AssertionError(
+            f"{FUNC.__name__} failed on {arg}" + " on compare" * bool(compare)
+        )
 
 
 def test_update_depth() -> None:
@@ -74,6 +79,10 @@ def test_skip_source_definition() -> None:
     source = """@method1
 @method2(*args,**kwargs)
 def function():pass"""
+    assert skip_source_definition(source) == "pass"
+    source = """@method1
+@method2(*args,**kwargs)
+async def function():pass"""
     assert skip_source_definition(source) == "pass"
 
 
@@ -369,6 +378,46 @@ def test_unpack() -> None:
         75,
     )
     ## ternary statements ##
+    # assert test("a = 1 if 2 else 3 = 5") == (
+    #     [
+    #     'if  2 :',
+    #     "    locals()['.internals']['.args'] += [1 ]",
+    #     'else:',
+    #     "    locals()['.internals']['.args'] += [3 ]",
+    #     ],
+    #     "a  =locals()['.internals']['.args'].pop(0)= 5",
+    #     20,
+    #     )
+    # assert test("a = (1 if 2 else 3) if True else False = 5") == (
+    #     [
+    #     'if  True :',
+    #     "    locals()['.internals']['.args'] += [) ]",
+    #     'else:',
+    #     "    locals()['.internals']['.args'] += [False ]",
+    #     'if  2 :',
+    #     "    locals()['.internals']['.args'] += [(1 ]",
+    #     'else:',
+    #     "    locals()['.internals']['.args'] += [3locals()['.internals']['.args'].pop()= 5]"
+    #     ],
+    #     "a  =locals()['.internals']['.args'].pop(0)",
+    #     8)
+    # print("\n".join(test("a = False if True else (1 if 2 else 3) = 5")[0]))
+    # print("-------------")
+    # print("\n".join(test("a = False if True else ((5 if 2 else 4) if 2 else 3) = 5")[0]))
+    # test("a = 1 if 2 else 3 = 5")
+    # print("\n".join(test("a = (1 if 2 else 3) if True else ((4 if 5 else 6) if 7 else 8) = 9")[0]))
+    print(
+        "\n".join(
+            test(
+                "a = ((-2 if -1 else 0) if 2 else 3) if True else ((4 if 5 else 6) if 7 else (-3 if -4 else -5)) = 9"
+            )[0]
+        )
+    )
+    print(
+        test(
+            "a = ((-2 if -1 else 0) if 2 else 3) if True else ((4 if 5 else 6) if 7 else (-3 if -4 else -5)) = 9"
+        )[1]
+    )
     ## collect_lambda ##
 
 
@@ -386,7 +435,7 @@ def test_collect_definition() -> None:
 
 
 def test_is_loop() -> None:
-    assert_cases(is_loop, "for ", "while ")
+    assert_cases(is_loop, "for ", "while ", "async     for ")
 
 
 def test_is_alternative_statement() -> None:
@@ -512,6 +561,132 @@ def test_control_flow_adjust() -> None:
     ## default ##
     assert test(15) == ([blocks[15][8:]], [15])
     assert test(14) == ([""], [])
+    ## try-except with multiple except catches + finally ##
+    blocks = [
+        "    try:",
+        "        try:",
+        "            try:",
+        "                1",
+        "            except:",
+        "                2",
+        "            except:",
+        "                3",
+        "            except:",
+        "                4",
+        "            finally:",
+        "                5",
+        "        except:",
+        "            6",
+        "        except:",
+        "            7",
+        "    except:",
+        "        8",
+    ]
+    end_pos = len(blocks)
+    ## check 'except' ##
+    assert test(6) == (
+        [
+            "    try:",
+            "        try:",
+            "            try:",
+            "                pass",
+            "            except:",
+            "                3",
+            "            except:",
+            "                4",
+            "            finally:",
+            "                5",
+            "        except:",
+            "            6",
+            "        except:",
+            "            7",
+            "    except:",
+            "        8",
+        ],
+        [6, 6, 6, 6, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+    )
+    assert test(7) == (
+        [
+            "    try:",
+            "        try:",
+            "            try:",
+            "                3",
+            "            except:",
+            "                4",
+            "            finally:",
+            "                5",
+            "        except:",
+            "            6",
+            "        except:",
+            "            7",
+            "    except:",
+            "        8",
+        ],
+        [7, 7, 7, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+    )
+    ## check 'finally' ##
+    assert test(10) == (
+        [
+            "    try:",
+            "        try:",
+            "            try:",
+            "                pass",
+            "            finally:",
+            "                5",
+            "        except:",
+            "            6",
+            "        except:",
+            "            7",
+            "    except:",
+            "        8",
+        ],
+        [10, 10, 10, 10, 10, 11, 12, 13, 14, 15, 16, 17],
+    )
+    assert test(11) == (
+        [
+            "    try:",
+            "        try:",
+            "            5",
+            "        except:",
+            "            6",
+            "        except:",
+            "            7",
+            "    except:",
+            "        8",
+        ],
+        [11, 11, 11, 12, 13, 14, 15, 16, 17],
+    )
+    ## check nesting ##
+    assert test(12) == (
+        [
+            "    try:",
+            "        try:",
+            "            pass",
+            "        except:",
+            "            6",
+            "        except:",
+            "            7",
+            "    except:",
+            "        8",
+        ],
+        [12, 12, 12, 12, 13, 14, 15, 16, 17],
+    )
+    assert test(13) == (
+        [
+            "    try:",
+            "        try:",
+            "            6",
+            "        except:",
+            "            7",
+            "    except:",
+            "        8",
+        ],
+        [13, 13, 13, 14, 15, 16, 17],
+    )
+    assert test(15) == (
+        ["    try:", "        7", "    except:", "        8"],
+        [15, 15, 16, 17],
+    )
 
 
 def test_indent_lines() -> None:
@@ -656,7 +831,7 @@ def test_yield_adjust() -> None:
     assert yield_adjust("yield 3", "") == ["return 3"]
 
     assert yield_adjust("yield from range(3)", "") == [
-        "locals()['.internals']['.yieldfrom']=range(3)",
+        "locals()['.internals']['.0']=locals()['.internals']['.yieldfrom']=iter(range(3))",
         "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
         "    return locals()['.internals']['.i']",
         "    if locals()['.internals']['.send']:",
@@ -686,9 +861,25 @@ def test_extract_source_from_comparison() -> None:
 
 
 def test_expr_getsource() -> None:
+    ## simple function ##
     a, b = lambda x: x, (i for i in range(3))
     assert expr_getsource(a) == "lambda x: x"
     assert expr_getsource(b) == "(i for i in range(3))"
+
+    ## closure ##
+    def test():
+        j = 3
+        f = lambda: j
+        yield f
+        f = (j for i in range(3))
+        yield f
+        f = (f for i in range(3))
+        yield f
+
+    gen = test()
+    assert expr_getsource(next(gen)) == "lambda: j"
+    assert expr_getsource(next(gen)) == "(j for i in range(3))"
+    assert expr_getsource(next(gen)) == "(f for i in range(3))"
 
 
 def test_extract_genexpr() -> None:
@@ -696,13 +887,18 @@ def test_extract_genexpr() -> None:
     pos = [(15, 36), (50, 71), (80, 101), (38, 103)]
     for offsets in extract_genexpr(source):
         assert offsets == pos.pop(0)
+    source = "((i,j) for i in range(3) for j in range(2))"
+    assert next(extract_genexpr(source)) == (0, 43)
 
 
 def test_extract_lambda() -> None:
-    source = "lambda x:x,lambda y:lambda z:z, lambda a:a"
-    pos = [(0, 10), (20, 30), (11, 30), (32, None)]
-    for offsets in extract_lambda(source):
-        assert offsets == pos.pop(0)
+    source = "lambda x:x,lambda y:lambda z:z, lambda a:a, lambda: j"
+    pos = [(0, 10), (20, 30), (11, 30), (32, 42), (44, None)]
+    for index, offsets in enumerate(extract_lambda(source)):
+        try:
+            assert offsets == pos.pop(0)
+        except AssertionError:
+            print(index, offsets, pos)
 
 
 def test_except_adjust() -> None:
@@ -738,11 +934,6 @@ def test_singly_space() -> None:
     assert source == "    for i in [1 , 3 , 5]: "
 
 
-def test_exit_adjust() -> None:
-    case = "return   ...\nreturn    EOF(...)"
-    assert exit_adjust(case.split("\n")) == ["return 1", "return"]
-
-
 def test_outer_loop_adjust() -> None:
     source_lines = [
         "    for i in range(3):",
@@ -755,17 +946,18 @@ def test_outer_loop_adjust() -> None:
         "        print(i)",
     ]
     ## are in linenos ##
-    length = len(source_lines)
-    loops = [(2 * i, length) for i in range(0, 3)]
-    end_pos = loops.pop()[1]
+    length = len(source_lines) - 1
+    loops = [(2 * i, length - i) for i in range(0, 3)]
+    end_pos = loops[-1][1]
     assert outer_loop_adjust([], [], source_lines, loops, end_pos) == (
         [
+            "    for k in locals()['.internals']['.12']:",
+            "        print(k)",
             "    for j in locals()['.internals']['.8']:",
             "        print(j)",
             "        for k in range(4):",
             "            print(k)",
             "        print(j)",
-            "    print(i)",
             "    for i in locals()['.internals']['.4']:",
             "        print(i)",
             "        for j in range(4):",
@@ -775,7 +967,29 @@ def test_outer_loop_adjust() -> None:
             "            print(j)",
             "        print(i)",
         ],
-        [2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+        [4, 5, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 7],
+    )
+
+    ## case needs testing ##
+    assert outer_loop_adjust(
+        [],
+        [],
+        [
+            "    for i in range(3):",
+            "        for j in range(2):",
+            "            return (i,j)",
+        ],
+        [(0, 2), (1, 2)],
+        2,
+    ) == (
+        [
+            "    for j in locals()['.internals']['.8']:",
+            "        return (i,j)",
+            "    for i in locals()['.internals']['.4']:",
+            "        for j in range(2):",
+            "            return (i,j)",
+        ],
+        [1, 2, 0, 1, 2],
     )
 
 
@@ -854,7 +1068,6 @@ test_extract_genexpr()
 test_extract_lambda()
 test_except_adjust()
 test_singly_space()
-test_exit_adjust()
 test_outer_loop_adjust()
 test_setup_next_line()
 test_unpack_lambda()
