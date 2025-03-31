@@ -10,10 +10,9 @@ from types import (
     CoroutineType,
 )
 from inspect import currentframe  ## used in _frame_init
-from copy import deepcopy, copy
 from textwrap import dedent
 from gcopy.source_processing import *
-from gcopy.track import track_adjust, track_shift
+from gcopy.track import track_shift
 from sys import exc_info
 from functools import partial
 
@@ -41,19 +40,13 @@ class Pickler:
 
     _not_allowed = tuple()
 
-    def _copier(self, FUNC: FunctionType) -> object:
-        """copying will create a new generator object out of a copied version of the current instance"""
-        obj = type(self)()
-        obj.__setstate__(self.__getstate__(FUNC))
-        return obj
-
     ## for copying ##
     def __copy__(self) -> object:
         ## used composition here to avoid tight coupling with Pickler._copier ##
-        return Pickler._copier(self, copy)
+        return copier(self, copy)
 
     def __deepcopy__(self, memo: dict) -> object:
-        return Pickler._copier(self, deepcopy)
+        return copier(self, deepcopy)
 
     def copy(self, deep: bool = True) -> object:
         """short hand method for copying"""
@@ -278,36 +271,10 @@ class BaseGenerator:
                     self._internals["source"] = expr_getsource(FUNC)
                     ## remove the internally set .0 if it exists for some reason we need ##
                     ## to do it after expr_getsource otherwise it doesn't get deleted ##
-                    self._locals().pop(".0", None)
-                    self._internals["source_lines"] = unpack_genexpr(
-                        self._internals["source"]
-                    )
-                    ## add the jump_positions ##
-                    temp, length = [], len(self._internals["source_lines"])
-                    for index, line in enumerate(
-                        self._internals["source_lines"], start=1
-                    ):
-                        if not line[get_indent(line) :].startswith("for "):
-                            break
-                        temp += [[index, length]]
-                    self._internals["jump_positions"] = temp
-                    ## change the offsets into indents ##
-                    if ".internals" in self._locals() and track_adjust(
-                        self._locals()[".internals"]
-                    ):
-                        self._internals["lineno"] = length
-                    else:
-                        self._internals["lineno"] = 1
+                    genexpr_adjust(self, self._internals["source"])
                 ## must be a function ##
                 elif self._internals["code"].co_name == "<lambda>":
-                    self._internals["source"] = expr_getsource(FUNC)
-                    self._internals["source_lines"] = unpack_lambda(
-                        self._internals["source"]
-                    )
-                    if self._internals["jump_positions"]:
-                        self._internals["lineno"] = len(self._internals["source_lines"])
-                    else:
-                        self._internals["lineno"] = 1
+                    clean_lambda(self, FUNC)
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     ## we need to record a linetable for the lineno since the source code gets modified ##
@@ -316,7 +283,7 @@ class BaseGenerator:
                         self._internals["frame"].f_lineno
                         - self._internals["code"].co_firstlineno
                     )
-                    # ## can't have a lineno of 0 (implies the start of a generator) ##
+                    ## can't have a lineno of 0 (implies the start of a generator) ##
                     if self._internals["lineno"] == 0:
                         self._internals["lineno"] = 1
                     else:
@@ -351,10 +318,7 @@ class BaseGenerator:
                     ## and overwrite the __call__ signature + other metadata with the functions ##
                     self.__call__ = sign(Generator__call__, FUNC, globals(), True)
                     if FUNC.__code__.co_name == "<lambda>":
-                        self._internals["source"] = expr_getsource(FUNC)
-                        self._internals["source_lines"] = unpack_lambda(
-                            self._internals["source"]
-                        )
+                        clean_lambda(self, FUNC)
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
                         self._internals["source_lines"] = clean_source_lines(self)
@@ -616,12 +580,12 @@ class BaseGenerator:
 
     def __getstate__(self, FUNC: FunctionType = Pickler._pickler_get) -> dict:
         """Similar to the __getstate__ method of Pickler but pertaining to self._internals"""
-        dct, attrs = dict(), self._internals
-        for attr in attrs:
-            if attr in attrs and attr != "state_generator":
-                dct[attr] = FUNC(attrs.get(attr))
+        dct = dict()
+        for key, value in self._internals.items():
+            if key != "state_generator":
+                dct[key] = FUNC(value)
         dct = {"_internals": dct}
-        for attr in ("__name__","__defaults__"):
+        for attr in ("__name__", "__defaults__"):
             dct[attr] = getattr(self, attr, None)
         return dct
 
@@ -737,6 +701,7 @@ class Generator(BaseGenerator):
         init_length, next_state = self._frame_init(exception, sending)
         try:
             self._internals["running"] = True
+            self._internals["suspended"] = False
             result = next_state()
             if isinstance(result, EOF):
                 raise StopIteration(*result.args[0:1])
@@ -744,6 +709,7 @@ class Generator(BaseGenerator):
             self._close()
             raise e
         self._internals["running"] = False
+        self._internals["suspended"] = True
         self._update(init_length)
         return result
 
@@ -821,6 +787,7 @@ class AsyncGenerator(BaseGenerator):
             raise StopAsyncIteration(*e.args[0:1])
         try:
             self._internals["running"] = True
+            self._internals["suspended"] = False
             result = await next_state()
             if isinstance(result, EOF):
                 ## coroutines can't throw StopIterations, EOF throws a StopIteration e.g. in accordance with its __mro__ ##
@@ -829,6 +796,7 @@ class AsyncGenerator(BaseGenerator):
             self._close()
             raise e
         self._internals["running"] = False
+        self._internals["suspended"] = True
         self._update(init_length)
         return result
 

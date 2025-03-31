@@ -38,7 +38,7 @@ In order to achieve this the following assumptions are assumed to be true for th
 
 2. There are no compound statements present in the source code of your generator functions that have yields or yield froms.
 
-This assumption may become somewhat relaxed with the implementation of ```lineno_adjust``` and the use of ```get_instructions```, however, this is not guranteed to work across all python versions since 3.11 is when python introduced ```CodeType.co_positions``` enabling source code positions with column offsets. In general, using compound statements is not recommended when trying to initialize a ```Generator``` instance from a running generator.
+This assumption may become somewhat relaxed with the implementation of ```lineno_adjust``` and the use of ```get_instructions```, however, this is not guaranteed to work across all python versions since 3.11 is when python introduced ```CodeType.co_positions``` enabling source code positions with column offsets. In general, using compound statements is not recommended when trying to initialize a ```Generator``` instance from a running generator.
 
 3. you can retrieve the last line of execution in relation to your source code i.e. if ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_lineno``` to retrieve this.
 
@@ -46,7 +46,7 @@ This assumption may become somewhat relaxed with the implementation of ```lineno
 
 i.e. if again ```gen``` is your generator then you should be able to go ```gen.gi_frame.f_locals``` to retrieve the locals.
 
-One problem is that all implictely defined for loop iterators may not be explicitly located and retrieved from memory.
+One problem is that all implicitly defined for loop iterators may not be explicitly located and retrieved from memory.
 
 I.e. how would you retrieve the iterator defined here reliably (bear in mind that you might also have other range iterators in memory as well):
 
@@ -54,13 +54,13 @@ I.e. how would you retrieve the iterator defined here reliably (bear in mind tha
 for i in range(3):
     ...
 ```
-This makes determining where in memory ```iter(range(3))``` is more difficult but is maybe possible in further investigations though from some investigationing it seems at least naievely that it's not possible.
+This makes determining where in memory ```iter(range(3))``` is more difficult but is maybe possible in further investigations though from some investigating it seems at least naively that it's not possible.
 
 For now this means using our ```track``` function; for ease of use we recommend importing the monkey patches e.g. calling ```patch_iterators(globals())```.
 
 5. Avoid overriding ```locals()[".internals"]``` and gen._internals in your generator (unless there's a particular reason why doing so makes sense).
 
-```locals()[".internals"]``` is assumed to be a reserved namespace for all internally stored variables (i.e. track_iter uses it to store the implict iterators) and other adjustments needed at execution to help make the Generator instance work on running \_\_next\_\_. 
+```locals()[".internals"]``` is assumed to be a reserved namespace for all internally stored variables (i.e. track_iter uses it to store the implicit iterators) and other adjustments needed at execution to help make the Generator instance work on running \_\_next\_\_. 
 
 If it's not being used or some of the keys are unused then yes you can modify it but I would recommend against using it if you don't understand when it needs to be reserved because failure in doing so may see you overriding a variable that breaks expected execution and thus your code won't work as expected. Specifically, overriding any of the variables mentioned in the third bullet point in the last section of this document called **Other notes** when it's used for a current adjustment.
 
@@ -99,13 +99,13 @@ e.g.
 
  - Definitions e.g. ```def, async def, class, ... = lambda ...``` are left untouched since these are classes/functions of their own.
 
- - assignment yields e.g. ```...=yield ...``` are adjusted via the ```unpack``` function for capability to recieve values sent via the ```Generator.send``` method.
+ - assignment yields e.g. ```...=yield ...``` are adjusted via the ```unpack``` function for capability to receive values sent via the ```Generator.send``` method.
 
  - Records the start and end ```lineno``` positions for the ```for``` and ```while``` loops for later use when needing to adjust the current source code inside a loop encapsulation. These positions are recorded in the ```Generator._internals["jump_positions"]``` variable. Temporarily, a ```jump_stack``` is also used to later detect the end position and then update this in the jump_position back in ```clean_source_lines```.
 
 Also, value yields are handled via ```clean_source_lines``` and both string collector functions (or ```string_collector_proxy```)  e.g. yields of the form ```(yield ...)``` (yield statement with brackets around it).
 
-There is an efficiency trade off made in the use of ```unpack``` in ```string_collector_proxy``` is that both string collectors will make the assumption that all f-strings imply unpacking which is not necessarily always true but is a kind of blanket arguement/safety in case of value yields in f-strings. This is more from an efficiency standpoint of trying to avoid as many linear searches as possible in the sense of double handling (may be further tested).
+There is an efficiency trade off made in the use of ```unpack``` in ```string_collector_proxy``` is that both string collectors will make the assumption that all f-strings imply unpacking which is not necessarily always true but is a kind of blanket argument/safety in case of value yields in f-strings. This is more from an efficiency standpoint of trying to avoid as many linear searches as possible in the sense of double handling (may be further tested).
 
 Value yields are handled by ```unpack``` by inserting new lines into the current source lines as the value yields need to be evaluated prior to usage e.g. value yields yield values but also returns a value (e.g. if you send a value to it via ```Generator.send``` rather than running ```next()``` otherwise its return value is by default ```None```) therefore the idea is to yield the values before (will work the same since the entire line is ran like this e.g. anything before the yield will also need to be saved into the stack since the yield could yield from an i.e. iterable and therefore depends on what line ran before), save their returns into a temporary stack, pop the stack / unpack all the value into its expression.
 
@@ -135,7 +135,7 @@ So this means the attrs starting with a prefix will be accessible via i.e. ```Ge
 
 5. The state generator (```Generator()._internals["state_generator"]```) is created via ```Generator.init_states``` setting the state generator as an evaluation loop where with each iteration the code is adjusted by ```Generator._create_state```.
 
-Note: if you are initializing on an unintialized Generator a ```__call__``` method will be set to the instance since for some reason dynamically changing the ```__call__``` is maybe not possible. Specifically it will be set to a signed version of ```Generator__call__```. Signed so that the signature and binding is the same as your unintialized generator.
+Note: if you are initializing on an uninitialized Generator a ```__call__``` method will be set to the instance since for some reason dynamically changing the ```__call__``` is maybe not possible. Specifically it will be set to a signed version of ```Generator__call__```. Signed so that the signature and binding is the same as your uninitialized generator.
 
 Additionally, if your generator has a closure this will be added as attribute to the ```Generator``` instance. The binding will still work (mentioned later in ```Generator._frame_init```), however, copies will no longer have a binding e.g. I suspect copy/pickle methods automatically remove the ```__closure__``` attribute if it exists on the instance. However, if you want to reinstate the binding to the same or a different closure all you need to do is set a ```__closure__``` attribute manually (and make sure you have a ```__code__``` attribute for ```get_nonlocals```) or use ```Generator._bind(self, closure)``` to bind the current instance (```self```) to the closure.
 
@@ -147,7 +147,7 @@ Adjustments are made with ```get_loops```, and ```Generator._internals``` ```lin
 
 To illustrate ```get_loops``` it simply tries to identify the following:
 
-(Note: each colum is a jump_position with its start and end position identified via '-'; '|' indicates the correct selection)
+(Note: each column is a jump_position with its start and end position identified via '-'; '|' indicates the correct selection)
 
 ```
                |  |  |
@@ -176,7 +176,7 @@ else:
 ```
 Examples such as these are possible because we are simply slicing based on the ```f_lineno``` and trying to exec this.
 
-Lastly the ```loop_adjust``` is responsible for completing the current loop and ```outer_loop_adjust``` for ensuring that all loops have been iterated through correctly under the the approach of simply slicing the source code lines.
+Lastly the ```loop_adjust``` is responsible for completing the current loop and ```outer_loop_adjust``` for ensuring that all loops have been iterated through correctly under the approach of simply slicing the source code lines.
 
 ```python
 for i in range(3):
@@ -276,7 +276,7 @@ _frame_init is for initialising the function with a code object created from an 
 
 All the identifiers in the states/frames locals needs to be initialized with its value (otherwise the ```locals``` dict doesn't pick up on it); the currentframe is also saved to the internals for updating the current frame on the instance with the one used in the state.
 
-The remaining state is appended to this intialisation header and the code object is created then this is exec'd. Importantly we name the file location of the code object as ```"<Generator>"``` so that the track iter knows which locals to target.
+The remaining state is appended to this initialisation header and the code object is created then this is exec'd. Importantly we name the file location of the code object as ```"<Generator>"``` so that the track iter knows which locals to target.
 
 After initialising the function, we call it and this runs through the current state generation function we created called ```next_state```.
 
@@ -320,7 +320,7 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
     has a binding to a closure the copied generator will be independent of it e.g. removing
     the closure binding and retaining its version in the state it was copied from. You can
     rebind to a closure if you want by setting a \_\_closure\_\_ attribute and \_\_code\_\_ attribute
-    manually that will allow _frame_init to rebind to the desired closure or use the ```_bind``` method. This is not the case when calling an uninitialized generator as the user shouldn't be expected to manually bind to a closure after calling; copying/pickling requires manual binding and calling will already bind the copied generator to the original closure.
+    manually that will allow _frame_init to rebind to the desired closure or use the ```_bind``` method. This is not the case when calling an uninitialized generator as the user shouldn't be expected to manually bind to a closure after calling; copying/pickling requires manual binding and calling will already bind the copied generator to the original closure. 
 
   - no reinitializing supported. It's expected that users either have a function that acts
     as a factory pattern or may copy the generator after initializing e.g. cannot use \_\_call\_\_
@@ -339,14 +339,14 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
   - If your Generator/frame references global variables then these variables are expected by the
     state when it's called to exist. These should be set manually by the user and pickled separately with unpickling done before the generator runs its \_\_next\_\_ method. 
     
-    The reason why the responsibility has been delegated to the user is because of any references made or propogating to other references via exec or eval, which would require a more extensive analysis to determine what globals are being required. Even if you did i.e. compile the expressions in exec/eval you still wouldn't be able to account for anything done dynamically e.g. f-strings or other processes during run time. Thus, in order to know what globals you need to save you also need to run the state i.e. copy it, but this would maybe change the globals values and thus it's not clear what an exact approach would be that generalizes. To an extent a get_globals function could be implemented that goes through f_code.co_names (global names) and sieves through to the names that are not builtins but as aforementioned this doesn't account for anything dynamic. Thus, it's up to the user for pickling the globals.
+    The reason why the responsibility has been delegated to the user is because of any references made or propagating to other references via exec or eval, which would require a more extensive analysis to determine what globals are being required. Even if you did i.e. compile the expressions in exec/eval you still wouldn't be able to account for anything done dynamically e.g. f-strings or other processes during run time. Thus, in order to know what globals you need to save you also need to run the state i.e. copy it, but this would maybe change the globals values and thus it's not clear what an exact approach would be that generalizes. To an extent a get_globals function could be implemented that goes through f_code.co_names (global names) and sieves through to the names that are not builtins but as aforementioned this doesn't account for anything dynamic. Thus, it's up to the user for pickling the globals.
 
-    On the other hand if users don't mind the potentially high memory consumption and assuming all the the global objects are all pickleable then it shouldn't be difficult to save the current global scope (e.g. pickling ```globals()```) even if it requires creating a class with a \_\_getstate\_\_ and \_\_setstate\_\_. So it will be considered an option to save the globals if users want this but would be more efficient/effective to manually decide what variables that are a part of the global scope are necessary.
+    On the other hand if users don't mind the potentially high memory consumption and assuming all the global objects are all pickleable then it shouldn't be difficult to save the current global scope (e.g. pickling ```globals()```) even if it requires creating a class with a \_\_getstate\_\_ and \_\_setstate\_\_. So it will be considered an option to save the globals if users want this but would be more efficient/effective to manually decide what variables that are a part of the global scope are necessary.
 
   - if a closure cell is deleted from the originating scope this will raise an error at get_nonlocals
-    for the scope using it since the cell no longer exists which is correct. If you delete a nonlocal in the inner scope, python throws an error on compilation and disallows exec/eval to take effect. If you delete a nonlocal in a ```Generator``` state it gets deleted how a regular deletion of a variable would be deleted; which is perhaps unexpected behavior relative to how it should be.
+    for the scope using it since the cell no longer exists which is correct. If you delete a nonlocal in the inner scope, python throws an error on compilation and disallows exec/eval to take effect. If you delete a nonlocal in a ```Generator``` state it gets deleted how a regular deletion of a variable would be deleted; which is perhaps unexpected behaviour relative to how it should be.
 
-  - unintialized Generators will return copies of instantiated ones when called. This is to preserve the decorator functionality and thus acts as a function would. Whereas initialized generators act as objects.
+  - uninitialized Generators will return copies of instantiated ones when called. This is to preserve the decorator functionality and thus acts as a function would. Whereas initialized generators act as objects.
 
   - the current states full source is available under the Generator instances ```__source__``` attribute after calling ```__next__```.
 
@@ -389,3 +389,5 @@ You should see that I've made a custom ```code``` and ```frame``` class that als
   - only need to record the frames globals upon initialization and pickling since these are the only times necessary. There won't be other times where your generator instance transfers into a new global scope that isn't via pickling from what I'm aware of.
 
   - in the implementation every call to eval/exec made has tried to ensure the targeted scope is correct to be precise for the calls purpose otherwise there will be unbound local errors in some cases.
+
+  - on ```BaseGenerator.__init__()``` the locals are still the same pointers in the original frame and thus instantiating a i.e. ```Generator``` or ```AsyncGenerator``` type will create pointers essentially. To avoid this, deepcopy the generator after instantiation.

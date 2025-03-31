@@ -17,7 +17,7 @@ def test_track_shift() -> None:
     assert list(dct.keys()) == [".4", ".8", ".12"]
 
 
-def test_patch_iters() -> None:
+def test_patch_iterators() -> None:
     if isinstance(__builtins__, dict):
         objs = __builtins__.items()
     else:
@@ -25,16 +25,9 @@ def test_patch_iters() -> None:
     patch_iterators(globals())
     for name, obj in objs:
         if isinstance(obj, type) and issubclass(obj, Iterator | Iterable):
-            if obj.__name__ in ("memoryview",):
-                iter(obj(b"abcedfg"))
-            elif obj.__name__ in ("enumerate", "reversed"):
-                iter(obj([]))
-            elif obj.__name__ == "range":
-                iter(obj(2))
-            elif obj.__name__ in ("zip", "filter", "map"):
-                iter(obj([], []))
-            else:
-                iter(obj())
+            iter_init(obj)
+    ## unpatch the iters ##
+    ## try in local scope only ##
 
 
 def test_track_iter() -> None:
@@ -47,7 +40,8 @@ def test_track_iter() -> None:
     test = (
         lambda key, value: currentframe()
         .f_back.f_locals[".internals"][".%s" % key]
-        .__class__.__name__
+        .__repr__()[1:]
+        .split()[0]
         == value
     )
     assert test(4, "range_iterator")
@@ -91,7 +85,7 @@ def test_track_iter_inside_Generator() -> None:
 
 
 def test_track() -> None:
-    track([1, 2, 3])
+    iter(track([1, 2, 3]))
     assert [i for i in locals()[".internals"][".4"]] == [1, 2, 3]
 
 
@@ -101,13 +95,14 @@ async def test_atrack() -> None:
         yield 2
         yield 3
 
-    atrack(iterator())
+    assert [i async for i in atrack(iterator())] == [1, 2, 3]
+    aiter(atrack(iterator()))
     assert [i async for i in locals()[".internals"][".4"]] == [1, 2, 3]
 
 
 test_track_adjust()
 test_track_shift()
-test_patch_iters()
+test_patch_iterators()
 test_track_iter()
 test_track_iter_inside_exec()
 test_track_iter_inside_Generator()

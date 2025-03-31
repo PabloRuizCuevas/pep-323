@@ -382,7 +382,7 @@ def named_adjust(
 
 def unpack_adjust(line: str) -> list[str]:
     """adjusts the unpacked line for usage and value yields"""
-    if line.startswith("yield ") or line == "yield":
+    if line.startswith("yield ") or line.startswith("yield)") or line == "yield":
         return yield_adjust(line, "") + [
             "locals()['.internals']['.args'] += [locals()['.internals']['.send']]"
         ]
@@ -1279,7 +1279,11 @@ def yield_adjust(temp_line: str, indent: str) -> list[str]:
             indent
             + "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
         ]
-    if temp_line.startswith("yield ") or temp_line == "yield":
+    if (
+        temp_line.startswith("yield ")
+        or temp_line.startswith("yield)")
+        or temp_line == "yield"
+    ):
         return [indent + "return" + temp_line[5:]]  ## 5 to retain the whitespace ##
 
 
@@ -1333,11 +1337,20 @@ def extract_source_from_comparison(
     )
     if isinstance(source, list):
         source = "".join(source)
+    extracing_genexpr = getcode(extractor).co_name == "extract_genexpr"
     for col_offset, end_col_offset in extractor(source):
         try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
             temp_source = source[col_offset:end_col_offset]
-            temp_code = getcode(eval(temp_source, globals, locals))
+            try:
+                genexpr = eval(temp_source, globals, locals)
+            except NameError as e:
+                if not extracing_genexpr:
+                    raise e
+                ## NameError since genexpr's first iterator is stored as .0 ##
+                name = e.args[0].split("'")[1]
+                genexpr = eval(temp_source, globals, locals | {name: locals[".0"]})
+            temp_code = getcode(genexpr)
             ## attr_cmp should get most simple cases, code_cmp should cover nonlocal + closures ideally ##
             if attr_cmp(temp_code, code_obj, attrs) or code_cmp(temp_code, code_obj):
                 return temp_source
@@ -1368,8 +1381,14 @@ def expr_getsource(FUNC: Any) -> str:
             source = getsource(code_obj)
         extractor = extract_lambda
         ## functions don't need their variables defined right away ##
-        globals = FUNC.__globals__
-        locals = get_nonlocals(FUNC)
+
+        if isinstance(FUNC, FunctionType):
+            globals = FUNC.__globals__
+            locals = get_nonlocals(FUNC)
+        else:
+            frame = getframe(FUNC)
+            globals = frame.f_globals
+            locals = frame.f_locals
     else:
         frame = getframe(FUNC)
         ## here source is a : list[str]
@@ -1424,7 +1443,7 @@ def extract_genexpr(
                     return
                 genexpr_depth = None
             depth -= 1
-        elif depth:
+        if depth:
             ## record ID ##
             if char.isalnum():
                 ID += char
@@ -2134,3 +2153,89 @@ def source_update_ID(
         )
         ## setup for a new line ##
     return ID, line, lines, indented, index, char, space
+
+
+def clean_lambda(self: GeneratorType, FUNC: FunctionType) -> None:
+    """
+    determine what expression is formed when the lambda expression gets called
+    1. value yields - unpack
+    2. generator expression - unpack_genexpr
+    """
+    self._internals["source"] = expr_getsource(FUNC)
+    source = unpack_lambda(self._internals["source"])[0]
+    ## tries to figure out what it is ##
+    # Non Generator, Generator, generator expression
+    type = check_expression(source)
+    if type == "<genexpr>":
+        genexpr_adjust(self, source)
+    ## should only have a single value yield at depth == 1 ##
+    elif type == "<Generator>":
+        lines, final_line, _ = unpack(source)
+        self._internals["source_lines"] = lines + [final_line]
+        self._internals["lineno"] = 1
+    else:
+        raise TypeError(
+            "based on the source code retrieved the expression that will be created from the given lambda expression is an invalid initializer for a Generator"
+        )
+
+
+def genexpr_adjust(self: GeneratorType, source: str) -> None:
+    """Adjusts for an initialized generator expression"""
+    self._internals["source_lines"] = unpack_genexpr(source)
+    ## add the jump_positions ##
+    positions, length = [], len(self._internals["source_lines"])
+    for index, line in enumerate(self._internals["source_lines"], start=1):
+        if not line[get_indent(line) :].startswith("for "):
+            break
+        positions += [[index, length]]
+    self._internals["jump_positions"] = positions
+    ## set the first iterator and determine the lineno ##
+    first_iter = self._locals().pop(".0")
+    if ".internals" not in self._locals():
+        ## the internally set iterator ##
+        self._locals()[".internals"] = {".4": first_iter}
+    ## change the offsets into indents ##
+    if gcopy.track.track_adjust(self._locals()[".internals"]) or is_running(
+        self._locals()[".internals"][".4"]
+    ):
+        self._internals["lineno"] = length
+    else:
+        self._internals["lineno"] = 1
+
+
+def check_expression(source: str) -> str:
+    """Checks if there are any yields or if there is a single generator expression present"""
+    ID, depth, prev, expression = (
+        "",
+        0,
+        (0, 0, ""),
+        "",
+    )
+    source_iter = enumerate(source)
+    for index, char in source_iter:
+        ## skip all strings if not in genexpr
+        if char == "'" or char == '"':
+            _, prev = string_collector_proxy(index, char, prev, source_iter)
+        ## detect brackets
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        if depth:
+            ## record ID ##
+            if char.isalnum():
+                ID += char
+                if depth == 1:
+                    next_char = source[index + 1 : index + 2]
+                    if ID == "for" and next_char in " \\":
+                        expression = "<genexpr>"
+                    if ID == "yield" and next_char in " \\)":
+                        expression = "<Generator>"
+            else:
+                ID = ""
+    temp = source[index + 1 :]
+    if temp and not temp.isspace():
+        return ""
+    return expression

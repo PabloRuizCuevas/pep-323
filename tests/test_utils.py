@@ -1,4 +1,5 @@
 from gcopy.utils import *
+from typing import Iterator
 import warnings
 
 
@@ -169,6 +170,46 @@ def test_code_cmp() -> None:
     ## different code objects ##
     assert code_cmp(test("lambda x: x"), test("lambda x: x + 1")) == False
 
+
+def test_is_running() -> None:
+    ## without tracking ##
+    def test_case():
+        yield 1
+
+    try:
+        is_running(test_case())
+        assert False
+    except TypeError:
+        pass
+    ## with tracking ##
+    from gcopy.track import track
+
+    iterator = track(test_case())
+    assert is_running(iterator) == False
+    next(iterator)
+    assert is_running(iterator)
+
+    ## iterator with end index ##
+    def test(iterator: Iterator) -> None:
+        iterator = iter(iterator)
+        assert is_running(iterator) == False
+        next(iterator)
+        assert is_running(iterator)
+
+    test(range(3))
+    ## requiring c level memory access ##
+    test({1, 2, 3})
+    test(frozenset({1, 2, 3}))
+    test({"a": 1, "b": 2, "c": 3})
+    ## zip ##
+    test(zip([1, 2, 3], [1, 2, 3]))
+    ## enumerate ##
+    test(enumerate([1, 2, 3]))
+    ## map + filter ##
+    test(map(lambda x: x, [1, 2, 3]))
+    test(filter(lambda x: x, [1, 2, 3]))
+
+
 ## is_cli is tested in test_cli_findsource ##
 test_cli_findsource()
 test_skip()
@@ -187,3 +228,4 @@ test_try_set()
 test_get_globals()
 test_similar_opcode()
 test_code_cmp()
+test_is_running()

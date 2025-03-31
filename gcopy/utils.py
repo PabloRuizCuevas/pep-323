@@ -3,9 +3,13 @@ from inspect import currentframe
 from readline import get_history_item, get_current_history_length
 from dis import _unpack_opargs
 from types import FrameType, GeneratorType, CodeType, FunctionType
-from typing import Iterable, Any
+from typing import Iterable, Any, Callable
 from opcode import opmap
+from functools import wraps
+from copy import deepcopy, copy
 
+## needed to access c level memory for the builtin iterators ##
+from ctypes import py_object, c_ssize_t, Structure, cast, POINTER
 
 _opmap = dict(zip(opmap.values(), opmap.keys()))
 
@@ -114,7 +118,7 @@ def chain(*iterators: tuple[Iterable]) -> GeneratorType:
 
 def get_nonlocals(FUNC: FunctionType) -> dict:
     """Gets the nonlocals or closure variables of a function"""
-    cells = getattr(FUNC, "__closure__", [])
+    cells = getattr(FUNC, "__closure__", None)
     nonlocals = {}
     if cells:
         for key, value in zip(FUNC.__code__.co_freevars, cells, strict=True):
@@ -170,7 +174,6 @@ def similiar_opcode(
         "GLOBAL": "co_names",
     }
 
-    # print(getattr(code_obj1, mapping[name1[1]])[item_index1], getattr(code_obj2, mapping[name2[1]])[item_index2])
     def get_code_attr(code_obj: CodeType, name: list[str], item_index: int) -> Any:
         attr = mapping[name[1]]
         array = getattr(code_obj, attr)
@@ -210,3 +213,194 @@ def code_cmp(code_obj1: CodeType, code_obj2: CodeType) -> bool:
     except ValueError:
         return False
     return True
+
+
+def wrap(self, method: FunctionType) -> FunctionType:
+    """
+    wrapper function to ensure methods assigned are instance based
+    and that the dunder methods return values are wrapped in a chain object
+    if i.e. used in a binary operation or that these are left as is if
+    type casting a chain object e.g. float(chain(1)) should return 1.0
+    and its type should be float and not my_pack.chain or __main__.chain if
+    defined in program
+    """
+
+    @wraps(method)  ## retains the docstring
+    def wrapper(*args, **kwargs):
+        return type(self)(method(*args[1:], **kwargs))
+
+    return wrapper
+
+
+def get_error():
+    raise AttributeError("the required attribute does not exist on the original object")
+
+
+def copier(self, FUNC: FunctionType) -> object:
+    """copying will create a new generator object out of a copied version of the current instance"""
+    obj = type(self)()
+    obj.__setstate__(self.__getstate__(FUNC))
+    return obj
+
+
+class Wrapper:
+    """
+    Wraps an object in a chain pattern to ensure certain attributes are recorded
+
+    Note: type checking will fail. Therefore, you may consider monkey patching
+    i.e. isinstance and issubclass if necessary.
+    """
+
+    def __init__(self, obj=None) -> None:
+        if obj:
+            expected = self._expected
+            self.obj = obj
+            not_allowed = [
+                "__class__",
+                "__getattribute__",
+                "__getattr__",
+                "__dir__",
+                "__set_name__",
+                "__init_subclass__",
+                "__mro_entries__",
+                "__prepare__",
+                "__instancecheck__",
+                "__subclasscheck__",
+                "__sizeof__",
+                "__fspath__",
+                "__subclasses__",
+                "__subclasshook__",
+                "__init__",
+                "__new__",
+                "__setattr__",
+                "__delattr__",
+                "__get__",
+                "__set__",
+                "__delete__",
+                "__dict__",
+                "__doc__",
+                "__call__",
+                "__name__",
+                "__qualname__",
+                "__module__",
+                "__abstractmethods__",
+                "__repr__",
+                "__getstate__",
+                "__setstate__",
+                "__reduce__",
+                "__copy__",
+                "__deepcopy__",
+            ]
+            for attr in dir(obj):
+
+                if attr in not_allowed:
+                    not_allowed.remove(attr)
+                else:
+                    value = getattr(obj, attr)
+                    if isinstance(value, Callable):
+                        setattr(self, attr, wrap(self, value))
+                        if attr in expected:
+                            expected.remove(attr)
+                    else:
+                        setattr(self, attr, value)
+            ## makes sure an error gets raised if the method doesn't exist ##
+            for attr in expected:
+                setattr(self, attr, get_error)
+
+    def __call__(self, *args, **kwargs):
+        new_self = type(self)(self.obj(*args, **kwargs))
+        return new_self
+
+    def __repr__(self) -> str:
+        return repr(self.obj)
+
+    def __copy__(self) -> object:
+        return copier(self, copy)
+
+    def __deepcopy__(self, memo: dict) -> object:
+        return copier(self, deepcopy)
+
+    def __getstate__(self, FUNC) -> dict:
+        return {"obj": FUNC(self.obj)}
+
+    def __setstate__(self, state: dict) -> None:
+        self.__init__(state["obj"])
+
+
+def is_running(iter: Iterable) -> bool:
+    """Determines if an iterator is running"""
+    if issubclass(type(iter), Wrapper):
+        return getattr(iter, "running", False)
+    ## builtin iterators have a reduce that enables copying ##
+    ## formated i.e. as (function_iter, (instance,), index) ##
+    try:
+        index = get_iter_index(iter)
+        return index > 0 or index < -1
+    except TypeError:
+        raise TypeError(
+            "Cannot use method '__reduce__' on object %s . Try wrapping it with 'track' or 'atrack' to determine if the iterator is running"
+            % iter
+        )
+
+
+memory_iterator = type(iter(memoryview(bytearray())))
+
+
+def get_iter_index(iterator: Iterable) -> int:
+    """Gets the current builtin iterators index"""
+    if isinstance(iterator, memory_iterator):
+        return SetIteratorView(iterator).set
+    reduction = iterator.__reduce__()
+    if isinstance(reduction[-1], int):
+        return reduction[-1]
+    elif reduction[0] == enumerate:
+        return reduction[-1][-1]
+    elif reduction[0] == zip:
+        for index in range(2):
+            try:
+                return get_iter_index(reduction[1][index])
+            except:
+                pass
+    elif reduction[0] in (map, filter):
+        return get_iter_index(reduction[1][1])
+    ## set_iterator and dict_iterator require c level inspection ##
+    elif reduction[0] == iter:
+        return SetIteratorView(iterator).size - iterator.__length_hint__()
+    raise ValueError("Could not determine the iterators current index")
+
+
+class SetIteratorView(Structure):
+    """
+    Used to access c level variables of the set_iterator builtin
+
+    class follows on from the builtin layout:
+    i.e.
+    # iter
+    https://github.com/python/cpython/blob/6aa88a2cb36240fe2b587f2e82043873270a27cf/Objects/iterobject.c#L11C1-L15C17
+    ## but we're interested in:
+    # dict_iterator
+    https://github.com/python/cpython/blob/6aa88a2cb36240fe2b587f2e82043873270a27cf/Objects/dictobject.c#L5022C1-L5029C18
+    # set_iterator
+    https://github.com/python/cpython/blob/6aa88a2cb36240fe2b587f2e82043873270a27cf/Objects/setobject.c#L807C1-L813C17
+
+    ## Note: dict iterator and set iterator are very similar in their memory layout (variables in their structs) and
+    ## thus even though this class is intended for a set_iterator it'll work for dict_key_iterator for determining the size ##
+
+    we can also do memory views where 'set' is the current index:
+    https://github.com/python/cpython/blob/6aa88a2cb36240fe2b587f2e82043873270a27cf/Objects/memoryobject.c#L3455C1-L3461C20
+    """
+
+    _fields_ = [
+        ## from macro PyObject_HEAD ##
+        ("refcount", c_ssize_t),  # Reference count
+        ("type", POINTER(py_object)),  # Type
+        ## relevant other fields (Note: fields are in their order and are required up to what's used) ##
+        ("set", c_ssize_t),  # set used (is also the index position for memory view)
+        ("size", c_ssize_t),  # original size
+    ]
+
+    def __init__(self, set_or_dict_key_iterator) -> None:
+        c_iterator = cast(id(set_or_dict_key_iterator), POINTER(SetIteratorView))
+        for attr in self._fields_:
+            attr = attr[0]
+            setattr(self, attr, getattr(c_iterator.contents, attr))

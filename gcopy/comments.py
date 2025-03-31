@@ -3,19 +3,21 @@ TODO:
 
   - review everything and check for any more relevant unforseen cases
 
-  - check lambda expressions with + without value yields and intialized + unintialized
+  - finish testing clean_source_lines to a reasonable extent
 
     overview of nieche cases left to fix (value yield related):
       - f-string with value yields needs handling first for the other special syntaxes it uses
-        before going ahead with any unpacking or not.
-        
+        before going ahead with any unpacking or not e.g. don't unpack f-string if it doesn't need to
+
       - ternary expressions with value yields
 
       - decorators and function definitions with value yield arguments (lambda default args as well)
         - check iteration when this is the case
 
-      - determining the correct lineno on a line of encapsualted value yields
+      - determining the correct lineno on a line of encapsulated value yields
         e.g. (yield (yield (yield)))
+
+      - closing up opened brackets when unpacking
 
     Niche use cases to fix (value yield related):
 
@@ -30,7 +32,7 @@ TODO:
         source_processing:
 
           string_collector_proxy (string + multiline_string):
-          - implement full checking of f-strings to format these correctly since 
+          - implement full checking of f-strings to format these correctly since
             there are different syntaxes allowable in f-strings. This will also
             help with unpacking but is likely very niche.
 
@@ -55,28 +57,24 @@ TODO:
 
 
           - test ternary statements
-          - test cleaning of sourcelines for lambda expressions
           - close all brackets up to the end of the line - implement this in unpack too
 
           except_adjust:
           - check except_adjust for multiple try-except catches and finally block
 
-        - lineno will need adjusting if wanting to consider value yield edge case via 
+        - lineno will need adjusting if wanting to consider value yield edge case via
           dis._unpack_opargs maybe. Also, will need getframeinfo().positions.col_offset
           as well to determine where it is in i.e. a ternary expression. It's possible
           to fix but it's going to require a lot more work just for a niche use case to
           get working. If so, the minimum version will have to be back at 3.11 because
           of the offset positions.
 
+          Once done, test this in test_lambda_expr in test_custom_generator
+
   Non-priority (at the moment) but will be needed later:
-  - When do i.e. gi_running and gi_suspended change?
-  - I'm not sure about ag_await it seems to return None in testing.
-    Until I learn of an example of how it's used emerges I'll leave
-    it out for now; it's not important for most users anyway.
-    
+  - figure out examples of how to use ag_await and then cater for it if relevant
+
     utils:
       - test utils.cli_getsource
-    
-    Track:
-      - fix any distrurbances from hooks created i.e. type checking was an issue previously
+  - consider making patch iterators scope specific
 """

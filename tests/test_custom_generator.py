@@ -117,8 +117,8 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
     if isinstance(pickler_test, BaseGenerator):
         pass
     else:
-        assert pickler_test._copier(lambda x: x) is not pickler_test._copier(
-            lambda x: x
+        assert copier(pickler_test, lambda x: x) is not copier(
+            pickler_test, lambda x: x
         )
     with open("test.pkl", "wb") as file:
         pickle.dump(pickler_test, file)
@@ -187,13 +187,16 @@ def test_generator_custom_adjustment() -> None:
     ## yield ##
     assert test("yield ... ") == ["return ... "]
     ## yield from ##
+    gen._internals["jump_positions"] = []
     assert test("yield from ... ") == [
-        "locals()['.internals']['.yieldfrom']=... ",
+        "locals()['.internals']['.0']=locals()['.internals']['.yieldfrom']=iter(... )",
         "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
         "    return locals()['.internals']['.i']",
         "    if locals()['.internals']['.send']:",
         "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
     ]
+    ## check the jump positions ##
+    assert gen._internals["jump_positions"] == [[1, 5]]
     ## for ##
     gen._internals["jump_positions"], gen._internals["jump_stack"] = [], []
     assert test("for ") == ["for "]
@@ -209,6 +212,8 @@ def test_generator_custom_adjustment() -> None:
     )
     ## return ##
     assert test("return ... ") == ["return EOF('... ')"]
+    ## nonlocal ##
+    assert test("nonlocal ... ") == []
 
 
 def test_generator_update_jump_positions() -> None:
@@ -301,6 +306,8 @@ def test_generator_append_line() -> None:
     )
     assert gen._internals["lineno"] == 3
     ## decorators ##
+    gen._internals["lineno"] = 1
+    gen._internals["decorator"] = True
 
 
 def test_generator_block_adjust() -> None:
@@ -419,6 +426,9 @@ def test_generator_string_collector_adjust() -> None:
 
 
 def test_generator_clean_source_lines() -> None:
+
+    ## make sure the jump_positions are forming correctly ##
+
     def test():
         yield 1
         for i in range(3):
@@ -427,7 +437,6 @@ def test_generator_clean_source_lines() -> None:
             yield i
 
     gen = Generator(test())
-    ## make sure the jump_positions are forming correctly ##
     assert gen._internals["jump_positions"] == [[2, 3], [4, 5]]
 
     a = None
@@ -1046,13 +1055,13 @@ def test_yieldfrom() -> None:
 
 
 def test_gen_expr() -> None:
+    patch_iterators(globals())
     gen = Generator(i for i in range(3))
     assert gen._internals["source_lines"] == [
         "    for i in range(3):",
         "        return i",
     ]
-    ## acts as the fishhook iter ##
-    gen._locals()[".internals"] = {".4": iter(range(1, 3)), "EOF": EOF}
+
     assert [i for i in gen] == [0, 1, 2]
 
     ##################################################
@@ -1065,7 +1074,8 @@ def test_gen_expr() -> None:
         "            return (i, j)",
     ]
 
-    patch_iterators(locals())
+    assert gen._locals().pop(".0", None) is None
+
     assert [i for i in gen] == [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
 
     # initialized #
@@ -1078,10 +1088,48 @@ def test_gen_expr() -> None:
 
 
 def test_lambda_expr() -> None:
-    pass
+    ## gen_expr not running + running ##
+    test = lambda: (i for i in range(3))
+    gen = Generator(test())
+    assert gen._internals["source_lines"] == [
+        "    for i in range(3):",
+        "        return i",
+    ]
+    assert gen._internals["lineno"] == 1
+    temp = (i for i in range(3))
+    next(temp)
+    gen = Generator(temp)
+    assert gen._internals["source_lines"] == [
+        "    for i in range(3):",
+        "        return i",
+    ]
+    assert gen._internals["lineno"] == 2
+    assert next(gen) == 1
+    ## lambda with value yields ##
+    test = lambda: (yield)
+    gen = Generator(test())
+    assert gen._internals["source_lines"] == [
+        "return",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        " locals()['.internals']['.args'].pop()",
+    ]
+    ## running ##
+    test = lambda: (yield (yield 3))
+    gen = test()
+    next(gen)
+    gen = Generator(gen)
+    assert gen._internals["source_lines"] == [
+        "return  3",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "return  locals()['.internals']['.args'].pop()",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        " locals()['.internals']['.args'].pop()",
+    ]
+    ## not implemented ##
+    # assert gen._internals["lineno"] == ...
 
 
-def test_intialized() -> None:
+def test_initialized() -> None:
     ## transfer over the source and lineno ##
     gen = simple_generator()
     next(gen)
@@ -1106,9 +1154,7 @@ def test_intialized() -> None:
         assert key in keys
     assert [i for i in gen] == [2, 1]
 
-    ## test case not working ##
-
-    patch_iterators(locals())
+    # patch_iterators(locals())
 
     def test():
         for i in range(5):
@@ -1289,7 +1335,7 @@ async def async_generator_tests() -> None:
         # initilized #
         init_test(simple_asyncgenerator(), True, AsyncGenerator, AsyncGeneratorType)
         ## generator expression ##
-        gen = (i async for i in simple_asyncgenerator())
+        gen = (i async for i in gcopy.track.atrack(simple_asyncgenerator()))
         init_test(gen, True, AsyncGenerator, AsyncGeneratorType)
 
         ## test if the function related attrs get transferred ##
@@ -1364,9 +1410,9 @@ test_Pickler()
 test_picklers()
 test_generator_pickle()
 # record_jumps is tested in test_custom_adjustment
-# test_generator_custom_adjustment()
+test_generator_custom_adjustment()
 test_generator_update_jump_positions()
-test_generator_append_line()  ## need to test decorated functions ##
+test_generator_append_line()  ## need to test decorators
 # test_generator_block_adjust() ## just need to fix except adjust ##
 # test_generator_string_collector_adjust() ## need to implement ternary statements in unpack ##
 # test_generator_clean_source_lines() ## need to implement ternary statements in unpack and fix any other minor problems ##
@@ -1388,9 +1434,8 @@ test_generator_type_checking()
 test_closure()
 test_recursion()
 test_yieldfrom()
-test_gen_expr()
-# test_lambda_expr()
-test_intialized()
+test_gen_expr()  ## fix patch_iterators so that it's scoped ##
+test_lambda_expr()
+test_initialized()
 # test_value_yield()
-
 asyncio.run(async_generator_tests())
