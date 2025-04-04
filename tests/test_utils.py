@@ -130,7 +130,7 @@ def test_similar_opcode() -> None:
                 setattr(self, attr, [0])
 
     ## same ##
-    assert similiar_opcode(
+    assert similar_opcode(
         Test(),
         Test(),
         ## LOAD_GLOBAL ##
@@ -141,7 +141,7 @@ def test_similar_opcode() -> None:
         0,
     )
     ## essentially the same (for our purposes) ##
-    assert similiar_opcode(
+    assert similar_opcode(
         Test(),
         Test(),
         ## LOAD_GLOBAL ##
@@ -152,7 +152,7 @@ def test_similar_opcode() -> None:
         0,
     )
     ## different ##
-    assert similiar_opcode(Test(), Test(), 151, 1, 0, 0) == False
+    assert similar_opcode(Test(), Test(), 151, 1, 0, 0) == False
 
 
 def test_code_cmp() -> None:
@@ -198,6 +198,7 @@ def test_is_running() -> None:
 
     test(range(3))
     ## requiring c level memory access ##
+    test(memoryview(bytearray([1, 2, 3])))
     test({1, 2, 3})
     test(frozenset({1, 2, 3}))
     test({"a": 1, "b": 2, "c": 3})

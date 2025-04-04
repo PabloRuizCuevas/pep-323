@@ -228,7 +228,7 @@ class BaseGenerator:
         FUNC: FunctionType | GeneratorType | str = None,
     ) -> None:
         """
-        Takes in a function/generator or its source code as the first arguement
+        Takes in a function/generator or its source code as the first argument
 
         If FUNC=None it will simply initialize as without any attributes, this
         is for the __setstate__ method in Pickler._copier use case
@@ -238,7 +238,7 @@ class BaseGenerator:
          - gi_suspended: is the generator currently paused e.g. state is saved
 
         Also, all attributes are set internally first and then exposed to the api.
-        The interals are accessible via the _internals dictionary
+        The internals are accessible via the _internals dictionary
         """
         ## for the api setup ##
         self._api_setup()
@@ -278,7 +278,7 @@ class BaseGenerator:
                 else:
                     self._internals["source"] = dedent(getsource(getcode(FUNC)))
                     ## we need to record a linetable for the lineno since the source code gets modified ##
-                    self._internals["source_lines"] = clean_source_lines(self, True)
+                    clean_source_lines(self, True)
                     self._internals["lineno"] = (
                         self._internals["frame"].f_lineno
                         - self._internals["code"].co_firstlineno
@@ -321,7 +321,7 @@ class BaseGenerator:
                         clean_lambda(self, FUNC)
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
-                        self._internals["source_lines"] = clean_source_lines(self)
+                        clean_source_lines(self)
                         track_shift(FUNC, self._locals().get(".internals", {}))
                 else:
                     raise TypeError(
@@ -329,7 +329,7 @@ class BaseGenerator:
                         % type(FUNC)
                     )
                 ## modified every time __next__ is called; always start at line 1 for ##
-                ## unintialized and set it after clean_source_lines (since this modifies it) ##
+                ## uninitialized and set it after clean_source_lines (since this modifies it) ##
                 self._internals["lineno"] = 1
             if hasattr(FUNC, "__closure__"):
                 ## add its closure if it has one. It shouldn't ##
@@ -480,17 +480,16 @@ class BaseGenerator:
                     + "%s=locals()['.internals']['.self']._locals()[%s]"
                     % (key, repr(key))
                 ]
-        ## needs to be added if not already there so it can be appended to ##
-        ## try not to use variables here (otherwise it can mess with the state); ##
-        ## 'return EOF()' is appended to help return after a loop ##
-        ######################################################################
-        ## we need to give the original filename before using exec for the code_context to ##
-        ## be correct in track_iter therefore we compile first to provide a filename then exec ##
+        ## manual variable initialization needs to be added since updating locals does   ##
+        ## not update the frames locals; try not to use variables here (otherwise it can ##
+        ## mess with the state); 'return EOF()' is appended to help return after a loop  ##
         self.__source__ = (
             init
             + self._internals["state"]
             + ["    return locals()['.internals']['EOF']()"]
         )
+        ## we need to give the original filename before using exec for the code_context to ##
+        ## be correct in track_iter therefore we compile first to provide a filename then exec ##
         code_obj = compile("\n".join(self.__source__), "<Generator>", "exec")
         ## make sure the globals are there ##
         exec(code_obj, self._internals["frame"].f_globals, locals())
@@ -517,7 +516,7 @@ class BaseGenerator:
 
         #### update lineno ####
 
-        ## update the frames lineno in accordance with its state ##
+        ## update the frames lineno in accordance with its state (-1 for 0 based indexing) ##
         adjusted_lineno = _frame.f_lineno - init_length - 1
         end_index = len(self._internals["linetable"]) - 1
         ## empty linetable ##
@@ -526,6 +525,7 @@ class BaseGenerator:
             self._internals["state"] = None
             self._internals["lineno"] = len(self._internals["source_lines"])
         else:
+            ## update the lineno ##
             self._internals["lineno"] = (
                 self._internals["linetable"][adjusted_lineno] + 1
             )
@@ -533,12 +533,15 @@ class BaseGenerator:
                 self._internals["lineno"], self._internals["jump_positions"]
             )
             if not loops:
+                ## if we can advance the lineno then advance it ##
+                ## else (since not in loop) EOF ##
                 if end_index > adjusted_lineno:
                     self._internals["lineno"] += 1
                 else:
                     ## EOF ##
                     self._internals["state"] = None
                     self._internals["lineno"] = len(self._internals["source_lines"])
+            ## if inside a loop and we can advance the lineno then advance it ##
             elif self._internals["lineno"] < loops[-1][1]:
                 self._internals["lineno"] += 1
 
@@ -560,7 +563,7 @@ class BaseGenerator:
 
     def __call__(self, *args, **kwargs) -> GeneratorType:
         """
-        Calls the instances call method if it has one (only for unintialized Function generators)
+        Calls the instances call method if it has one (only for uninitialized Function generators)
         and does type checking before calling
 
         Note: Having a __call__ method on a Generator also
@@ -633,7 +636,7 @@ class BaseGenerator:
             ## you need to add itself to the closure; importantly, its __call__ method ##
             GEN_FUNC.__closure__ += (CellType(GEN_FUNC.__call__),)
             GEN_FUNC._internals["code"].co_freevars += (FUNC.__name__,)
-            ## initialize its locals since this is an unintialized generator ##
+            ## initialize its locals since this is an uninitialized generator ##
             GEN_FUNC._locals()[FUNC.__name__] = GEN_FUNC.__call__
             ## replace the function with the Generator version ##
             closure = self.__closure__
@@ -644,7 +647,7 @@ class BaseGenerator:
 
 def Generator__call__(self, *args, **kwargs) -> GeneratorType:
     """
-    initializes the generators locals with arguements and keyword arguements
+    initializes the generators locals with arguments and keyword arguments
     but is also a shorthand method to initialize the state generator
 
     Note: this method must be set on initialisation otherwise for some reason
@@ -673,7 +676,7 @@ def Generator__call__(self, *args, **kwargs) -> GeneratorType:
 def Generator_call_error(*args, **kwargs) -> NoReturn:
     """Error for when an initialized generator is called"""
     raise TypeError(
-        "Initialized generators cannot be called, only unintialized Function generators may be called"
+        "Initialized generators cannot be called, only uninitialized Function generators may be called"
     )
 
 
@@ -715,7 +718,7 @@ class Generator(BaseGenerator):
 
     def send(self, arg: Any) -> Any:
         """
-        Send takes exactly one arguement 'arg' that
+        Send takes exactly one argument 'arg' that
         is sent to the functions yield variable
         """
         if arg is not None and self._internals["lineno"] == 1:
@@ -802,7 +805,7 @@ class AsyncGenerator(BaseGenerator):
 
     async def asend(self, arg: Any) -> CoroutineType:
         """
-        Send takes exactly one arguement 'arg' that
+        Send takes exactly one argument 'arg' that
         is sent to the functions yield variable
         """
         if arg is not None and self._internals["lineno"] == 1:
