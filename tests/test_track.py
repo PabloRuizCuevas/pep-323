@@ -1,6 +1,7 @@
 import asyncio
 
-from gcopy.track import *
+from collections.abc import Iterable, Iterator
+from gcopy.track import track_adjust, track_shift, patch_iterators, unpatch_iterators, track, currentframe, atrack
 
 
 def iter_init(obj: Iterable | Iterator) -> Iterable:

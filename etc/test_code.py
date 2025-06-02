@@ -1,6 +1,6 @@
 import pytest
 
-from gcopy2.my_copy import Code
+from etc.my_copy import Code
 
 
 def my_generator(a):

@@ -84,10 +84,10 @@ import pickle
 
 gen = Generator(simple_generator)
 
-with open("test.pkl", "wb") as file:
+with open("tests/data/test.pkl", "wb") as file:
     pickle.dump(gen, file)
 
-with open("test.pkl", "rb") as file:
+with open("tests/data/test.pkl", "rb") as file:
     ## they should be identical in terms of the attrs we care about ##
     ## but the state_generator will be deleted (it'll intialize on unpickling) ##
     new_gen = pickle.load(file)

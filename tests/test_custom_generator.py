@@ -1,8 +1,9 @@
 import asyncio
 import pickle
-from types import NoneType
-
-from gcopy.custom_generator import *
+from types import NoneType, GeneratorType
+from collections.abc import Iterable, Iterator
+from typing import Any
+from gcopy.custom_generator import Pickler, Generator,code
 from gcopy.track import patch_iterators
 from gcopy.utils import getcode
 
@@ -118,9 +119,9 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
         assert copier(pickler_test, lambda x: x) is not copier(
             pickler_test, lambda x: x
         )
-    with open("test.pkl", "wb") as file:
+    with open("tests/data/test.pkl", "wb") as file:
         pickle.dump(pickler_test, file)
-    with open("test.pkl", "rb") as file:
+    with open("tests/data/test.pkl", "rb") as file:
         ## they should be identical in terms of the attrs we care about ##
         test_loaded = pickle.load(file)
         if isinstance(pickler_test, BaseGenerator):

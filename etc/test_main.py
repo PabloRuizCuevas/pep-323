@@ -1,4 +1,4 @@
-from gcopy2.my_copy import my_copy
+from etc.my_copy import my_copy
 
 
 def gtest1():
