@@ -1,14 +1,16 @@
 #################################################
 ### cleaning/extracting/adjusting source code ###
 #################################################
-from .utils import *
-from inspect import getsource, findsource, signature
-from typing import Iterable, Any
-from types import GeneratorType, FunctionType, CellType  # , FrameType ## lineno_adjust
 from functools import partial
+from inspect import findsource, getsource, signature
+from types import (CellType, FunctionType,  # , FrameType ## lineno_adjust
+                   GeneratorType)
+from typing import Any, Iterable
 
 ## to ensure gcopy.custom_generator.Generator can be used in exec for sign ##
 import gcopy
+
+from .utils import *
 
 
 def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")")) -> int:

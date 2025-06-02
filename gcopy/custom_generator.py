@@ -1,20 +1,15 @@
 ##################################
 ### picklable/copyable objects ###
 ##################################
-from types import (
-    FunctionType,
-    GeneratorType,
-    AsyncGeneratorType,
-    CodeType,
-    CellType,
-    CoroutineType,
-)
-from inspect import currentframe  ## used in _frame_init
+from functools import partial
+from inspect import currentframe  # # used in _frame_init
+from sys import exc_info
 from textwrap import dedent
+from types import (AsyncGeneratorType, CellType, CodeType, CoroutineType,
+                   FunctionType, GeneratorType)
+
 from gcopy.source_processing import *
 from gcopy.track import track_shift
-from sys import exc_info
-from functools import partial
 
 try:
     from typing import NoReturn

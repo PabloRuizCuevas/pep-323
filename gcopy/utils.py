@@ -1,15 +1,15 @@
-from sys import version_info
-from inspect import currentframe
-from readline import get_history_item, get_current_history_length
-from dis import _unpack_opargs
-from types import FrameType, GeneratorType, CodeType, FunctionType
-from typing import Iterable, Any, Callable, Iterator
-from opcode import opmap
-from functools import wraps
-from copy import deepcopy, copy
-
+from copy import copy, deepcopy
 ## needed to access c level memory for the builtin iterators ##
-from ctypes import py_object, c_ssize_t, Structure, cast, POINTER
+from ctypes import POINTER, Structure, c_ssize_t, cast, py_object
+from dis import _unpack_opargs
+from functools import wraps
+from inspect import currentframe
+from readline import get_current_history_length, get_history_item
+from sys import version_info
+from types import CodeType, FrameType, FunctionType, GeneratorType
+from typing import Any, Callable, Iterable, Iterator
+
+from opcode import opmap
 
 _opmap = dict(zip(opmap.values(), opmap.keys()))
 

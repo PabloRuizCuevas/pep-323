@@ -1,10 +1,10 @@
-from gcopy.custom_generator import *
-from gcopy.track import patch_iterators
+import asyncio
 import pickle
 from types import NoneType
-from gcopy.utils import getcode
-import asyncio
 
+from gcopy.custom_generator import *
+from gcopy.track import patch_iterators
+from gcopy.utils import getcode
 
 #########################
 ### testing utilities ###

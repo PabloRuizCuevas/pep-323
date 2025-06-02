@@ -1,14 +1,14 @@
 ################
 ### tracking ###
 ################
-from .source_processing import get_indent  # , is_definition, lineno_adjust
-from .utils import is_cli, get_history_item, getcode, Wrapper
+import builtins  # # for consistency (it switches between a module and a dict) ##
 from inspect import currentframe, getframeinfo, getsourcelines
-import builtins  ## for consistency (it switches between a module and a dict) ##
-
-## for the monkey patching ##
-from typing import Iterator, Iterable, Any
 from types import FrameType, FunctionType
+## for the monkey patching ##
+from typing import Any, Iterable, Iterator
+
+from .source_processing import get_indent  # , is_definition, lineno_adjust
+from .utils import Wrapper, get_history_item, getcode, is_cli
 
 
 def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterable:

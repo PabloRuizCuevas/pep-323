@@ -1,5 +1,6 @@
-from gcopy.track import *
 import asyncio
+
+from gcopy.track import *
 
 
 def iter_init(obj: Iterable | Iterator) -> Iterable:

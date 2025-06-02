@@ -1,5 +1,6 @@
-from gcopy.source_processing import *
 from types import FunctionType
+
+from gcopy.source_processing import *
 
 
 def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:

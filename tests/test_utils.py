@@ -1,6 +1,7 @@
-from gcopy.utils import *
-from typing import Iterator
 import warnings
+from typing import Iterator
+
+from gcopy.utils import *
 
 
 def test_cli_findsource() -> None:
