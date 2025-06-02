@@ -1,12 +1,18 @@
 ##################################
 ### picklable/copyable objects ###
 ##################################
-from types import FunctionType, GeneratorType, CodeType
-from inspect import currentframe
-from copy import deepcopy, copy
+from types import (
+    FunctionType,
+    GeneratorType,
+    AsyncGeneratorType,
+    CodeType,
+    CellType,
+    CoroutineType,
+)
+from inspect import currentframe  ## used in _frame_init
 from textwrap import dedent
 from gcopy.source_processing import *
-from gcopy.track import offset_adjust
+from gcopy.track import track_shift
 from sys import exc_info
 from functools import partial
 
@@ -18,10 +24,7 @@ except:
 
 
 ## minium version supported ##
-## if positions in get_instructions does not happen ##
-## for lower versions this will have to be 3.11 ##
-# if version_info < (3, 5):
-if version_info < (3, 11):
+if version_info < (3, 5):
     raise ImportError("Python version 3.11 or above is required")
 
 
@@ -29,22 +32,21 @@ class Pickler:
     """
     class for allowing general copying and pickling of
     some otherwise uncopyable or unpicklable objects
+
+    Note: on pickling it's assumed that you have static
+    attributes _attrs and _not_allowed that determine
+    what attributes get pickled
     """
 
     _not_allowed = tuple()
 
-    def _copier(self, FUNC: FunctionType) -> object:
-        """copying will create a new generator object out of a copied version of the current instance"""
-        obj = type(self)()
-        obj.__setstate__(self.__getstate__(FUNC))
-        return obj
-
     ## for copying ##
     def __copy__(self) -> object:
-        return self._copier(copy)
+        ## used composition here to avoid tight coupling with Pickler._copier ##
+        return copier(self, copy)
 
     def __deepcopy__(self, memo: dict) -> object:
-        return self._copier(deepcopy)
+        return copier(self, deepcopy)
 
     def copy(self, deep: bool = True) -> object:
         """short hand method for copying"""
@@ -52,8 +54,11 @@ class Pickler:
             return deepcopy(self)
         return copy(self)
 
-    def _pickler_get(obj):
+    def _pickler_get(obj: object) -> object:
+        """Used on recursive pickling of objects"""
         if issubclass(type(obj), Pickler):
+            ## we create a copy to avoid affecting the the original Pickler instances attributes ##
+            obj = obj.copy()
             ## subclasses of Pickler will remove attributes on pickling ##
             for attr in obj._not_allowed:
                 if hasattr(obj, attr):
@@ -63,18 +68,10 @@ class Pickler:
     ## for pickling ##
     def __getstate__(self, FUNC: FunctionType = _pickler_get) -> dict:
         """Serializing pickle (what object you want serialized)"""
-        dct = dict()
-        attrs, has, get = self._attrs, hasattr, getattr
-        is_internals = attrs == ("_internals",)
-        if is_internals:
-            attrs = self._internals
-            has = lambda self, attr: attr in attrs
-            get = lambda self, attr: attrs.get(attr)
+        dct, attrs = dict(), self._attrs
         for attr in attrs:
-            if has(self, attr) and not attr in self._not_allowed:
-                dct[attr] = FUNC(get(self, attr))
-        if is_internals:
-            return {"_internals": dct}
+            if hasattr(self, attr) and not attr in self._not_allowed:
+                dct[attr] = FUNC(getattr(self, attr))
         return dct
 
     def __setstate__(self, state: dict) -> None:
@@ -140,6 +137,7 @@ class frame(Pickler):
                 self.f_code = code()
             return
         self.f_locals = {}
+        self.f_globals = get_globals()
 
     def clear(self) -> None:
         """clears f_locals e.g. 'most references held by the frame'"""
@@ -157,9 +155,16 @@ class frame(Pickler):
         attrs.remove("f_back")
         return attr_cmp(self, obj, attrs)
 
+    def __setstate__(self, state: dict) -> None:
+        Pickler.__setstate__(self, state)
+        self.f_globals = get_globals()
 
-class EOF(StopIteration):
-    """Custom exception to exit out of the generator on return statements"""
+
+class EOF(StopIteration, StopAsyncIteration):
+    """
+    Custom exception to exit out of the generator on return statements.
+    For consistency, this class is only used for instance checking
+    """
 
     pass
 
@@ -167,18 +172,18 @@ class EOF(StopIteration):
 #################
 ### Generator ###
 #################
-class Generator(Pickler):
+class BaseGenerator:
     """
     Converts a generator function into a generator
     function that is copyable (e.g. shallow and deepcopy)
-    and potentially pickle-able
+    and potentially pickle-able.
 
     This should be very portable or at least closely so across
     python implementations ideally.
 
-    The dependencies for this to work only requires that you
-    can retrieve your functions source code as a string via
-    inspect.getsource.
+    The dependencies for this to work requires that you've met
+    the assumptions under the assumptions requirement section
+    in the custom_generator.md file.
 
     How it works:
 
@@ -200,24 +205,22 @@ class Generator(Pickler):
     Essentially, for the various kinds of generator you could
     have you want to assign a prefix and a type. The prefix
     is there to denote i.e. gi_ for Generator, ag_ for
-    AsyncGenerator and cr_ for Coroutine such that it's
-    very easy to integrate across different implementations
-    without losing the familiar api.
+    AsyncGenerator such that it's very easy to integrate across
+    different implementations without losing the familiar api.
     """
 
     ## Note: by default GeneratorType does not have the  ##
     ## __bool__ (or __nonzero__ in python 2.x) attribute ##
     ## so we don't necessarily have to implement one ##
 
-    _attrs = ("_internals",)  ## for Pickler ##
-    _not_allowed = ("state_generator",)
+    __copy__, __deepcopy__, copy = Pickler.__copy__, Pickler.__deepcopy__, Pickler.copy
 
     def _api_setup(self) -> None:
         """sets up the api; subclasses should override this method for alternate api setup"""
         self._internals = {
-            "prefix": "gi_",
-            "type": "GeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
-            "version": "",  ## specific to 'async ' Generators for _frame_init ##
+            "prefix": "",
+            "type": "",
+            "version": "",
         }
 
     def __init__(
@@ -225,7 +228,7 @@ class Generator(Pickler):
         FUNC: FunctionType | GeneratorType | str = None,
     ) -> None:
         """
-        Takes in a function/generator or its source code as the first arguement
+        Takes in a function/generator or its source code as the first argument
 
         If FUNC=None it will simply initialize as without any attributes, this
         is for the __setstate__ method in Pickler._copier use case
@@ -235,12 +238,16 @@ class Generator(Pickler):
          - gi_suspended: is the generator currently paused e.g. state is saved
 
         Also, all attributes are set internally first and then exposed to the api.
-        The interals are accessible via the _internals dictionary
+        The internals are accessible via the _internals dictionary
         """
         ## for the api setup ##
         self._api_setup()
+        ## unused attribute for initialized generator (but will be set to a callable for uninitialized generators) ##
+        self.__call__ = Generator_call_error
         ## __setstate__ from Pickler._copier ##
         if FUNC:
+            ## Note: make sure lineno is set after clean_source lines since clean_source lines uses it ##
+
             ## needed to identify certain attributes ##
             prefix = self._internals["prefix"]
             ## running generator ##
@@ -250,34 +257,7 @@ class Generator(Pickler):
                         "linetable": [],
                         "frame": frame(getframe(FUNC)),
                         "code": code(getcode(FUNC)),
-                    }
-                )
-                ## co_name is readonly e.g. can't be changed by user ##
-                if FUNC.gi_code.co_name == "<genexpr>":
-                    self._internals["source"] = expr_getsource(FUNC)
-                    self._internals["source_lines"] = unpack_genexpr(
-                        self._internals["source"]
-                    )
-                    ## change the offsets into indents ##
-                    self._internals["frame"].f_locals = offset_adjust(self._locals())
-                    self._internals["lineno"] = len(self._internals["source_lines"])
-                ## must be a function ##
-                else:
-                    self._internals["source"] = dedent(getsource(getcode(FUNC)))
-                    self._internals["source_lines"] = clean_source_lines(self, True)
-                    ## Might implement at another time but this is just for compound statements ##
-                    ## and therefore not strictly necessary from the standpoint of the style guide ##
-                    self._internals["lineno"] = (
-                        self._internals["frame"].f_lineno
-                        - self._internals["code"].co_firstlineno
-                        + 1
-                    )
-                    # self._internals["lineno"] = self._internals["linetable"][
-                    #     self._internals["frame"].f_lineno - self._internals["code"].co_firstlineno
-                    # ]  + lineno_adjust(self._internals["frame"])
-                ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
-                self._internals.update(
-                    {
+                        ## 'gi_yieldfrom' was introduced in python version 3.5 and yield from ... in 3.3 ##
                         "yieldfrom": getattr(FUNC, prefix + "yieldfrom", None),
                         "suspended": True,
                         "running": False,
@@ -286,53 +266,94 @@ class Generator(Pickler):
                 ## setup api if it's currently running ##
                 for key in ("code", "frame", "suspended", "yieldfrom", "running"):
                     setattr(self, prefix + key, self._internals[key])
+                ## co_name is readonly e.g. can't be changed by user ##
+                if self._internals["code"].co_name == "<genexpr>":
+                    self._internals["source"] = expr_getsource(FUNC)
+                    ## remove the internally set .0 if it exists for some reason we need ##
+                    ## to do it after expr_getsource otherwise it doesn't get deleted ##
+                    genexpr_adjust(self, self._internals["source"])
+                ## must be a function ##
+                elif self._internals["code"].co_name == "<lambda>":
+                    clean_lambda(self, FUNC)
+                else:
+                    self._internals["source"] = dedent(getsource(getcode(FUNC)))
+                    ## we need to record a linetable for the lineno since the source code gets modified ##
+                    clean_source_lines(self, True)
+                    self._internals["lineno"] = (
+                        self._internals["frame"].f_lineno
+                        - self._internals["code"].co_firstlineno
+                    )
+                    ## can't have a lineno of 0 (implies the start of a generator) ##
+                    if self._internals["lineno"] == 0:
+                        self._internals["lineno"] = 1
+                    else:
+                        self._internals["lineno"] = self._internals["linetable"][
+                            self._internals["lineno"]
+                        ]
+                        #  + lineno_adjust(self._internals["frame"]) ## for compound statements if implementing ##
+                        ## only increase if it's not inside a loop ##
+                        self._internals["lineno"] += 1 - bool(
+                            get_loops(
+                                self._internals["lineno"],
+                                self._internals["jump_positions"],
+                            )
+                        )
+                    track_shift(FUNC, self._locals().get(".internals", {}))
             ## uninitialized generator ##
             else:
                 ## generator function ##
                 if isinstance(FUNC, FunctionType):
-                    ## add its closure if it has one. It shouldn't ##
-                    ## effect the existing locals, only adds the attribute ##
-                    if hasattr(FUNC, "__closure__"):
-                        self.__closure__ = FUNC.__closure__
-                    self.__code__ = self._internals["code"] = code(FUNC.__code__)
+                    self._internals.update(
+                        {
+                            "code": code(FUNC.__code__),
+                            "frame": frame(),
+                            "suspended": False,
+                            "yieldfrom": None,
+                            "running": False,
+                        }
+                    )
+                    self.__name__ = self._internals["code"].co_name
+                    self.__defaults__ = FUNC.__defaults__
                     ## since it's uninitialized we can bind the signature to __call__ ##
                     ## and overwrite the __call__ signature + other metadata with the functions ##
-                    self.__call__ = sign(Generator__call__, FUNC, True)
+                    self.__call__ = sign(Generator__call__, FUNC, globals(), True)
                     if FUNC.__code__.co_name == "<lambda>":
-                        self._internals["source"] = expr_getsource(FUNC)
-                        self._internals["source_lines"] = unpack_lambda(
-                            self._internals["source"]
-                        )
+                        clean_lambda(self, FUNC)
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
-                        self._internals["source_lines"] = clean_source_lines(self)
-                        self._internals["name"] = self._internals["code"].co_name
-                ## source code string ##
-                elif isinstance(FUNC, str):
-                    self._internals["source"] = FUNC
-                    self._internals["source_lines"] = clean_source_lines(self)
-                    self._internals["code"] = code(
-                        compile(FUNC, currentframe().f_code.co_filename, "exec")
-                    )
-                ## code object - use a decompilation library and send in as a string ##
+                        clean_source_lines(self)
+                        track_shift(FUNC, self._locals().get(".internals", {}))
                 else:
                     raise TypeError(
                         "type '%s' is an invalid initializer for a Generator"
                         % type(FUNC)
                     )
-                self._internals.update(
-                    {
-                        "frame": frame(),
-                        "suspended": False,
-                        "yieldfrom": None,
-                        ## modified every time __next__ is called; always start at line 1 ##
-                        "lineno": 1,
-                        "running": False,
-                    }
-                )
+                ## modified every time __next__ is called; always start at line 1 for ##
+                ## uninitialized and set it after clean_source_lines (since this modifies it) ##
+                self._internals["lineno"] = 1
+            if hasattr(FUNC, "__closure__"):
+                ## add its closure if it has one. It shouldn't ##
+                ## effect the existing locals, only adds the attribute ##
+                self._bind(FUNC)
+                ## only update locals with nonlocals on init ##
+                ## every other instance should require the variables ##
+                ## to exist in the local scope first ##
+                self._locals().update(get_nonlocals(self))
             ## create the states ##
             self._internals["state"] = self._internals["source_lines"]
             self._internals["state_generator"] = self._init_states()
+            f_locals = self._locals()
+            internals = {
+                "EOF": EOF,
+                "exec_info": exc_info,
+                "partial": partial,
+                ".args": [],
+                ".send": None,
+            }
+            if ".internals" not in f_locals:
+                f_locals[".internals"] = internals
+            else:
+                f_locals[".internals"].update(internals)
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
@@ -368,10 +389,11 @@ class Generator(Pickler):
         loops = self._internals["loops"]
         index = self._internals["lineno"] - 1  ## for 0 based indexing ##
         if loops:
-            start_pos, end_pos = loops.pop()
+            start_pos, end_pos = loops[-1]
             ## adjustment ##
             blocks, indexes = self._internals["source_lines"][index:end_pos], []
             if index < end_pos and blocks:
+                loops.pop()
                 blocks, indexes = control_flow_adjust(
                     blocks,
                     list(range(index, end_pos)),
@@ -383,8 +405,6 @@ class Generator(Pickler):
                     self._internals["source_lines"][start_pos:end_pos],
                     *(start_pos, end_pos)
                 )
-            else:
-                loops += [[start_pos, end_pos]]
             self._internals["state"], self._internals["linetable"] = outer_loop_adjust(
                 blocks, indexes, self._internals["source_lines"], loops, end_pos
             )
@@ -395,19 +415,15 @@ class Generator(Pickler):
         )
 
     def _locals(self) -> dict:
-        """
-        proxy to replace locals within 'next_state' within
-        __next__ while still retaining the same functionality
-        """
+        """Short hand method for the current states/frames locals"""
         return self._internals["frame"].f_locals
 
     def _frame_init(
-        self, exception: str = "", close: bool = False, sending=False
+        self, exception: str = "", sending: bool = False
     ) -> tuple[int, FunctionType]:
         """
-        initializes the frame with the current
-        states variables and the _locals proxy
-        but also adjusts the current state
+        initializes the frame with the current states
+        variables but also adjusts the current state
         """
         try:
             # set the next state and setup the function; it will raise a StopIteration for us
@@ -416,8 +432,6 @@ class Generator(Pickler):
             self._close()
             raise e
         ## adjust the current state ##
-        if close:
-            self._internals["state"] = exit_adjust(self._internals["state"])
         temp = get_indent(self._internals["state"][0])
         if exception:
             if self._internals["state"][0][temp:].startswith("try:"):
@@ -440,77 +454,46 @@ class Generator(Pickler):
         ## initialize the internal locals ##
         f_locals = self._locals()
         if not sending:
-            ## we can have this inside the not sending clause since .send is
-            ## used only when the generator has been initialized ##
-            if ".internals" not in f_locals:
-                f_locals[".internals"] = {
-                    "exec_info": exc_info,
-                    "partial": partial,
-                    ".args": [],
-                    ".send": None,
-                }
-            else:
-                ## initialize variables for the frame ##
-                f_locals[".internals"].update({".send": None})
-        ## make sure if it has a closure that it's updating the locals ##
-        f_locals.update(get_nonlocals(self))
-        name = self._internals.get("name", "next_state")
+            f_locals[".internals"].update({".send": None})
+        ## make sure if it has a closure that it's updating the locals (only if it still exists) ##
+        for key, value in get_nonlocals(self).items():
+            if key in f_locals:
+                f_locals[key] = value
         ## adjust the initializers ##
         indent = " " * 4
         init = [
-            self._internals["version"] + "def %s():" % name,
+            self._internals["version"] + "def next_state():",
             ## get the variables to update the frame
+            indent + "from inspect import currentframe",
             indent + "frame = currentframe()",
             indent + "self = frame.f_back.f_locals['self']",
             indent + "self._locals()['.internals']['.frame'] = frame",
             indent + "locals().update(self._locals())",
             indent + "locals()['.internals']['.self'] = self",
-            indent + "del frame, self",
+            indent + "del frame, self, currentframe",
         ]
         ## make sure variables are initialized ##
         for key in f_locals:
-            if isinstance(key, str) and key.isidentifier() and key != "locals":
+            if isinstance(key, str) and key.isidentifier():
                 init += [
                     " " * 4
                     + "%s=locals()['.internals']['.self']._locals()[%s]"
                     % (key, repr(key))
                 ]
-        ## needs to be added if not already there so it can be appended to ##
-        ## try not to use variables here (otherwise it can mess with the state); ##
-        ## 'return EOF()' is appended to help return after a loop ##
-        ######################################################################
+        ## manual variable initialization needs to be added since updating locals does   ##
+        ## not update the frames locals; try not to use variables here (otherwise it can ##
+        ## mess with the state); 'return EOF()' is appended to help return after a loop  ##
+        self.__source__ = (
+            init
+            + self._internals["state"]
+            + ["    return locals()['.internals']['EOF']()"]
+        )
         ## we need to give the original filename before using exec for the code_context to ##
         ## be correct in track_iter therefore we compile first to provide a filename then exec ##
-        self.__source__ = init + self._internals["state"] + ["    return EOF()"]
         code_obj = compile("\n".join(self.__source__), "<Generator>", "exec")
-        exec(code_obj, globals(), locals())
-        return len(init), locals()[name]
-
-    def __iter__(self) -> GeneratorType:
-        """Converts the generator function into an iterable"""
-        while True:
-            try:
-                yield next(self)
-            except StopIteration:
-                break
-
-    def __next__(
-        self, exception: str = "", close: bool = False, sending: bool = False
-    ) -> Any:
-        """updates the current state and returns the result"""
-        ## update with the new state and get the frame ##
-        init_length, next_state = self._frame_init(exception, close, sending)
-        try:
-            self._internals["running"] = True
-            result = next_state()
-            if isinstance(result, EOF):
-                raise result
-        except Exception as e:
-            self._close()
-            raise e
-        self._internals["running"] = False
-        self._update(init_length)
-        return result
+        ## make sure the globals are there ##
+        exec(code_obj, self._internals["frame"].f_globals, locals())
+        return len(init), locals()["next_state"]
 
     def _update(self, init_length: int) -> None:
         """Update the line position and frame"""
@@ -522,7 +505,6 @@ class Generator(Pickler):
 
         f_locals = _frame.f_locals
         ## remove variables that interfere with pickling ##
-        f_locals.pop("locals", None)
         if ".internals" in f_locals:
             f_locals[".internals"].pop(".send", None)
             f_locals[".internals"].pop(".frame", None)
@@ -534,7 +516,7 @@ class Generator(Pickler):
 
         #### update lineno ####
 
-        ## update the frames lineno in accordance with its state ##
+        ## update the frames lineno in accordance with its state (-1 for 0 based indexing) ##
         adjusted_lineno = _frame.f_lineno - init_length - 1
         end_index = len(self._internals["linetable"]) - 1
         ## empty linetable ##
@@ -543,6 +525,7 @@ class Generator(Pickler):
             self._internals["state"] = None
             self._internals["lineno"] = len(self._internals["source_lines"])
         else:
+            ## update the lineno ##
             self._internals["lineno"] = (
                 self._internals["linetable"][adjusted_lineno] + 1
             )
@@ -550,26 +533,23 @@ class Generator(Pickler):
                 self._internals["lineno"], self._internals["jump_positions"]
             )
             if not loops:
+                ## if we can advance the lineno then advance it ##
+                ## else (since not in loop) EOF ##
                 if end_index > adjusted_lineno:
                     self._internals["lineno"] += 1
                 else:
                     ## EOF ##
                     self._internals["state"] = None
                     self._internals["lineno"] = len(self._internals["source_lines"])
+            ## if inside a loop and we can advance the lineno then advance it ##
             elif self._internals["lineno"] < loops[-1][1]:
                 self._internals["lineno"] += 1
 
-    def send(self, arg: Any) -> Any:
-        """
-        Send takes exactly one arguement 'arg' that
-        is sent to the functions yield variable
-        """
-        if arg is not None and self._internals["lineno"] == 1:
-            raise TypeError("can't send non-None value to a just-started generator")
-        self._locals()[".internals"][".send"] = arg
-        return self.__next__(sending=True)
-
     def _close(self) -> None:
+        """
+        closes the generator; sets all the internal variables to
+        None or False and the generator to an empty generator
+        """
         self._internals.update(
             {
                 "state_generator": empty_generator(),
@@ -581,6 +561,171 @@ class Generator(Pickler):
             }
         )
 
+    def __call__(self, *args, **kwargs) -> GeneratorType:
+        """
+        Calls the instances call method if it has one (only for uninitialized Function generators)
+        and does type checking before calling
+
+        Note: Having a __call__ method on a Generator also
+        allows Generator.__init__ to be used as a decorator
+        """
+        if isinstance(self, type):
+            raise TypeError(
+                "Only instances of types/classes are allowed (Note: this method is for instances of the Generator type)"
+            )
+        return self.__call__(self, *args, **kwargs)
+
+    def __instancecheck__(self, instance: object) -> bool:
+        return isinstance(instance, eval(self._internals["type"]) | type(self))
+
+    def __subclasscheck__(self, subclass: type) -> bool:
+        return issubclass(subclass, eval(self._internals["type"]) | type(self))
+
+    def __getstate__(self, FUNC: FunctionType = Pickler._pickler_get) -> dict:
+        """Similar to the __getstate__ method of Pickler but pertaining to self._internals"""
+        dct = dict()
+        for key, value in self._internals.items():
+            if key != "state_generator":
+                dct[key] = FUNC(value)
+        dct = {"_internals": dct}
+        for attr in ("__name__", "__defaults__"):
+            dct[attr] = getattr(self, attr, None)
+        return dct
+
+    def __setstate__(self, state: dict) -> None:
+        """
+        Unpickles the generator then sets up the api and the state
+        """
+        self.__name__ = state.pop("__name__", None)
+        self.__defaults__ = state.pop("__defaults__", None)
+        Pickler.__setstate__(self, state)
+        ## setup the state api + generator ##
+        prefix = self._internals["prefix"]
+        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+            setattr(self, prefix + key, self._internals.get(key, None))
+        self._internals["state_generator"] = self._init_states()
+
+    def _bind(self, FUNC: FunctionType) -> None:
+        """Convenience method to bind a generator to closure cells"""
+        self.__closure__ = FUNC.__closure__
+        self.__code__ = self._internals["code"]
+        ## in case it's doing i.e. recursion and it's caught as a nonlocal ##
+        ## this means we need to replace it with its Generator version ##
+        if FUNC.__name__ in FUNC.__code__.co_freevars:
+            index = FUNC.__code__.co_freevars.index(FUNC.__name__)
+            ## we need a copy of the function without itself being in its closure cell ##
+            ## then wrap this in a Generator ##
+            closure = FUNC.__closure__
+            ## remove the function from the closure and replace the current scope with the Generator version ##
+            ## we have to modify the code object since FunctionType picks up on this ##
+            _code = FUNC.__code__
+            kwargs = {attr: getattr(_code, attr) for attr in code_attrs()}
+            kwargs["co_freevars"] = (
+                kwargs["co_freevars"][:index] + kwargs["co_freevars"][index + 1 :]
+            )
+            _code = CodeType(*kwargs.values())
+            ## create the new function ##
+            FUNC = FunctionType(
+                _code,
+                get_globals(),
+                FUNC.__name__,
+                FUNC.__defaults__,
+                closure[:index] + closure[index + 1 :],
+            )
+            GEN_FUNC = type(self)(FUNC)
+            ## you need to add itself to the closure; importantly, its __call__ method ##
+            GEN_FUNC.__closure__ += (CellType(GEN_FUNC.__call__),)
+            GEN_FUNC._internals["code"].co_freevars += (FUNC.__name__,)
+            ## initialize its locals since this is an uninitialized generator ##
+            GEN_FUNC._locals()[FUNC.__name__] = GEN_FUNC.__call__
+            ## replace the function with the Generator version ##
+            closure = self.__closure__
+            self.__closure__ = (
+                closure[:index] + (CellType(GEN_FUNC),) + closure[index + 1 :]
+            )
+
+
+def Generator__call__(self, *args, **kwargs) -> GeneratorType:
+    """
+    initializes the generators locals with arguments and keyword arguments
+    but is also a shorthand method to initialize the state generator
+
+    Note: this method must be set on initialisation otherwise for some reason
+    it still tries to call this method rather than what sometimes should be
+    called is the dynamically created method
+    """
+    ## get the arguments from the function call ##
+    arguments = locals()
+    ## we have to make a copy to retain the unintialisation ##
+    self_copy = self.copy()
+    ## since it's an intialization we bind it to the closure (otherwise this would be unexpected) ##
+    if hasattr(self, "__closure__"):
+        self_copy._bind(self)
+    ## for the api setup ##
+    prefix = self_copy._internals["prefix"]
+    for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+        setattr(self_copy, prefix + key, self_copy._internals[key])
+    if len(arguments) > 1:
+        del arguments["self"]
+        self_copy._locals().update(arguments)
+    self_copy._internals["state_generator"] = self_copy._init_states()
+    self_copy.__call__ = Generator_call_error
+    return self_copy
+
+
+def Generator_call_error(*args, **kwargs) -> NoReturn:
+    """Error for when an initialized generator is called"""
+    raise TypeError(
+        "Initialized generators cannot be called, only uninitialized Function generators may be called"
+    )
+
+
+class Generator(BaseGenerator):
+
+    def _api_setup(self) -> None:
+        """sets up the api; subclasses should override this method for alternate api setup"""
+        self._internals = {
+            "prefix": "gi_",
+            "type": "GeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
+            "version": "",  ## specific to 'async ' Generators for _frame_init (don't change) ##
+        }
+
+    def __iter__(self) -> GeneratorType:
+        """Converts the generator function into an iterable"""
+        while True:
+            try:
+                yield next(self)
+            except StopIteration:
+                break
+
+    def __next__(self, exception: str = "", sending: bool = False) -> Any:
+        """updates the current state and returns the result"""
+        ## update with the new state and get the frame ##
+        init_length, next_state = self._frame_init(exception, sending)
+        try:
+            self._internals["running"] = True
+            self._internals["suspended"] = False
+            result = next_state()
+            if isinstance(result, EOF):
+                raise StopIteration(*result.args[0:1])
+        except Exception as e:
+            self._close()
+            raise e
+        self._internals["running"] = False
+        self._internals["suspended"] = True
+        self._update(init_length)
+        return result
+
+    def send(self, arg: Any) -> Any:
+        """
+        Send takes exactly one argument 'arg' that
+        is sent to the functions yield variable
+        """
+        if arg is not None and self._internals["lineno"] == 1:
+            raise TypeError("can't send non-None value to a just-started generator")
+        self._locals()[".internals"][".send"] = arg
+        return self.__next__(sending=True)
+
     def close(self) -> None:
         """
         Throws a GeneratorExit and closes the generator clearing its
@@ -590,9 +735,9 @@ class Generator(Pickler):
         yield  = return 1
         """
         try:
-            if self.__next__("GeneratorExit()", True):
+            if self.__next__("GeneratorExit()"):
                 raise RuntimeError("generator ignored GeneratorExit")
-        except GeneratorExit:
+        except (GeneratorExit, StopIteration):
             ## This error is internally ignored by generators during closing ##
             pass
         finally:
@@ -614,52 +759,86 @@ class Generator(Pickler):
             % type(exception)
         )
 
-    def __call__(self, *args, **kwargs) -> GeneratorType:
-        """
-        Calls the instances call method if it has one (only for unintialized Function generators)
-        """
-        if isinstance(self, type):
-            raise TypeError(
-                "Only instances of types/classes are allowed (Note: this method is for instances of the Generator type)"
-            )
-        return self.__call__(self, *args, **kwargs)
 
-    def __instancecheck__(self, instance: object) -> bool:
-        return isinstance(instance, eval(self._internals["type"]) | type(self))
+class AsyncGenerator(BaseGenerator):
 
-    def __subclasscheck__(self, subclass: type) -> bool:
-        return issubclass(subclass, eval(self._internals["type"]) | type(self))
+    def _api_setup(self) -> None:
+        """sets up the api; subclasses should override this method for alternate api setup"""
+        self._internals = {
+            "prefix": "ag_",
+            "type": "AsyncGeneratorType",  ## has to be a string, otherwise doesn't get pickled ##
+            "version": "async ",  ## specific to 'async ' Generators for _frame_init ##
+        }
 
-    def __setstate__(self, state: dict) -> None:
-        Pickler.__setstate__(self, state)
-        ## setup the state generator + api ##
-        prefix = self._internals["prefix"]
-        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+    async def __aiter__(self) -> AsyncGeneratorType:
+        while True:
             try:
-                setattr(self, prefix + key, self._internals[key])
-            except KeyError:
-                ## if it doesn't have one of them it shouldn't have any of them ##
+                yield (await anext(self))
+            except StopAsyncIteration:
                 break
-        self._internals["state_generator"] = self._init_states()
 
+    async def __anext__(
+        self, exception: str = "", sending: bool = False
+    ) -> CoroutineType:
+        """updates the current state and returns the result"""
+        ## catch StopIteration on next(self._internals["state_generator"]) ##
+        ## and instead raise a StopAsyncIteration ##
+        try:
+            ## update with the new state and get the frame ##
+            init_length, next_state = self._frame_init(exception, sending)
+        except StopIteration as e:
+            raise StopAsyncIteration(*e.args[0:1])
+        try:
+            self._internals["running"] = True
+            self._internals["suspended"] = False
+            result = await next_state()
+            if isinstance(result, EOF):
+                ## coroutines can't throw StopIterations, EOF throws a StopIteration e.g. in accordance with its __mro__ ##
+                raise StopAsyncIteration(*result.args[0:1])
+        except Exception as e:
+            self._close()
+            raise e
+        self._internals["running"] = False
+        self._internals["suspended"] = True
+        self._update(init_length)
+        return result
 
-def Generator__call__(self, *args, **kwargs) -> GeneratorType:
-    """
-    initializes the generators locals with arguements and keyword arguements
-    but is also a shorthand method to initialize the state generator
+    async def asend(self, arg: Any) -> CoroutineType:
+        """
+        Send takes exactly one argument 'arg' that
+        is sent to the functions yield variable
+        """
+        if arg is not None and self._internals["lineno"] == 1:
+            raise TypeError("can't send non-None value to a just-started generator")
+        self._locals()[".internals"][".send"] = arg
+        return await self.__anext__(sending=True)
 
-    Note: this method must be set on initialisation otherwise for some reason
-    it still tries to call this method rather than what sometimes should be
-    called is the dynamically created method
-    """
-    ## get the arguments from the function call ##
-    arguments = locals()
-    ## for the api setup ##
-    prefix = self._internals["prefix"]
-    for key in ("code", "frame", "suspended", "yieldfrom", "running"):
-        setattr(self, prefix + key, self._internals[key])
-    if len(arguments) > 1:
-        del arguments["self"]
-        self._locals().update(arguments)
-    self._internals["state_generator"] = self._init_states()
-    return self
+    async def aclose(self) -> CoroutineType:
+        """
+        Throws a GeneratorExit and closes the generator clearing its
+        frame, state_generator, and yieldfrom
+        """
+        try:
+            if await self.__anext__("GeneratorExit()"):
+                raise RuntimeError("generator ignored GeneratorExit")
+        except (GeneratorExit, StopAsyncIteration):
+            ## This error is internally ignored by generators during closing ##
+            pass
+        finally:
+            self._close()
+
+    async def athrow(self, exception: Exception) -> CoroutineType:
+        """
+        Raises an exception from the last line in the
+        current state e.g. only from what has been
+        """
+        if issubclass(exception, BaseException):
+            if isinstance(exception, type):
+                exception = exception.__name__
+            else:
+                exception = repr(exception)
+            return await self.__anext__(exception)
+        raise TypeError(
+            "exceptions must be classes or instances deriving from BaseException, not %s"
+            % type(exception)
+        )

@@ -1,79 +1,42 @@
 """
 TODO:
 
-  1. implement ternary statement handling in unpack
-  2. finish testing
+  finish testing + review everything
 
-    Currently not working (_clean_source_lines):
-     - some value yields in f-strings in statements
-     - ternary expressions with and without value yields
-     - the decorator/definition adjustments needs testing
-     - collect_lambda needs testing
-     - a colon is added in a new line instead of the current
-       line for while loops adjusted by _block_adjust or unpack
+  clean_source_lines:
+    to be checked:
+    - indentation of lines from unpacking in clean_source_lines needs checking
+    - test closing up of brackets for both unpack + clean_source_lines
+    - collect lambda needs checking
+    - decorators needs checking
+    - value yields e.g. decorators/functions/ternary
+    - loops
+    - check the lineno from unpacking for initialized generators
+      - check that all unpacked lines are indented where necessary
+        and indentation of future lines must also be considered
+    - lineno for initialized generators needs checking
 
-    Finish fixing:
+  check block_adjust
 
-        _clean_source_lines (testing):
-
-         - check _block_adjust
-         - check the resets in variables in _clean_source_lines
-           (i.e. after 'yield' and string_collector_adjust)
-         - test collect_lambda
-         - test the decorator/definition adjustments
-         - test ternary statements
-         - test cleaning of sourcelines for lambda expressions
-
-        unpack:
-         - ternary statements with and without value yields
-         - check collect_lambda
-
-        Non-priority (at the moment) but will be needed later:
-        - When do i.e. gi_running and gi_suspended change?
-        - check all the documentation + docstrings
-        - remove any unncesesary code, comments etc.
+  unpack:
+  - check the line continuation is adjusting correctly
+    or consider removing char in " \\" case since it's
+    only for formatting
 
 
-    Expansion to other types of generators:
+  Figure out later:
+    source_processing:
+      - fix extract_function for expr_getsource tests
+        - then test it in test_source_processing:
+          - test_expr_getsource
+          - test_extract_function
 
-     - Add some async features to AsyncGenerator - will need to work out how I want to do the async stuff
-       async has renamings of the dunders as well i.e. methods of interest are __iter__ is __aiter__, __next__
-       is __anext__, and it will probably need an __await__ implementation.
+  - examples of how to use ag_await and then cater for it if relevant
 
-     - Consider generator functions decorated with types.coroutine or if making a coroutine type is necessary
-
-     - Maybe need to make an internal generator and then use this generally?
-
-  Documentation notes:
-
-  - Make a Note in the documentation that while loops don't need tracking and
-    indentation is enough as an identifier for tracking
-
-  - Make a note in the documentation that yields in comprehension expressions and exec/eval don't occur
-    in python syntax
-
-  - write in the documentation that there is a .internal and it has 'args', 'yieldfrom', 'send',
-   'exec_info', .decorator, 'partial', '.continue', '.i', '.error', and the tracking variables (indents e.g. '.4' etc.)
-
-    at the moment only 'partial', 'exec_info', '.args', and '.send' are initialized with '.send'
-    being initialized with 'None' every iteration except when the user sends an argument
-
-  - I've decided that we don't record f_back for each state since if you really need
-    to record the states then you should do that separately before/after each state is
-    used because it's generally considered better that way, the bigger downside is the
-    memory consumption of saving all the states as f_back on frames when really we're
-    usually only interested in it running and it's current state. The previous states
-    variables should be the current versions and the linenos can be recorded in between
-    states easily. The other exploration one could do is rerunning states again but why
-    not just copy the generator then (as this software was designed for)? So it seems
-    unnecessary to save as f_back.
-
-  - __closure__ attributes if available will be added as attribute to the Generator and
-    into its f_locals via get_nonlocals but it will mean that though the original generator
-    has a binding to a closure the copied generator will be independent of it e.g. removing
-    the closure binding and retaining it's version in the state it was copied from.
-
-  - no reinitializing supported. It's expected that users either have a function that acts
-    as a factory pattern or may copy the generator after initializing e.g. cannot use __call__
-    on an initialized generator.
+  utils:
+    - test utils.cli_getsource
+  - consider making patch iterators scope specific
+    - finish testing patch_iterators with testing this
+  - consider determining lineno given encapsulated yield and the send values
+   - test_lambda_expr in test_custom_generator for encapsulated yields
 """

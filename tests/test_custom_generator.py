@@ -1,6 +1,10 @@
 from gcopy.custom_generator import *
+from gcopy.track import patch_iterators
 import pickle
 from types import NoneType
+from gcopy.utils import getcode
+import asyncio
+
 
 #########################
 ### testing utilities ###
@@ -13,16 +17,16 @@ class pickler(Pickler):
     _attrs = ("a", "b", "c")
 
 
-def setup() -> Generator:
+def setup() -> object:
     """setup used for jump_positions"""
-    gen = Generator()
-    gen._internals["jump_positions"], gen._internals["jump_stack"] = [
+    self = type("", tuple(), {})()
+    self.jump_positions, self.jump_stack = [
         [1, None],
         [1, None],
     ], [(0, 0), (0, 1)]
-    gen._internals["jump_stack_adjuster"], gen._internals["linetable"] = [], []
-    gen._internals["lineno"] = 1
-    return gen
+    self.stack_adjuster, self.linetable = [], []
+    self.lineno = 1
+    return self
 
 
 def simple_generator() -> Generator:
@@ -43,29 +47,90 @@ def api_test(gen, flag: bool) -> None:
     assert gen._internals["state"] == gen._internals["source_lines"]
 
 
+def init_test(FUNC: Any, flag: bool, self: type, self_type: type) -> None:
+    """
+    Does two checks:
+    1. has the attrs
+    2. the attrs values are of the correct type
+    """
+    gen = self(FUNC)
+    api_test(gen, flag)
+    for key, value in {
+        "state": str,
+        "source": str,
+        "linetable": int,
+        "yieldfrom": NoneType | Iterable | self_type,
+        "version": str,
+        "jump_positions": list,
+        "suspended": bool,
+        "prefix": str,
+        "lineno": int,
+        "code": code,
+        "state_generator": GeneratorType,
+        "running": bool,
+        "source_lines": str,
+        "type": str,
+        "frame": frame,
+    }.items():
+        try:
+            obj = gen._internals[key]
+        except KeyError:
+            if (
+                key == "jump_positions"
+                and isinstance(FUNC, self_type)
+                and getcode(FUNC).co_name == "<genexpr>"
+            ):
+                continue
+            if key != "linetable":
+                raise AssertionError("Missing key: %s" % key)
+            continue
+        if isinstance(obj, list):
+            if obj:
+                assert isinstance(obj[0], value)
+        else:
+            assert isinstance(obj, value)
+
+
 #############
 ### tests ###
 #############
+
+
+def test_EOF() -> None:
+    try:
+        raise EOF()
+        assert False
+    except StopAsyncIteration:
+        pass
+
+    try:
+        raise EOF()
+        assert False
+    except StopIteration:
+        pass
 
 
 def test_Pickler(pickler_test: Pickler = None) -> None:
     if pickler_test is None:
         pickler_test = pickler()
         pickler_test.__setstate__(dict(zip(("a", "b", "c"), range(3))))
-    assert pickler_test._copier(lambda x: x) is not pickler_test._copier(lambda x: x)
+    if not isinstance(pickler_test, BaseGenerator):
+        assert copier(pickler_test, lambda x: x) is not copier(
+            pickler_test, lambda x: x
+        )
     with open("test.pkl", "wb") as file:
         pickle.dump(pickler_test, file)
     with open("test.pkl", "rb") as file:
         ## they should be identical in terms of the attrs we care about ##
         test_loaded = pickle.load(file)
-
-        if isinstance(pickler_test, Generator):
-            not_allowed = list(pickler_test._not_allowed)
+        if isinstance(pickler_test, BaseGenerator):
+            if "frame" in test_loaded._internals:
+                assert test_loaded._internals["frame"].f_globals == get_globals()
+            ## delete any attrs we don't want to compare ##
             pickler_test = pickler_test._internals
             test_loaded = test_loaded._internals
             for key in pickler_test:
-                if key in not_allowed:
-                    not_allowed.remove(key)
+                if key == "state_generator":
                     continue
                 if not (key in test_loaded and test_loaded[key] == pickler_test[key]):
                     print(
@@ -93,12 +158,15 @@ def test_picklers() -> None:
     test_Pickler(_code)
     test_Pickler(_frame)
     test_Pickler(Generator())
+    test_Pickler(AsyncGenerator())
 
 
 def test_generator_pickle() -> None:
     gen = Generator(simple_generator)
+    attrs_before = dir(gen._internals["frame"])
     test_Pickler(gen)
-    gen._internals["frame"]
+    ## make sure no change in the attrs ##
+    assert attrs_before == dir(gen._internals["frame"])
     assert next(gen) == 1
     ## copy the generator ##
     gen2 = gen.copy()
@@ -111,86 +179,146 @@ def test_generator_pickle() -> None:
 
 
 def test_generator_custom_adjustment() -> None:
-    gen = Generator()
-    gen._internals["lineno"] = 0
-    test = partial(custom_adjustment, gen)
+    self = type("", tuple(), {})()
+    self.lineno = 0
+    test = partial(custom_adjustment, self)
     ## yield ##
     assert test("yield ... ") == ["return ... "]
     ## yield from ##
+    self.jump_positions = []
     assert test("yield from ... ") == [
-        "locals()['.internals']['.yieldfrom']=... ",
+        "locals()['.internals']['.0']=locals()['.internals']['.yieldfrom']=iter(... )",
         "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
         "    return locals()['.internals']['.i']",
         "    if locals()['.internals']['.send']:",
         "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
     ]
+    ## check the jump positions ##
+    assert self.jump_positions == [[1, 5]]
     ## for ##
-    gen._internals["jump_positions"], gen._internals["jump_stack"] = [], []
+    self.jump_positions, self.jump_stack = [], []
     assert test("for ") == ["for "]
-    assert gen._internals["jump_positions"], gen._internals["jump_stack"] == (
+    assert self.jump_positions, self.jump_stack == (
         [[0, None]],
         [(0, 0)],
     )
     ## while ##
     assert test("while ") == ["while "]
-    assert gen._internals["jump_positions"], gen._internals["jump_stack"] == (
+    assert self.jump_positions, self.jump_stack == (
         [[0, None], [0, None]],
         [(0, 0), (0, 1)],
     )
     ## return ##
     assert test("return ... ") == ["return EOF('... ')"]
+    ## nonlocal ##
+    assert test("nonlocal ... ") == []
+    ## decorator ##
+    assert hasattr(self, "decorator") == False
+    assert test("@test") == ["@test"]
+    assert self.decorator
 
 
 def test_generator_update_jump_positions() -> None:
 
     #### Note: jump_positions are by lineno not by index ####
 
-    gen = setup()
-    gen._internals["lineno"] += 1  ## it won't occur on the same lineno ##
+    self = setup()
+    self.lineno += 1  ## it won't occur on the same lineno ##
     ## only positions ##
     # with reference indent #
-    assert update_jump_positions(gen, [], 4) == []
-    assert gen._internals["jump_positions"] == [[1, None], [1, None]]
-    assert gen._internals["jump_stack"] == [(0, 0), (0, 1)]
+    self.lines = []
+    update_jump_positions(self, 4)
+    assert self.lines == []
+    assert self.jump_positions == [[1, None], [1, None]]
+    assert self.jump_stack == [(0, 0), (0, 1)]
     # without reference indent #
-    assert update_jump_positions(gen, []) == []
-    assert gen._internals["jump_positions"] == [[1, 2], [1, 2]]
-    assert gen._internals["jump_stack"] == []
+    self.lines = []
+    update_jump_positions(self)
+    assert self.lines == []
+    assert self.jump_positions == [[1, 2], [1, 2]]
+    assert self.jump_stack == []
     ## with stack adjuster ##
-    gen = setup()
-    gen._internals["lineno"] += 1
-    new_lines = ["    pass", "    for i in range(3)", "        pass"]
-    gen._internals["jump_stack_adjuster"] = [[1, new_lines]]
-    ## check: lines, lineno, linetable, jump_positions, jump_stack_adjuster ##
-    assert update_jump_positions(gen, []) == new_lines
-    assert gen._internals["jump_stack_adjuster"] == []
-    ## since we're on lineno == 2 the new_lines will be 3, 4, 5 ##
-    assert gen._internals["linetable"] == [3, 4, 5]
-    assert gen._internals["lineno"] == 5
-    assert gen._internals["jump_positions"] == [[1, 2], [1, 2], [4, 7]]
+    # self = setup()
+    # self.lineno += 1
+    # new_lines = ["    pass", "    for i in range(3)", "        pass"]
+    # self.stack_adjuster = [[1, new_lines]]
+    # ## check: lines, lineno, linetable, jump_positions, stack_adjuster ##
+    # self.lines = []
+    # update_jump_positions(self)
+    # assert self.lines == new_lines
+    # assert self.stack_adjuster == []
+    # ## since we're on lineno == 2 the new_lines will be 3, 4, 5 ##
+    # assert self.linetable == [3, 4, 5]
+    # assert self.lineno == 5
+    # assert self.jump_positions == [[1, 2], [1, 2], [4, 7]]
 
 
 def test_generator_append_line() -> None:
+    """
+    required inputs;
+        self,
+        index: int,
+        char: str,
+        source: str,
+        source_iter: Iterable,
+        running: bool,
+        line: str,
+        lines: list[str],
+        indentation: int,
+        indent_adjust: int,
 
-    def test(start: int, index: int, indentation: int = 0) -> None:
-        source = "    print('hi')\n    print('hi');\nprint('hi')\n    def hi():\n        print('hi')\n print() ## comment\n    if True:"
-        return append_line(
-            gen,
-            index,
-            source[index],
-            source,
-            enumerate(source[index + 1 :], start=index + 1),
-            True,
-            source[start:index],
-            [],
-            indentation,
-            0,
+        reqruied outputs:
+        index, char, lines, line, indented, indentation, indent_adjust
+    """
+
+    def get_returns(self) -> tuple[int, str, list[str], str, bool, int, int]:
+        return (
+            self.index,
+            self.char,
+            self.lines,
+            self.line,
+            self.indented,
+            self.indentation,
+            self.indent_adjust,
         )
+
+    def manual_test(self, *args) -> tuple:
+        (
+            self.index,
+            self.char,
+            self.source,
+            self.source_iter,
+            self.line,
+            self.lines,
+            self.indentation,
+            self.indent_adjust,
+        ) = args
+        append_line(self, True)
+        return get_returns(self)
+
+    def test(self, start: int, index: int, indentation: int = 0) -> tuple:
+        source = "    print('hi')\n    print('hi');\nprint('hi')\n    def hi():\n        print('hi')\n print() ## comment\n    if True:"
+
+        self.index = index
+        self.char = source[index]
+        self.source = source
+        self.source_iter = enumerate(source[index + 1 :], start=index + 1)
+        self.line = source[start:index]
+        self.lines = []
+        self.indentation = indentation
+        self.indent_adjust = 0
+
+        append_line(self, True)
+
+        return get_returns(self)
 
     ## empty line ##
 
-    gen = setup()
-    assert append_line(gen, 0, "", "", "", "", "", [], 0, 0) == (
+    self = setup()
+    self.indented = False
+    self.catch = []
+
+    assert manual_test(self, 0, "", "", "", "", [], 0, 0) == (
         0,
         "",
         [],
@@ -199,7 +327,7 @@ def test_generator_append_line() -> None:
         0,
         0,
     )
-    assert append_line(gen, 0, "", "", "", "", "         ", [], 0, 0) == (
+    assert manual_test(self, 0, "", "", "", "         ", [], 0, 0) == (
         0,
         "",
         [],
@@ -210,17 +338,17 @@ def test_generator_append_line() -> None:
     )
 
     ## normal line ##
-    assert test(0, 15) == (15, "\n", ["    print('hi')"], "", False, 0, 0)
+    assert test(self, 0, 15) == (15, "\n", ["    print('hi')"], "", False, 0, 0)
     ## semi-colon ##
-    assert test(16, 31) == (31, ";", ["    print('hi')"], "", True, 0, 0)
+    assert test(self, 16, 31) == (31, ";", ["    print('hi')"], "", True, 0, 0)
     ## comments ##
-    assert test(79, 88) == (98, "\n", [" print() "], "", False, 0, 0)
+    assert test(self, 79, 88) == (98, "\n", [" print() "], "", False, 0, 0)
     ## statements/colon ##
-    assert test(99, 110) == (110, ":", ["    if True:"], "        ", True, 8, 0)
+    assert test(self, 99, 110) == (110, ":", ["    if True:"], "        ", True, 8, 0)
     ## skip definitions ##
-    gen._internals["lineno"] = 1
-    gen._internals["decorator"] = False
-    assert test(45, 57) == (
+    self.lineno = 1
+    self.decorator = False
+    assert test(self, 45, 57) == (
         78,
         "\n",
         ["    def hi():", "        print('hi')"],
@@ -229,43 +357,87 @@ def test_generator_append_line() -> None:
         8,
         0,
     )
-    assert gen._internals["lineno"] == 3
+    assert self.lineno == 3
     ## decorators ##
+    ## using the previous example definition ##
+    self.lineno = 1
+    self.decorator = True
+    assert test(self, 45, 57) == (
+        78,
+        "\n",
+        [
+            "    def hi():",
+            "        print('hi')",
+            "    hi = locals()['.internals']['.decorator'](hi)",
+        ],
+        "",
+        False,
+        8,
+        0,
+    )
 
 
 def test_generator_block_adjust() -> None:
-    gen = Generator()
-    gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
+    """
+    # self,
+    # current_lines: list[str],
+    # new_lines: list[str],
+    # final_line: str,
+    # source: str,
+    # source_iter: Iterable,
+    """
+
+    gen = type("", tuple(), {"lineno": 0, "stack_adjuster": []})()
+
     ## if ##
-    ## Note: definitions fall under the same as if statements ##
-    test = lambda line, current=[]: block_adjust(
-        gen, current, *unpack(source_iter=enumerate(line))[:-1]
-    )
-    assert test("    if     (yield 3):\n        return 4\n") == [
-        "    return  3",
-        "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
-        "    if locals()['.internals']['.args'].pop():",
+    def test(line, current=[]):
+        return block_adjust(gen, current, *unpack("", enumerate(line), line)[:-2])
+
+    test("    if     (yield 3):\n        return 4\n")
+    assert gen.lines == [
+        "return  3",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "if      locals()['.internals']['.args'].pop():",
     ]
     ## elif ##
-    assert test("    elif (yield 3):\n        return 4\n") == [
-        "    else:",
-        "        return  3",
-        "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
-        "        if locals()['.internals']['.args'].pop():",
+    test("    elif (yield 3):\n        return 4\n")
+    assert gen.lines == [
+        "else:",
+        "    return  3",
+        "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "    if      locals()['.internals']['.args'].pop():",
     ]
     ## except ##
-    assert test(
-        "    except (yield 3):\n        return 4\n", ["    try:", "        pass"]
-    ) == [
+    gen.catch = []
+    test("    except (yield 3):\n        return 4\n", ["    try:", "        pass"])
+    assert gen.lines == [
         "    try:",
         "        try:",
         "            pass",
         "        except:",
         "            locals()['.internals']['.error'] = locals()['.internals']['.exc_info']()[1]",
+        "        return  3",
+        "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "        if isinstance(locals()['.internals']['.error'],  locals()['.internals']['.args'].pop()):",
+        "            locals()['.continue_error'] = False",
+    ]
+    ## additional catch ##
+    test("    except (yield 3):\n        return 4\n", gen.lines)
+    assert gen.lines == [
+        "    try:",
+        "        try:",
+        "            pass",
+        "        except:",
+        "            locals()['.internals']['.error'] = locals()['.internals']['.exc_info']()[1]",
+        "        return  3",
+        "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "        if isinstance(locals()['.internals']['.error'],  locals()['.internals']['.args'].pop()):",
+        "            locals()['.continue_error'] = False",
+        "        else:",
         "            return  3",
         "            locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
-        "            raise locals()['.internals']['.error']",
-        "    except locals()['.internals']['.args'].pop():",
+        "            if isinstance(locals()['.internals']['.error'],  locals()['.internals']['.args'].pop()):",
+        "                locals()['.continue_error'] = False",
     ]
     ## for ##
     new_lines = [
@@ -275,50 +447,109 @@ def test_generator_block_adjust() -> None:
     test_answer = lambda expr: test(
         "    %s (yield 3):\n        return 4\n" % expr
     ) == new_lines + ["    %s locals()['.internals']['.args'].pop():" % expr]
-    gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
-    assert test_answer("for")
-    assert gen._internals["lineno"] == 3
-    assert gen._internals["jump_stack_adjuster"] == [
-        [2]
-        + [
-            "        return  3",
-            "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
-        ]
-    ]
     ## while ##
-    gen._internals["lineno"], gen._internals["jump_stack_adjuster"] = 0, []
-    assert test_answer("while")
-    assert gen._internals["lineno"] == 3
-    assert gen._internals["jump_stack_adjuster"] == [
-        [2]
+    gen.lineno, gen.stack_adjuster = 0, []
+    test_answer("while")
+    assert gen.lineno == 3
+    assert gen.stack_adjuster == [
+        [0]
         + [
-            "        return  3",
-            "        locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+            "    return  3",
+            "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
         ]
     ]
+    ## decorator ##
+    gen.lineno = 1
+    gen.decorator = True
+    test("@function(a=(yield 3))")
+    assert gen.lines == [
+        "return  3",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "locals()['.internals']['.decorator'] = locals()['.internals']['.decorator'](locals()['.internals']['partial'](function, a =locals()['.internals']['.args'].pop())",
+    ]
+    ## definition with and without decorator ##
+    gen = type("", tuple(), {"lineno": 0, "jump_stack_adjuster": []})()
+    gen.fixed_lines = 0
+    gen.source_iter = enumerate(empty_generator())
+    gen.lines = []
+    gen.lineno = 1
+    gen.source = "def f(a=(yield 3)):\n    pass\n"
+    gen.line = gen.source.split("\n")[0]
+    gen.index = 7
+    gen.char = ""
+    gen.decorator = False
+    test(gen.line)
+    assert gen.lines == [
+        "return  3",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "def f(a =locals()['.internals']['.args'].pop())",
+    ]
+    assert gen.lineno == 6
+    ## jump positions e.g. (yield from) ##
+    gen.jump_positions, gen.jump_stack = [], []
+    gen.lineno = 1
+    test("    if (yield from range(3)):")
+    assert gen.lines == [
+        "locals()['.internals']['.0']=locals()['.internals']['.yieldfrom']=iter( range(3))",
+        "for locals()['.internals']['.i'] in locals()['.internals']['.yieldfrom']:",
+        "    return locals()['.internals']['.i']",
+        "    if locals()['.internals']['.send']:",
+        "        return locals()['.internals']['.yieldfrom'].send(locals()['.internals']['.send'])",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "if      locals()['.internals']['.args'].pop():",
+    ]
+    assert gen.jump_positions == [[3, None]]
+    assert gen.jump_stack == [(0, 0)]
 
 
 def test_generator_string_collector_adjust() -> None:
-    gen = Generator()
+    """
+    required inputs:
+    self,
+    index: int,
+    char: str,
+    prev: tuple[int, int, str],
+    source_iter: Iterable,
+    line: str,
+    source: str,
+    lines: list[str],
+
+    required outputs:
+    index | line, prev, lines
+    """
+
     source = "    print('hi')\n    print(f'hello {(yield 3)}')\n    print(f'hello {{(yield 3)}}')"
-    gen._internals["lineno"] = 1
 
     def test(
         line_start: int, start: int, *answer: tuple[str, tuple[int, int, str], list]
     ) -> tuple[Iterable, int, str]:
         line = source[line_start:start]
         source_iter = enumerate(source[start:], start=start)
-        print(
-            string_collector_adjust(
-                gen, *next(source_iter), (0, 0, ""), source_iter, line, source, []
+
+        def setup():
+            index, char = next(source_iter)
+            self = type(
+                "",
+                tuple(),
+                {
+                    "lineno": 1,
+                    "index": index,
+                    "char": char,
+                    "prev": (0, 0, ""),
+                    "source_iter": source_iter,
+                    "line": line,
+                    "source": source,
+                    "lines": [],
+                    "jump_positions": [[None, None]],
+                },
             )
-        )
-        assert (
-            string_collector_adjust(
-                gen, *next(source_iter), (0, 0, ""), source_iter, line, source, []
-            )
-            == answer
-        )
+            return self
+
+        self = setup()
+        string_collector_adjust(self)
+        assert self.line == answer[0]
+        assert self.prev == answer[1]
+        assert self.lines == answer[2]
 
     ## string collection ##
     test(None, 10, *("    print('hi'", (10, 13, "'"), []))
@@ -349,6 +580,9 @@ def test_generator_string_collector_adjust() -> None:
 
 
 def test_generator_clean_source_lines() -> None:
+
+    ## make sure the jump_positions are forming correctly ##
+
     def test():
         yield 1
         for i in range(3):
@@ -357,7 +591,6 @@ def test_generator_clean_source_lines() -> None:
             yield i
 
     gen = Generator(test())
-    ## make sure the jump_positions are forming correctly ##
     assert gen._internals["jump_positions"] == [[2, 3], [4, 5]]
 
     a = None
@@ -502,6 +735,7 @@ def test_generator_create_state() -> None:
             "               return 3",
             "           return 4",
             "        print(j)",
+            "    print(i)",
             "    for i in locals()['.internals']['.4']:",
             "        print(i)",
             "        for j in range(4):",
@@ -565,66 +799,22 @@ def test_generator_init_states() -> None:
         gen._internals["state"] = None
         assert next(gen._internals["state_generator"], True)
 
-    ## initialized generator ##
-    test(Generator(simple_generator()))
     ## uninitialized generator ##
     test(Generator(simple_generator))
+    ## initialized generator ##
+    test(Generator(simple_generator()))
 
 
 def test_generator__init__() -> None:
-    def test(FUNC: Any, flag: bool) -> None:
-        """
-        Does two checks:
-        1. has the attrs
-        2. the attrs values are of the correct type
-        """
-        gen = Generator(FUNC)
-        api_test(gen, flag)
-        for key, value in {
-            "state": str,
-            "source": str,
-            "linetable": int,
-            "yieldfrom": NoneType | Iterable | GeneratorType,
-            "version": str,
-            "jump_positions": int,
-            "suspended": bool,
-            "prefix": str,
-            "lineno": int,
-            "code": code,
-            "state_generator": GeneratorType,
-            "running": bool,
-            "source_lines": str,
-            "type": str,
-            "frame": frame,
-        }.items():
-            try:
-                obj = gen._internals[key]
-            except KeyError:
-                if (
-                    key == "jump_positions"
-                    and isinstance(FUNC, GeneratorType)
-                    and FUNC.gi_code.co_name == "<genexpr>"
-                ):
-                    continue
-                if key != "linetable":
-                    raise AssertionError("Missing key: %s" % key)
-                continue
-            if isinstance(obj, list):
-                if obj:
-                    assert isinstance(obj[0], value)
-            else:
-                assert isinstance(obj, value)
 
     ## function generator ##
     # uninitilized - this should imply that use as a decorator works also ##
-    test(simple_generator, False)
+    init_test(simple_generator, False, Generator, GeneratorType)
     # initilized #
-    test(simple_generator(), True)
+    init_test(simple_generator(), True, Generator, GeneratorType)
     ## generator expression ##
     gen = (i for i in range(3))
-    test(gen, True)
-    ## string ##
-    test("(i for i in range(3))", False)
+    init_test(gen, True, Generator, GeneratorType)
 
     ## test if the function related attrs get transferred ##
 
@@ -650,8 +840,21 @@ def test_generator__call__() -> None:
     gen = Generator(test)
     del gen._internals["state_generator"]
     ## initializes but also returns itself ##
-    assert gen(1, 2) is not None
-    assert gen._internals["frame"].f_locals == {"a": 1, "b": 2, "c": 3}
+    gen = gen(1, 2)
+    assert gen is not None
+    gen._internals["frame"].f_locals
+    assert gen._internals["frame"].f_locals == {
+        ".internals": {
+            "EOF": EOF,
+            "exec_info": exc_info,
+            "partial": partial,
+            ".args": [],
+            ".send": None,
+        },
+        "a": 1,
+        "b": 2,
+        "c": 3,
+    }
     api_test(gen, True)
     assert [i for i in gen] == [1, 2, 3]
     assert gen._internals["state_generator"]
@@ -669,9 +872,6 @@ def test_generator_frame_init() -> None:
 
     ### state adjustments ###
 
-    ## close/exit ##
-    gen._frame_init(close=True)
-    assert gen._internals["state"] == ["    return 1" for _ in range(3)]
     ## exception ##
     gen._frame_init("Exception")
     assert gen._internals["state"] == [
@@ -704,11 +904,11 @@ def test_generator_frame_init() -> None:
 
     ## no local variables stored ##
     init_length, _ = gen._frame_init()
-    assert init_length == 7
+    assert init_length == 8
     ## with local variables stored ##
     gen._internals["frame"].f_locals.update({"a": 3, "b": 2, "c": 1})
     init_length, _ = gen._frame_init()
-    assert init_length == 10
+    assert init_length == 11
 
 
 def test_generator_update() -> None:
@@ -729,7 +929,6 @@ def test_generator_update() -> None:
             "b": 2,
             "c": 3,
             ".internals": {".send": 1},
-            "locals": gen._locals,
         }
         # for __bool__
         new_frame.f_code = 1
@@ -776,6 +975,7 @@ def test_generator__next__() -> None:
     assert gen._internals["state"] == gen._internals["source_lines"]
     assert next(gen) == 1
     assert gen._locals()[".internals"] == {
+        "EOF": EOF,
         "exec_info": exc_info,
         "partial": partial,
         ".args": [],
@@ -810,7 +1010,7 @@ def test_generator__iter__() -> None:
     ## acts as the fishhook iterator for now ##
     range_iterator = iter(range(3))
     next(range_iterator)
-    gen._locals()[".internals"] = {".4": range_iterator}
+    gen._locals()[".internals"] = {".4": range_iterator, "EOF": EOF}
     assert [i for i in gen] == [1, 0, 1, 2]
 
 
@@ -865,6 +1065,7 @@ def test_generator_close() -> None:
     next(gen)
     try:
         gen.close()
+        assert False
     except RuntimeError:
         pass
     # return #
@@ -873,12 +1074,23 @@ def test_generator_close() -> None:
     assert gen.close() is None
     assert gen._internals["frame"] is None
 
+    ## make sure it doesn't run after closing ##
+    assert next(gen, True)
+
 
 def test_generator_send() -> None:
     ## value yield ##
     gen = Generator()
     f = frame()
-    f.f_locals = {}
+    f.f_locals = {
+        ".internals": {
+            "EOF": EOF,
+            "exec_info": exc_info,
+            "partial": partial,
+            ".args": [],
+            ".send": None,
+        },
+    }
     source_lines = [
         "    return 1",
         "    return 2",
@@ -902,6 +1114,7 @@ def test_generator_send() -> None:
     ## can't send if not running ##
     try:
         gen.send(1)
+        assert False
     except TypeError:
         pass
     ## send doesn't change non value recieving yields ##
@@ -915,6 +1128,7 @@ def test_generator_throw() -> None:
     gen = Generator(simple_generator())
     try:
         gen.throw(ImportError)
+        assert False
     except ImportError:
         assert gen._internals["linetable"] == [-1, 0, 1, 2]
         assert gen._internals["state"] is None
@@ -938,6 +1152,10 @@ def test_generator_type_checking() -> None:
     assert isinstance(gen, (GeneratorType, Generator)) and issubclass(
         type(gen), (GeneratorType, Generator)
     )
+    gen = AsyncGenerator()
+    assert isinstance(gen, (AsyncGeneratorType, AsyncGenerator)) and issubclass(
+        type(gen), (AsyncGeneratorType, AsyncGenerator)
+    )
 
 
 def test_closure() -> None:
@@ -947,6 +1165,7 @@ def test_closure() -> None:
 
         @Generator
         def test_case():
+            yield closure_cell
             yield closure_cell
             yield closure_cell
             yield closure_cell
@@ -960,42 +1179,436 @@ def test_closure() -> None:
         ## copies don't retain the closure binding ##
         assert next(gen_copy) == 2
         assert next(gen) == 3
+        ## if wanting to bind to a closure ##
+        ## then we can be set manually ##
+        gen_copy._bind(gen)
+        closure_cell = 4
+        assert next(gen_copy) == 4
+        assert next(gen) == 4
 
     test()
 
 
-## for debugging at the moment ##
-def t():
-    source = "forge=x+3+3 if True else y"
-    index = 0
-    line = ""
-    ls, line, _ = unpack(
-        line, enumerate(source[index:], start=index), source=source, index=index
-    )
-    print(
-        "\n".join(ls),
-        line,
-        sep="\n---------------------\n",
-    )
+def test_recursion() -> None:
+    @Generator
+    def test(depth=0):
+        depth += 1
+        yield depth
+        yield from test(depth)
 
-    from sys import exit
-
-    exit()
+    gen = test()
+    assert [next(gen) for i in range(10)] == list(range(1, 11))
 
 
-# t()
+def test_yieldfrom() -> None:
+    @Generator
+    def test():
+        yield from range(3)
+
+    assert [i for i in test()] == [0, 1, 2]
+
+
+def test_gen_expr() -> None:
+    patch_iterators(globals())
+    gen = Generator(i for i in range(3))
+    assert gen._internals["source_lines"] == [
+        "    for i in range(3):",
+        "        return i",
+    ]
+
+    assert [i for i in gen] == [0, 1, 2]
+
+    ##################################################
+    # uninitialized #
+
+    gen = Generator((i, j) for i in range(3) for j in range(2))
+    assert gen._internals["source_lines"] == [
+        "    for i in range(3):",
+        "        for j in range(2):",
+        "            return (i, j)",
+    ]
+
+    assert gen._locals().pop(".0", None) is None
+
+    assert [i for i in gen] == [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
+
+    # initialized #
+
+    gen = ((i, j) for i in range(3) for j in range(2))
+    next(gen)
+    next(gen)
+    gen = Generator(gen)
+    assert [i for i in gen] == [(1, 0), (1, 1), (2, 0), (2, 1)]
+
+
+def test_lambda_expr() -> None:
+    ## gen_expr not running + running ##
+    test = lambda: (i for i in range(3))
+    gen = Generator(test())
+    assert gen._internals["source_lines"] == [
+        "    for i in range(3):",
+        "        return i",
+    ]
+    assert gen._internals["lineno"] == 1
+    temp = (i for i in range(3))
+    next(temp)
+    gen = Generator(temp)
+    assert gen._internals["source_lines"] == [
+        "    for i in range(3):",
+        "        return i",
+    ]
+    assert gen._internals["lineno"] == 2
+    assert next(gen) == 1
+    ## lambda with value yields ##
+    test = lambda: (yield)
+    gen = Generator(test())
+    assert gen._internals["source_lines"] == [
+        "return",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        " locals()['.internals']['.args'].pop()",
+    ]
+    ## running ##
+    test = lambda: (yield (yield 3))
+    gen = test()
+    next(gen)
+    gen = Generator(gen)
+    assert gen._internals["source_lines"] == [
+        "return  3",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        "return  locals()['.internals']['.args'].pop()",
+        "locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
+        " locals()['.internals']['.args'].pop()",
+    ]
+    ## not implemented ##
+    # assert gen._internals["lineno"] == ...
+
+
+def test_initialized() -> None:
+    ## transfer over the source and lineno ##
+    gen = simple_generator()
+    next(gen)
+    assert [i for i in Generator(gen)] == [2, 3]
+
+    ## transfer over variables ##
+
+    def test():
+        c = 1
+        b = 2
+        a = 3
+        yield a
+        yield b
+        yield c
+
+    gen = test()
+    next(gen)
+    gen = Generator(gen)
+    # assert
+    keys = gen._locals().keys()
+    for key in ("a", "b", "c"):
+        assert key in keys
+    assert [i for i in gen] == [2, 1]
+
+    # patch_iterators(locals())
+
+    def test():
+        for i in range(5):
+            yield i
+
+    gen = test()
+    next(gen)
+    next(gen)
+    gen = Generator(gen)
+    assert gen._locals()["i"] == 1
+    assert [i for i in gen] == [2, 3, 4]
+
+
+def test_value_yield() -> None:
+    ## exceptions ##
+    @Generator
+    def test_case():
+        try:
+            yield 1
+        except (yield):
+            yield 2
+        except (yield):
+            yield 3
+        except Exception:
+            yield 4
+        finally:
+            yield 5
+
+    answer = """    try:
+        try:
+            return 1
+        except:
+            locals()['.internals']['.error'] = locals()['.internals']['.exc_info']()[1]
+        return
+        locals()['.internals']['.args'] += [locals()['.internals']['.send']]
+        if isinstance(locals()['.internals']['.error'],  locals()['.internals']['.args'].pop()):
+            locals()['.continue_error'] = False
+            return 2
+        else:
+            return
+            locals()['.internals']['.args'] += [locals()['.internals']['.send']]
+            if isinstance(locals()['.internals']['.error'],  locals()['.internals']['.args'].pop()):
+                locals()['.continue_error'] = False
+                return 3
+            else:
+                if isinstance(locals()['.internals']['.error'],  Exception):
+                    locals()['.continue_error'] = False
+                    return 4
+                else:
+                    locals()['.internals']['.continue_error'] = False
+                    raise locals()['.internals']['.error']
+    finally:
+        return 5"""
+    assert "\n".join(test_case()._internals["source_lines"]) == answer
+
+
+####################################
+### asynchronous generator tests ###
+####################################
+
+
+async def simple_asyncgenerator():
+    yield 1
+    yield 2
+    yield 3
+
+
+async def async_generator_tests() -> None:
+
+    async def test_asyncgenerator_pickle() -> None:
+
+        gen = AsyncGenerator(simple_asyncgenerator)
+
+        attrs_before = dir(gen._internals["frame"])
+        test_Pickler(gen)
+        ## make sure no change in the attrs ##
+        assert attrs_before == dir(gen._internals["frame"])
+        assert await anext(gen) == 1
+        # ## copy the generator ##
+        gen2 = gen.copy()
+        gen3 = gen.copy()
+        assert await anext(gen) == await anext(gen2) == await anext(gen3)
+        assert await anext(gen) == await anext(gen2) == await anext(gen3)
+        prefix = gen._internals["prefix"]
+        for key in ("code", "frame", "suspended", "yieldfrom", "running"):
+            assert hasattr(gen2, prefix + key)
+
+    async def test_asyncgenerator_asend() -> None:
+        ## value yield ##
+        gen = AsyncGenerator()
+        f = frame()
+        f.f_locals = {
+            ".internals": {
+                "EOF": EOF,
+                "exec_info": exc_info,
+                "partial": partial,
+                ".args": [],
+                ".send": None,
+            },
+        }
+        source_lines = [
+            "    return 1",
+            "    return 2",
+            "    a = locals()['.internals']['.send']",
+            "    return a",
+        ]
+        gen._internals.update(
+            {
+                "frame": f,
+                "code": None,
+                "lineno": 1,
+                "source_lines": source_lines,
+                "jump_positions": [],
+                "state": source_lines,
+                "running": False,
+                "suspended": False,
+                "yieldfrom": None,
+            }
+        )
+        gen._internals["state_generator"] = gen._init_states()
+        ## can't send if not running ##
+        try:
+            await gen.asend(1)
+            assert False
+        except TypeError:
+            pass
+
+        ## send doesn't change non value recieving yields ##
+        assert await anext(gen) == 1
+        assert await gen.asend(1) == 2
+        ## send changes value recieving yield ##
+        assert await gen.asend(1) == 1
+
+    async def test_asyncgenerator_aclose() -> None:
+        gen = AsyncGenerator(simple_asyncgenerator())
+        assert await gen.aclose() is None
+        assert gen._internals["frame"] is None
+
+        @AsyncGenerator
+        def test(case: int = 0) -> Generator:
+            yield 0
+            try:
+                yield 1
+                yield 2
+            except GeneratorExit:
+                if case == 0:
+                    raise GeneratorExit()
+                if case == 1:
+                    yield 4
+                return 30
+
+        gen = test()
+        ## start ##
+        assert await gen.aclose() is None
+        assert gen._internals["frame"] is None
+
+        ### catched ###
+
+        # GeneratorExit #
+        gen = test()
+        await anext(gen)
+        assert await gen.aclose() is None
+        assert gen._internals["frame"] is None
+        # yield #
+        gen = test(1)
+        await anext(gen)
+        try:
+            await gen.aclose()
+            assert False
+        except RuntimeError:
+            pass
+        # return #
+        gen = test(2)
+        await anext(gen)
+        # gen._close()
+        assert await gen.aclose() is None
+        assert gen._internals["frame"] is None
+
+        ## make sure it doesn't run after closing ##
+        assert await anext(gen, True)
+
+    async def test_asyncgenerator_athrow() -> None:
+        gen = AsyncGenerator(simple_asyncgenerator())
+        try:
+            await gen.athrow(ImportError)
+            assert False
+        except ImportError:
+            assert gen._internals["linetable"] == [-1, 0, 1, 2]
+            assert gen._internals["state"] is None
+
+        @AsyncGenerator
+        def test():
+            try:
+                yield 1
+                assert False
+            except ImportError:
+                pass
+            yield 2
+            yield 3
+
+        gen = test()
+
+        assert await gen.athrow(ImportError) == 2
+        assert gen._internals["state"][2:] == gen._internals["source_lines"][1:]
+        assert gen._internals["linetable"] == [0, 0, 1, 2, 3, 4, 5, 6]
+
+    async def test_asyncgenerator_type_checking() -> None:
+        gen = AsyncGenerator()
+        assert isinstance(gen, (AsyncGeneratorType, AsyncGenerator)) and issubclass(
+            type(gen), (AsyncGeneratorType, AsyncGenerator)
+        )
+
+    async def test_asyncgenerator__init__() -> None:
+        ## function generator ##
+        # uninitilized - this should imply that use as a decorator works also ##
+        init_test(simple_asyncgenerator, False, AsyncGenerator, AsyncGeneratorType)
+        # initilized #
+        init_test(simple_asyncgenerator(), True, AsyncGenerator, AsyncGeneratorType)
+        ## generator expression ##
+        gen = (i async for i in gcopy.track.atrack(simple_asyncgenerator()))
+        init_test(gen, True, AsyncGenerator, AsyncGeneratorType)
+
+        ## test if the function related attrs get transferred ##
+
+        closure_cell = 1
+
+        def test2(FUNC: Any) -> None:
+            """docstring"""
+            closure_cell
+
+        gen = AsyncGenerator(test2)
+
+        assert gen.__call__.__annotations__ == test2.__annotations__
+        assert gen.__call__.__doc__ == test2.__doc__
+        assert get_nonlocals(gen.__closure__) == get_nonlocals(test2.__closure__)
+
+    async def test_asyncgenerator__anext__() -> None:
+        gen = AsyncGenerator(simple_asyncgenerator())
+        assert gen._internals["state"] == gen._internals["source_lines"]
+        assert await anext(gen) == 1
+        assert gen._locals()[".internals"] == {
+            "EOF": EOF,
+            "exec_info": exc_info,
+            "partial": partial,
+            ".args": [],
+        }
+        assert gen._internals["state"] == gen._internals["source_lines"]
+        assert await anext(gen) == 2
+        assert gen._internals["state"] == gen._internals["source_lines"][1:]
+        assert await anext(gen) == 3
+        assert gen._internals["state"] is None
+        assert await anext(gen, True)
+        assert gen._internals["frame"] is None
+
+    async def test_asyncgenerator__aiter__() -> None:
+        assert [i async for i in AsyncGenerator(simple_asyncgenerator())] == [1, 2, 3]
+
+        @AsyncGenerator
+        def gen(*args, **kwargs) -> Generator:
+            yield 1
+            yield 2
+            return 3
+
+        assert [i async for i in gen] == [1, 2]
+
+        @AsyncGenerator
+        def test_case():
+            yield 1
+            for i in range(3):
+                yield i
+
+        gen = test_case()
+        ## acts as the fishhook iterator for now ##
+        range_iterator = iter(range(3))
+        next(range_iterator)
+        gen._locals()[".internals"] = {".4": range_iterator, "EOF": EOF}
+        assert [i async for i in gen] == [1, 0, 1, 2]
+
+    await test_asyncgenerator_pickle()
+    await test_asyncgenerator_asend()
+    await test_asyncgenerator_aclose()
+    await test_asyncgenerator_athrow()
+    await test_asyncgenerator_type_checking()
+    await test_asyncgenerator__init__()
+    await test_asyncgenerator__anext__()
+    await test_asyncgenerator__aiter__()
+
 
 ## tests are for cleaning + adjusting + pickling ##
+test_EOF()
 test_Pickler()
 test_picklers()
 test_generator_pickle()
 # record_jumps is tested in test_custom_adjustment
 test_generator_custom_adjustment()
 test_generator_update_jump_positions()
-test_generator_append_line()  ## need to test decorated functions ##
-# test_generator_block_adjust()
-# test_generator_string_collector_adjust()
-# test_generator_clean_source_lines() ## need to implement ternary statements in unpack and fix any other minor problems ##
+test_generator_append_line()
+test_generator_block_adjust()  ## finish decorators + definitions e.g. unpack ##
+test_generator_string_collector_adjust()
+# test_generator_clean_source_lines()  ## do basic tests for most users to see it working ##
 test_generator_create_state()
 test_generator_init_states()
 test_generator__init__()
@@ -1012,3 +1625,10 @@ test_generator_send()
 test_generator_throw()
 test_generator_type_checking()
 test_closure()
+test_recursion()
+test_yieldfrom()
+test_gen_expr()  ## fix patch_iterators so that it's scoped ##
+test_lambda_expr()
+test_initialized()
+test_value_yield()  ## need to add more test cases ##
+asyncio.run(async_generator_tests())
