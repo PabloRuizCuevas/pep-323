@@ -1,15 +1,51 @@
 ##################################
 ### picklable/copyable objects ###
 ##################################
-from functools import partial
-from inspect import currentframe  # # used in _frame_init
-from sys import exc_info
-from textwrap import dedent
-from types import (AsyncGeneratorType, CellType, CodeType, CoroutineType,
-                   FunctionType, GeneratorType)
+from copy import copy, deepcopy
 
-from gcopy.source_processing import *
+## needed to access c level memory for the builtin iterators ##
+from functools import partial, wraps
+from inspect import currentframe  # # used in _frame_init
+from inspect import getsource
+from sys import exc_info, version_info
+from textwrap import dedent
+from types import CodeType  # , FrameType ## lineno_adjust
+from types import (
+    AsyncGeneratorType,
+    CellType,
+    CoroutineType,
+    FrameType,
+    FunctionType,
+    GeneratorType,
+)
+from typing import Any
+
+from gcopy.source_processing import (
+    clean_lambda,
+    clean_source_lines,
+    control_flow_adjust,
+    expr_getsource,
+    genexpr_adjust,
+    get_indent,
+    get_loops,
+    loop_adjust,
+    outer_loop_adjust,
+    sign,
+)
 from gcopy.track import track_shift
+
+## to ensure gcopy.custom_generator.Generator can be used in exec for sign ##
+from gcopy.utils import (
+    attr_cmp,
+    code_attrs,
+    copier,
+    empty_generator,
+    get_globals,
+    get_nonlocals,
+    getcode,
+    getframe,
+    hasattrs,
+)
 
 try:
     from typing import NoReturn
@@ -275,16 +311,13 @@ class BaseGenerator:
                     ## we need to record a linetable for the lineno since the source code gets modified ##
                     clean_source_lines(self, True)
                     self._internals["lineno"] = (
-                        self._internals["frame"].f_lineno
-                        - self._internals["code"].co_firstlineno
+                        self._internals["frame"].f_lineno - self._internals["code"].co_firstlineno
                     )
                     ## can't have a lineno of 0 (implies the start of a generator) ##
                     if self._internals["lineno"] == 0:
                         self._internals["lineno"] = 1
                     else:
-                        self._internals["lineno"] = self._internals["linetable"][
-                            self._internals["lineno"]
-                        ]
+                        self._internals["lineno"] = self._internals["linetable"][self._internals["lineno"]]
                         #  + lineno_adjust(self._internals["frame"]) ## for compound statements if implementing ##
                         ## only increase if it's not inside a loop ##
                         self._internals["lineno"] += 1 - bool(
@@ -319,10 +352,7 @@ class BaseGenerator:
                         clean_source_lines(self)
                         track_shift(FUNC, self._locals().get(".internals", {}))
                 else:
-                    raise TypeError(
-                        "type '%s' is an invalid initializer for a Generator"
-                        % type(FUNC)
-                    )
+                    raise TypeError("type '%s' is an invalid initializer for a Generator" % type(FUNC))
                 ## modified every time __next__ is called; always start at line 1 for ##
                 ## uninitialized and set it after clean_source_lines (since this modifies it) ##
                 self._internals["lineno"] = 1
@@ -352,9 +382,7 @@ class BaseGenerator:
 
     def _init_states(self) -> GeneratorType:
         """Initializes the state generation as a generator"""
-        self._internals["loops"] = get_loops(
-            self._internals["lineno"], self._internals["jump_positions"]
-        )
+        self._internals["loops"] = get_loops(self._internals["lineno"], self._internals["jump_positions"])
         ## if no state then it must be EOF ##
         while self._internals["state"]:
             yield self._create_state()
@@ -395,10 +423,7 @@ class BaseGenerator:
                     get_indent(self._internals["source_lines"][start_pos]),
                 )
                 blocks, indexes = loop_adjust(
-                    blocks,
-                    indexes,
-                    self._internals["source_lines"][start_pos:end_pos],
-                    *(start_pos, end_pos)
+                    blocks, indexes, self._internals["source_lines"][start_pos:end_pos], *(start_pos, end_pos)
                 )
             self._internals["state"], self._internals["linetable"] = outer_loop_adjust(
                 blocks, indexes, self._internals["source_lines"], loops, end_pos
@@ -413,9 +438,7 @@ class BaseGenerator:
         """Short hand method for the current states/frames locals"""
         return self._internals["frame"].f_locals
 
-    def _frame_init(
-        self, exception: str = "", sending: bool = False
-    ) -> tuple[int, FunctionType]:
+    def _frame_init(self, exception: str = "", sending: bool = False) -> tuple[int, FunctionType]:
         """
         initializes the frame with the current states
         variables but also adjusts the current state
@@ -435,17 +458,11 @@ class BaseGenerator:
                     " " * (temp + 4) + "raise " + exception,
                 ] + self._internals["state"][1:]
                 index_0 = self._internals["linetable"][0]
-                self._internals["linetable"] = [index_0, index_0] + self._internals[
-                    "linetable"
-                ][1:]
+                self._internals["linetable"] = [index_0, index_0] + self._internals["linetable"][1:]
             else:
-                self._internals["state"] = [
-                    " " * temp + "raise " + exception
-                ] + self._internals["state"]
+                self._internals["state"] = [" " * temp + "raise " + exception] + self._internals["state"]
                 ## -1 so that on +1 (on _update) it will be correct ##
-                self._internals["linetable"] = [
-                    self._internals["linetable"][0] - 1
-                ] + self._internals["linetable"]
+                self._internals["linetable"] = [self._internals["linetable"][0] - 1] + self._internals["linetable"]
         ## initialize the internal locals ##
         f_locals = self._locals()
         if not sending:
@@ -470,19 +487,11 @@ class BaseGenerator:
         ## make sure variables are initialized ##
         for key in f_locals:
             if isinstance(key, str) and key.isidentifier():
-                init += [
-                    " " * 4
-                    + "%s=locals()['.internals']['.self']._locals()[%s]"
-                    % (key, repr(key))
-                ]
+                init += [" " * 4 + "%s=locals()['.internals']['.self']._locals()[%s]" % (key, repr(key))]
         ## manual variable initialization needs to be added since updating locals does   ##
         ## not update the frames locals; try not to use variables here (otherwise it can ##
         ## mess with the state); 'return EOF()' is appended to help return after a loop  ##
-        self.__source__ = (
-            init
-            + self._internals["state"]
-            + ["    return locals()['.internals']['EOF']()"]
-        )
+        self.__source__ = init + self._internals["state"] + ["    return locals()['.internals']['EOF']()"]
         ## we need to give the original filename before using exec for the code_context to ##
         ## be correct in track_iter therefore we compile first to provide a filename then exec ##
         code_obj = compile("\n".join(self.__source__), "<Generator>", "exec")
@@ -492,9 +501,7 @@ class BaseGenerator:
 
     def _update(self, init_length: int) -> None:
         """Update the line position and frame"""
-        _frame = self._internals["frame"] = frame(
-            self._locals()[".internals"][".frame"]
-        )
+        _frame = self._internals["frame"] = frame(self._locals()[".internals"][".frame"])
 
         #### update f_locals ####
 
@@ -521,12 +528,8 @@ class BaseGenerator:
             self._internals["lineno"] = len(self._internals["source_lines"])
         else:
             ## update the lineno ##
-            self._internals["lineno"] = (
-                self._internals["linetable"][adjusted_lineno] + 1
-            )
-            loops = self._internals["loops"] = get_loops(
-                self._internals["lineno"], self._internals["jump_positions"]
-            )
+            self._internals["lineno"] = self._internals["linetable"][adjusted_lineno] + 1
+            loops = self._internals["loops"] = get_loops(self._internals["lineno"], self._internals["jump_positions"])
             if not loops:
                 ## if we can advance the lineno then advance it ##
                 ## else (since not in loop) EOF ##
@@ -615,9 +618,7 @@ class BaseGenerator:
             ## we have to modify the code object since FunctionType picks up on this ##
             _code = FUNC.__code__
             kwargs = {attr: getattr(_code, attr) for attr in code_attrs()}
-            kwargs["co_freevars"] = (
-                kwargs["co_freevars"][:index] + kwargs["co_freevars"][index + 1 :]
-            )
+            kwargs["co_freevars"] = kwargs["co_freevars"][:index] + kwargs["co_freevars"][index + 1 :]
             _code = CodeType(*kwargs.values())
             ## create the new function ##
             FUNC = FunctionType(
@@ -635,9 +636,7 @@ class BaseGenerator:
             GEN_FUNC._locals()[FUNC.__name__] = GEN_FUNC.__call__
             ## replace the function with the Generator version ##
             closure = self.__closure__
-            self.__closure__ = (
-                closure[:index] + (CellType(GEN_FUNC),) + closure[index + 1 :]
-            )
+            self.__closure__ = closure[:index] + (CellType(GEN_FUNC),) + closure[index + 1 :]
 
 
 def Generator__call__(self, *args, **kwargs) -> GeneratorType:
@@ -670,9 +669,7 @@ def Generator__call__(self, *args, **kwargs) -> GeneratorType:
 
 def Generator_call_error(*args, **kwargs) -> NoReturn:
     """Error for when an initialized generator is called"""
-    raise TypeError(
-        "Initialized generators cannot be called, only uninitialized Function generators may be called"
-    )
+    raise TypeError("Initialized generators cannot be called, only uninitialized Function generators may be called")
 
 
 class Generator(BaseGenerator):
@@ -749,10 +746,7 @@ class Generator(BaseGenerator):
             else:
                 exception = repr(exception)
             return self.__next__(exception)
-        raise TypeError(
-            "exceptions must be classes or instances deriving from BaseException, not %s"
-            % type(exception)
-        )
+        raise TypeError("exceptions must be classes or instances deriving from BaseException, not %s" % type(exception))
 
 
 class AsyncGenerator(BaseGenerator):
@@ -772,9 +766,7 @@ class AsyncGenerator(BaseGenerator):
             except StopAsyncIteration:
                 break
 
-    async def __anext__(
-        self, exception: str = "", sending: bool = False
-    ) -> CoroutineType:
+    async def __anext__(self, exception: str = "", sending: bool = False) -> CoroutineType:
         """updates the current state and returns the result"""
         ## catch StopIteration on next(self._internals["state_generator"]) ##
         ## and instead raise a StopAsyncIteration ##
@@ -833,7 +825,4 @@ class AsyncGenerator(BaseGenerator):
             else:
                 exception = repr(exception)
             return await self.__anext__(exception)
-        raise TypeError(
-            "exceptions must be classes or instances deriving from BaseException, not %s"
-            % type(exception)
-        )
+        raise TypeError("exceptions must be classes or instances deriving from BaseException, not %s" % type(exception))

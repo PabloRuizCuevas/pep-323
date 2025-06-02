@@ -1,6 +1,51 @@
 from types import FunctionType
+from typing import Iterable
 
-from gcopy.source_processing import *
+from gcopy.source_processing import (
+    collect_definition,
+    collect_lambda,
+    collect_multiline_string,
+    collect_string,
+    get_indent,
+    indent_lines,
+    is_alternative_statement,
+    is_loop,
+    line_adjust,
+    skip_alt_stmnt_proxy,
+    skip_alternative_statements,
+    skip_line_continuation,
+    skip_source_definition,
+    string_collector_proxy,
+    unpack_genexpr,
+    update_depth,
+    ternary_adjust,
+    sign,
+    signature,
+    unpack,
+    unpack_adjust,
+    is_item,
+    is_loop,
+    is_statement,
+    is_definition,
+    skip_blocks,
+    loop_adjust,
+    yield_adjust,
+    get_loops,
+    extract_source_from_comparison,
+    expr_getsource,
+    genexpr_adjust,
+    extract_lambda,
+    extract_function,
+    except_adjust,
+    extract_as,
+    singly_space,
+    outer_loop_adjust,
+    setup_next_line,
+    unpack_lambda,
+    get_signature,
+    string_collector_adjust,
+)
+from sys import version_info
 
 
 def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:
@@ -12,9 +57,7 @@ def assert_cases(FUNC: FunctionType, *args, compare: list = []) -> None:
         for arg in args:
             assert FUNC(arg)
     except AssertionError:
-        raise AssertionError(
-            f"{FUNC.__name__} failed on {arg}" + " on compare" * bool(compare)
-        )
+        raise AssertionError(f"{FUNC.__name__} failed on {arg}" + " on compare" * bool(compare))
 
 
 def test_update_depth() -> None:
@@ -390,9 +433,7 @@ def test_unpack() -> None:
     )
 
     ## with dictionary assignment ##
-    assert test(
-        "a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = "
-    ) == (
+    assert test("a = locals()['a'+next(j)] = 'hi '+'hi{(yield 3)} (yield 3)' = yield 3 = 5 = ") == (
         [
             "locals()['.internals']['.args'] += ['a']",
             "locals()['.internals']['.args'] += [locals()[locals()['.internals']['.args'].pop(0) +next(j)]]",
@@ -643,9 +684,7 @@ def test_control_flow_adjust() -> None:
         "            6",
     ]
     end_pos = len(blocks)
-    test = lambda start_pos: control_flow_adjust(
-        blocks[start_pos:], list(range(start_pos, end_pos))
-    )
+    test = lambda start_pos: control_flow_adjust(blocks[start_pos:], list(range(start_pos, end_pos)))
     ## match ##
     assert test(0) == (blocks, list(range(0, end_pos)))
     ### between + start alternative statements ###
@@ -966,17 +1005,11 @@ def test_extract_source_from_comparison() -> None:
     ## genexpr extractor ##
     code_obj = eval("(i for i \\\n   in range(3))").gi_code
     source = "iter1, iter2 = (i for i in range(3)), (j for j in (i for i in range(5)) if j in (i for i in range(2)) )"
-    assert (
-        extract_source_from_comparison(code_obj, source, extract_genexpr)
-        == "(i for i in range(3))"
-    )
+    assert extract_source_from_comparison(code_obj, source, extract_genexpr) == "(i for i in range(3))"
     ## lambda extractor ##
     code_obj = eval("lambda x: print('hi')").__code__
     source = "lambda x:x,lambda y:lambda z:z, lambda a:a, lambda x: print('hi')"
-    assert (
-        extract_source_from_comparison(code_obj, source, extract_lambda)
-        == "lambda x: print('hi')"
-    )
+    assert extract_source_from_comparison(code_obj, source, extract_lambda) == "lambda x: print('hi')"
 
 
 def test_expr_getsource() -> None:
@@ -1185,9 +1218,7 @@ def test_collect_lambda() -> None:
     def test(source: str) -> None:
         line = "lambda "
         left = source[len(line) :]
-        return collect_lambda(
-            line, enumerate(left, start=len(line)), source, (0, 0, ""), len(line)
-        )
+        return collect_lambda(line, enumerate(left, start=len(line)), source, (0, 0, ""), len(line))
 
     assert test("lambda x: x") == ([], "lambda x: x", 0, "x")
     assert test("lambda x=(yield): (yield)") == (
@@ -1228,49 +1259,51 @@ def test_sign() -> None:
     assert f.__annotations__ == test.__annotations__
 
 
-test_update_depth()
-test_get_indent()
-# test_lineno_adjust() ## not going to be implemented at present time ##
-test_line_adjust()
-## tested in unpack_genexpr: update_line
-test_unpack_genexpr()
-test_skip_line_continuation()
-test_skip_source_definition()
-test_collect_string()
-test_collect_multiline_string()
-test_string_collector_proxy()
-test_inverse_bracket()
-## tested in test_unpack: named_adjust, unpack_adjust, update_lines, check_ID
-test_is_item()
-test_unpack()
-test_ternary_adjust()
-test_collect_definition()
-test_is_alternative_statement()
-test_is_loop()
-test_is_definition()
-test_skip_alternative_statements()
-# tested in control_flow_adjust: statement_adjust
-test_control_flow_adjust()
-test_indent_lines()
-test_iter_adjust()
-test_is_statement()
-test_skip_blocks()
-test_loop_adjust()
-test_yield_adjust()
-test_get_loops()
-test_extract_source_from_comparison()
-test_expr_getsource()
-test_extract_genexpr()
-test_extract_lambda()
-test_extract_function()
-test_except_adjust()
-test_extract_as()
-test_except_catch_adjust()
-test_singly_space()
-test_outer_loop_adjust()
-test_setup_next_line()
-test_unpack_lambda()
-test_get_signature()
-test_collect_lambda()
-test_sign()
-## Generator source cleaning is tested in test_custom_generator ##
+if __name__ == "__main__":
+    # TODO can remove, simply run pytest .
+    test_update_depth()
+    test_get_indent()
+    # test_lineno_adjust() ## not going to be implemented at present time ##
+    test_line_adjust()
+    ## tested in unpack_genexpr: update_line
+    test_unpack_genexpr()
+    test_skip_line_continuation()
+    test_skip_source_definition()
+    test_collect_string()
+    test_collect_multiline_string()
+    test_string_collector_proxy()
+    test_inverse_bracket()
+    ## tested in test_unpack: named_adjust, unpack_adjust, update_lines, check_ID
+    test_is_item()
+    test_unpack()
+    test_ternary_adjust()
+    test_collect_definition()
+    test_is_alternative_statement()
+    test_is_loop()
+    test_is_definition()
+    test_skip_alternative_statements()
+    # tested in control_flow_adjust: statement_adjust
+    test_control_flow_adjust()
+    test_indent_lines()
+    test_iter_adjust()
+    test_is_statement()
+    test_skip_blocks()
+    test_loop_adjust()
+    test_yield_adjust()
+    test_get_loops()
+    test_extract_source_from_comparison()
+    test_expr_getsource()
+    test_extract_genexpr()
+    test_extract_lambda()
+    test_extract_function()
+    test_except_adjust()
+    test_extract_as()
+    test_except_catch_adjust()
+    test_singly_space()
+    test_outer_loop_adjust()
+    test_setup_next_line()
+    test_unpack_lambda()
+    test_get_signature()
+    test_collect_lambda()
+    test_sign()
+    ## Generator source cleaning is tested in test_custom_generator ##

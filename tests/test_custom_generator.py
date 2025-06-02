@@ -1,11 +1,31 @@
 import asyncio
 import pickle
-from types import NoneType, GeneratorType
-from collections.abc import Iterable, Iterator
+from functools import partial, wraps
+from inspect import currentframe
+
+# from collections.abc import Iterable, Iterat, AsyncIterable, AsyncIterator
+from types import AsyncGeneratorType, GeneratorType, NoneType
 from typing import Any
-from gcopy.custom_generator import Pickler, Generator,code
+
+from gcopy.custom_generator import (
+    EOF,
+    AsyncGenerator,
+    BaseGenerator,
+    Generator,
+    Pickler,
+    code,
+    frame,
+)
+from gcopy.source_processing import (
+    append_line,
+    block_adjust,
+    empty_generator,
+    string_collector_adjust,
+    unpack,
+    update_jump_positions,
+)
 from gcopy.track import patch_iterators
-from gcopy.utils import getcode
+from gcopy.utils import attr_cmp, copier, get_globals, get_nonlocals, getcode
 
 #########################
 ### testing utilities ###
@@ -76,11 +96,7 @@ def init_test(FUNC: Any, flag: bool, self: type, self_type: type) -> None:
         try:
             obj = gen._internals[key]
         except KeyError:
-            if (
-                key == "jump_positions"
-                and isinstance(FUNC, self_type)
-                and getcode(FUNC).co_name == "<genexpr>"
-            ):
+            if key == "jump_positions" and isinstance(FUNC, self_type) and getcode(FUNC).co_name == "<genexpr>":
                 continue
             if key != "linetable":
                 raise AssertionError("Missing key: %s" % key)
@@ -116,9 +132,7 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
         pickler_test = pickler()
         pickler_test.__setstate__(dict(zip(("a", "b", "c"), range(3))))
     if not isinstance(pickler_test, BaseGenerator):
-        assert copier(pickler_test, lambda x: x) is not copier(
-            pickler_test, lambda x: x
-        )
+        assert copier(pickler_test, lambda x: x) is not copier(pickler_test, lambda x: x)
     with open("tests/data/test.pkl", "wb") as file:
         pickle.dump(pickler_test, file)
     with open("tests/data/test.pkl", "rb") as file:
@@ -147,10 +161,7 @@ def test_Pickler(pickler_test: Pickler = None) -> None:
             assert attr_cmp(test_loaded, pickler_test, attrs)
         except AssertionError:
             ## it'll be the frame ##
-            print(
-                " --- %s attr comparison == False: test_Pickler"
-                % (pickler_test.__class__.__name__)
-            )
+            print(" --- %s attr comparison == False: test_Pickler" % (pickler_test.__class__.__name__))
 
 
 def test_picklers() -> None:
@@ -445,9 +456,9 @@ def test_generator_block_adjust() -> None:
         "    return  3",
         "    locals()['.internals']['.args'] += [locals()['.internals']['.send']]",
     ]
-    test_answer = lambda expr: test(
-        "    %s (yield 3):\n        return 4\n" % expr
-    ) == new_lines + ["    %s locals()['.internals']['.args'].pop():" % expr]
+    test_answer = lambda expr: test("    %s (yield 3):\n        return 4\n" % expr) == new_lines + [
+        "    %s locals()['.internals']['.args'].pop():" % expr
+    ]
     ## while ##
     gen.lineno, gen.stack_adjuster = 0, []
     test_answer("while")
@@ -521,9 +532,7 @@ def test_generator_string_collector_adjust() -> None:
 
     source = "    print('hi')\n    print(f'hello {(yield 3)}')\n    print(f'hello {{(yield 3)}}')"
 
-    def test(
-        line_start: int, start: int, *answer: tuple[str, tuple[int, int, str], list]
-    ) -> tuple[Iterable, int, str]:
+    def test(line_start: int, start: int, *answer: tuple[str, tuple[int, int, str], list]) -> tuple[Iterable, int, str]:
         line = source[line_start:start]
         source_iter = enumerate(source[start:], start=start)
 
@@ -1150,9 +1159,7 @@ def test_generator_throw() -> None:
 
 def test_generator_type_checking() -> None:
     gen = Generator()
-    assert isinstance(gen, (GeneratorType, Generator)) and issubclass(
-        type(gen), (GeneratorType, Generator)
-    )
+    assert isinstance(gen, (GeneratorType, Generator)) and issubclass(type(gen), (GeneratorType, Generator))
     gen = AsyncGenerator()
     assert isinstance(gen, (AsyncGeneratorType, AsyncGenerator)) and issubclass(
         type(gen), (AsyncGeneratorType, AsyncGenerator)
@@ -1598,38 +1605,40 @@ async def async_generator_tests() -> None:
     await test_asyncgenerator__aiter__()
 
 
-## tests are for cleaning + adjusting + pickling ##
-test_EOF()
-test_Pickler()
-test_picklers()
-test_generator_pickle()
-# record_jumps is tested in test_custom_adjustment
-test_generator_custom_adjustment()
-test_generator_update_jump_positions()
-test_generator_append_line()
-test_generator_block_adjust()  ## finish decorators + definitions e.g. unpack ##
-test_generator_string_collector_adjust()
-# test_generator_clean_source_lines()  ## do basic tests for most users to see it working ##
-test_generator_create_state()
-test_generator_init_states()
-test_generator__init__()
-# Generator__call__ is tested in test_generator__call__
-test_generator__call__()
-test_generator_locals()
-test_generator_frame_init()
-test_generator_update()
-test_generator__next__()
-test_generator__iter__()
-test_generator__close()
-test_generator_close()
-test_generator_send()
-test_generator_throw()
-test_generator_type_checking()
-test_closure()
-test_recursion()
-test_yieldfrom()
-test_gen_expr()  ## fix patch_iterators so that it's scoped ##
-test_lambda_expr()
-test_initialized()
-test_value_yield()  ## need to add more test cases ##
-asyncio.run(async_generator_tests())
+if __name__ == "__main__":
+    # TODO can remove, simply run pytest .
+    ## tests are for cleaning + adjusting + pickling ##
+    test_EOF()
+    test_Pickler()
+    test_picklers()
+    test_generator_pickle()
+    # record_jumps is tested in test_custom_adjustment
+    test_generator_custom_adjustment()
+    test_generator_update_jump_positions()
+    test_generator_append_line()
+    test_generator_block_adjust()  ## finish decorators + definitions e.g. unpack ##
+    test_generator_string_collector_adjust()
+    # test_generator_clean_source_lines()  ## do basic tests for most users to see it working ##
+    test_generator_create_state()
+    test_generator_init_states()
+    test_generator__init__()
+    # Generator__call__ is tested in test_generator__call__
+    test_generator__call__()
+    test_generator_locals()
+    test_generator_frame_init()
+    test_generator_update()
+    test_generator__next__()
+    test_generator__iter__()
+    test_generator__close()
+    test_generator_close()
+    test_generator_send()
+    test_generator_throw()
+    test_generator_type_checking()
+    test_closure()
+    test_recursion()
+    test_yieldfrom()
+    test_gen_expr()  ## fix patch_iterators so that it's scoped ##
+    test_lambda_expr()
+    test_initialized()
+    test_value_yield()  ## need to add more test cases ##
+    asyncio.run(async_generator_tests())

@@ -1,4 +1,5 @@
 from copy import copy, deepcopy
+
 ## needed to access c level memory for the builtin iterators ##
 from ctypes import POINTER, Structure, c_ssize_t, cast, py_object
 from dis import _unpack_opargs
@@ -21,9 +22,7 @@ def is_cli() -> bool:
 
 def cli_findsource() -> list[str]:
     """Finds the source assuming CLI"""
-    return [
-        get_history_item(-i) for i in range(get_current_history_length() - 1, 0, -1)
-    ]
+    return [get_history_item(-i) for i in range(get_current_history_length() - 1, 0, -1)]
 
 
 def skip(iter_val: Iterable, n: int) -> None:
@@ -183,9 +182,7 @@ def similar_opcode(
         return array[item_index]
 
     try:
-        return get_code_attr(code_obj1, name1, item_index1) == get_code_attr(
-            code_obj2, name2, item_index2
-        )
+        return get_code_attr(code_obj1, name1, item_index1) == get_code_attr(code_obj2, name2, item_index2)
     except (IndexError, KeyError):
         return False
 

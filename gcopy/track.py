@@ -4,11 +4,13 @@
 import builtins  # # for consistency (it switches between a module and a dict) ##
 from inspect import currentframe, getframeinfo, getsourcelines
 from types import FrameType, FunctionType
+
 ## for the monkey patching ##
 from typing import Any, Iterable, Iterator
 
+from gcopy.utils import Wrapper, get_history_item, getcode, is_cli
+
 from .source_processing import get_indent  # , is_definition, lineno_adjust
-from .utils import Wrapper, get_history_item, getcode, is_cli
 
 
 def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterable:

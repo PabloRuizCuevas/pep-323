@@ -53,10 +53,7 @@ def test_block(code1):
     assert code1.block == "root"
     next(code1)
     assert code1.block == "while"
-    assert (
-        "".join(code1.block_text.code)
-        == "    while True:\n        a += 1\n        yield a\n        a += 2"
-    )
+    assert "".join(code1.block_text.code) == "    while True:\n        a += 1\n        yield a\n        a += 2"
 
 
 def my_generator2():

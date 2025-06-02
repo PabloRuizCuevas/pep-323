@@ -1,7 +1,25 @@
 import warnings
-from typing import Iterator
+from sys import version_info
+from types import CodeType, FrameType
 
-from gcopy.utils import *
+from gcopy.utils import (
+    attr_cmp,
+    chain,
+    cli_findsource,
+    code_attrs,
+    code_cmp,
+    empty_generator,
+    get_globals,
+    get_nonlocals,
+    getcode,
+    getframe,
+    hasattrs,
+    is_cli,
+    is_running,
+    similar_opcode,
+    skip,
+    try_set,
+)
 
 
 def test_cli_findsource() -> None:
@@ -212,22 +230,24 @@ def test_is_running() -> None:
     test(filter(lambda x: x, [1, 2, 3]))
 
 
-## is_cli is tested in test_cli_findsource ##
-test_cli_findsource()
-test_skip()
-test_empty_generator()
-test_code_attrs()
-test_attr_cmp()
-with warnings.catch_warnings():
-    ## raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
-    warnings.simplefilter("ignore")
-    test_getcode()
-    test_getframe()
-test_hasattrs()
-test_chain()
-test_get_nonlocals()
-test_try_set()
-test_get_globals()
-test_similar_opcode()
-test_code_cmp()
-test_is_running()
+if __name__ == "__main__":
+    # TODO can remove, simply run pytest .
+    ## is_cli is tested in test_cli_findsource ##
+    test_cli_findsource()
+    test_skip()
+    test_empty_generator()
+    test_code_attrs()
+    test_attr_cmp()
+    with warnings.catch_warnings():
+        ## raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
+        warnings.simplefilter("ignore")
+        test_getcode()
+        test_getframe()
+    test_hasattrs()
+    test_chain()
+    test_get_nonlocals()
+    test_try_set()
+    test_get_globals()
+    test_similar_opcode()
+    test_code_cmp()
+    test_is_running()

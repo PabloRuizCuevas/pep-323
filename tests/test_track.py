@@ -1,7 +1,16 @@
 import asyncio
-
 from collections.abc import Iterable, Iterator
-from gcopy.track import track_adjust, track_shift, patch_iterators, unpatch_iterators, track, currentframe, atrack
+
+from gcopy.track import (
+    atrack,
+    currentframe,
+    get_builtin_iterators,
+    patch_iterators,
+    track,
+    track_adjust,
+    track_shift,
+    unpatch_iterators,
+)
 
 
 def iter_init(obj: Iterable | Iterator) -> Iterable:
@@ -53,11 +62,7 @@ def test_track_iter() -> None:
             for k in range(3):
                 pass
     test = (
-        lambda key, value: currentframe()
-        .f_back.f_locals[".internals"][".%s" % key]
-        .__repr__()[1:]
-        .split()[0]
-        == value
+        lambda key, value: currentframe().f_back.f_locals[".internals"][".%s" % key].__repr__()[1:].split()[0] == value
     )
     assert test(4, "range_iterator")
     assert test(8, "range_iterator")
@@ -115,11 +120,13 @@ async def test_atrack() -> None:
     assert [i async for i in locals()[".internals"][".4"]] == [1, 2, 3]
 
 
-test_track_adjust()
-test_track_shift()
-test_patch_iterators()
-test_track_iter()
-test_track_iter_inside_exec()
-test_track_iter_inside_Generator()
-test_track()
-asyncio.run(test_atrack())
+if __name__ == "__main__":
+    # TODO can remove, simply run pytest .
+    test_track_adjust()
+    test_track_shift()
+    test_patch_iterators()
+    test_track_iter()
+    test_track_iter_inside_exec()
+    test_track_iter_inside_Generator()
+    test_track()
+    asyncio.run(test_atrack())
