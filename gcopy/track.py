@@ -10,7 +10,15 @@ from typing import Any, Iterable, Iterator
 
 from gcopy.utils import Wrapper, get_history_item, getcode, is_cli
 
-from .source_processing import get_indent  # , is_definition, lineno_adjust
+
+def get_indent(line: str) -> int:
+    """Gets the number of spaces used in an indentation"""
+    count = 0
+    for char in line:
+        if char != " ":
+            break
+        count += 1
+    return count
 
 
 def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterable:
@@ -45,6 +53,7 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
             return obj
     except:
         pass
+
     if ".internals" not in f_locals:
         f_locals[".internals"] = {}
     if frame.f_code.co_name == "<genexpr>":

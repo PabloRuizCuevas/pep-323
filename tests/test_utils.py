@@ -1,6 +1,7 @@
 import warnings
 from sys import version_info
 from types import CodeType, FrameType
+from typing import Iterator
 
 from gcopy.utils import (
     attr_cmp,

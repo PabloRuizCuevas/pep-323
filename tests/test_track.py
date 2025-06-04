@@ -75,6 +75,7 @@ def test_track_iter() -> None:
 
 
 def test_track_iter_inside_exec() -> None:
+    # TODO works when run pytest . but not in isolation
     FUNC_code = compile(
         """def test():
     for i in range(3):
@@ -89,7 +90,6 @@ def test_track_iter_inside_exec() -> None:
 
 
 def test_track_iter_inside_Generator() -> None:
-
     from gcopy.custom_generator import Generator
 
     @Generator

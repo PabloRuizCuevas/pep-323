@@ -1,7 +1,9 @@
 import asyncio
+from collections.abc import Iterable
 import pickle
 from functools import partial, wraps
 from inspect import currentframe
+from sys import exc_info
 
 # from collections.abc import Iterable, Iterat, AsyncIterable, AsyncIterator
 from types import AsyncGeneratorType, GeneratorType, NoneType
@@ -24,7 +26,7 @@ from gcopy.source_processing import (
     unpack,
     update_jump_positions,
 )
-from gcopy.track import patch_iterators
+from gcopy.track import atrack, patch_iterators
 from gcopy.utils import attr_cmp, copier, get_globals, get_nonlocals, getcode
 
 #########################
@@ -1536,7 +1538,7 @@ async def async_generator_tests() -> None:
         # initilized #
         init_test(simple_asyncgenerator(), True, AsyncGenerator, AsyncGeneratorType)
         ## generator expression ##
-        gen = (i async for i in gcopy.track.atrack(simple_asyncgenerator()))
+        gen = (i async for i in atrack(simple_asyncgenerator()))
         init_test(gen, True, AsyncGenerator, AsyncGeneratorType)
 
         ## test if the function related attrs get transferred ##

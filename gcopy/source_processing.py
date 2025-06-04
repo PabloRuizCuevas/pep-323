@@ -12,18 +12,20 @@ from types import CellType, FrameType, FunctionType, GeneratorType
 from typing import Any, Callable, Iterable, Iterator
 
 ## to ensure gcopy.custom_generator.Generator can be used in exec for sign ##
-import gcopy
+from gcopy.track import get_indent, track_adjust
 from gcopy.utils import (
+    attr_cmp,
+    cli_findsource,
     code_attrs,
+    code_cmp,
     empty_generator,
+    get_nonlocals,
+    getcode,
+    getframe,
+    is_cli,
+    is_running,
     skip,
     try_set,
-    getcode,
-    is_cli,
-    cli_findsource,
-    get_nonlocals,
-    getframe,
-    attr_cmp,
 )
 
 
@@ -34,16 +36,6 @@ def update_depth(depth: int, char: str, selection: tuple[str, str] = ("(", ")"))
     elif char in selection[1]:
         depth -= 1
     return depth
-
-
-def get_indent(line: str) -> int:
-    """Gets the number of spaces used in an indentation"""
-    count = 0
-    for char in line:
-        if char != " ":
-            break
-        count += 1
-    return count
 
 
 ## only required when using compound statements ##
@@ -2453,7 +2445,7 @@ def genexpr_adjust(self: GeneratorType, source: str) -> None:
         ## the internally set iterator ##
         self._locals()[".internals"] = {".4": first_iter}
     ## change the offsets into indents ##
-    if gcopy.track.track_adjust(self._locals()[".internals"]) or is_running(self._locals()[".internals"][".4"]):
+    if track_adjust(self._locals()[".internals"]) or is_running(self._locals()[".internals"][".4"]):
         self._internals["lineno"] = length
     else:
         self._internals["lineno"] = 1

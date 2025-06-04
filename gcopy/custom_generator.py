@@ -30,7 +30,7 @@ from gcopy.source_processing import (
     get_loops,
     loop_adjust,
     outer_loop_adjust,
-    sign,
+    sign
 )
 from gcopy.track import track_shift
 
@@ -44,7 +44,7 @@ from gcopy.utils import (
     get_nonlocals,
     getcode,
     getframe,
-    hasattrs,
+    hasattrs
 )
 
 try:
@@ -196,8 +196,6 @@ class EOF(StopIteration, StopAsyncIteration):
     Custom exception to exit out of the generator on return statements.
     For consistency, this class is only used for instance checking
     """
-
-    pass
 
 
 #################
@@ -671,6 +669,9 @@ def Generator_call_error(*args, **kwargs) -> NoReturn:
     """Error for when an initialized generator is called"""
     raise TypeError("Initialized generators cannot be called, only uninitialized Function generators may be called")
 
+## TODO, somehow used in Generator
+import gcopy
+#
 
 class Generator(BaseGenerator):
 
