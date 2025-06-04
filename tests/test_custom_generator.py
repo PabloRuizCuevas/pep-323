@@ -21,6 +21,7 @@ from gcopy.custom_generator import (
 from gcopy.source_processing import (
     append_line,
     block_adjust,
+    custom_adjustment,
     empty_generator,
     string_collector_adjust,
     unpack,
