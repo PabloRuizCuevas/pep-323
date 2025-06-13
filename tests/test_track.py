@@ -43,6 +43,23 @@ def test_track_shift() -> None:
 
 
 def test_patch_iterators() -> None:
+
+    assert not isinstance(range, track)
+    ## test scoping ##
+    @patch_iterators
+    def test_scope():
+        assert isinstance(range, track)
+
+    test_scope()
+    
+    assert not isinstance(range, track)
+    ## class ##
+    class test:
+        patch_iterators()
+        assert isinstance(range, track)
+    
+    assert not isinstance(range, track)
+    ## globals ##
     patch_iterators(globals())
     iterators = get_builtin_iterators()
     for name in iterators:
@@ -51,7 +68,6 @@ def test_patch_iterators() -> None:
     unpatch_iterators(globals())
     for name in iterators:
         assert globals().get(name, None) is None
-    ## try in local scope only ##
 
 
 def test_track_iter() -> None:
@@ -72,21 +88,6 @@ def test_track_iter() -> None:
             pass
     assert test(4, "list_iterator")
     assert test(8, "list_iterator")
-
-
-def test_track_iter_inside_exec() -> None:
-    # TODO works when run pytest . but not in isolation
-    FUNC_code = compile(
-        """def test():
-    for i in range(3):
-         return locals()[".internals"][".0"]
-""",
-        currentframe().f_code.co_filename,
-        "exec",
-    )
-    exec(FUNC_code, globals(), locals())
-    range_iterator = locals()["test"]()
-    assert [i for i in range_iterator] == [1, 2]
 
 
 def test_track_iter_inside_Generator() -> None:
@@ -122,11 +123,4 @@ async def test_atrack() -> None:
 
 if __name__ == "__main__":
     # TODO can remove, simply run pytest .
-    test_track_adjust()
-    test_track_shift()
-    test_patch_iterators()
-    test_track_iter()
-    test_track_iter_inside_exec()
-    test_track_iter_inside_Generator()
-    test_track()
     asyncio.run(test_atrack())

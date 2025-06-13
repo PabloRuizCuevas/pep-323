@@ -1,3 +1,6 @@
+## getcode, getframe raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
+## is_cli is tested in test_cli_findsource ##
+
 import warnings
 from sys import version_info
 from types import CodeType, FrameType
@@ -5,7 +8,6 @@ from typing import Iterator
 
 from gcopy.utils import (
     attr_cmp,
-    chain,
     cli_findsource,
     code_attrs,
     code_cmp,
@@ -72,44 +74,46 @@ def test_getcode() -> None:
     ## generator ##
     assert type(getcode((i for i in (None,)))) == CodeType
 
-    ## coroutine ##
-    async def t():
-        pass
+    with warnings.catch_warnings():
+        ## raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
+        warnings.simplefilter("ignore")
 
-    assert type(getcode(t())) == CodeType
+        ## coroutine ##
+        async def t():
+            pass
 
-    ## async generator ##
-    async def t():
-        yield 1
+        assert type(getcode(t())) == CodeType
 
-    assert type(getcode(t())) == CodeType
+        ## async generator ##
+        async def t():
+            yield 1
+
+        assert type(getcode(t())) == CodeType
 
 
 def test_getframe() -> None:
     ## generator ##
     assert type(getframe((i for i in (None,)))) == FrameType
 
-    ## coroutine ##
-    async def t():
-        pass
+    with warnings.catch_warnings():
+        ## raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
+        warnings.simplefilter("ignore")
 
-    assert type(getframe(t())) == FrameType
+        ## coroutine ##
+        async def t():
+            pass
 
-    ## async generator ##
-    async def t():
-        yield 1
+        assert type(getframe(t())) == FrameType
 
-    assert type(getframe(t())) == FrameType
+        ## async generator ##
+        async def t():
+            yield 1
+
+        assert type(getframe(t())) == FrameType
 
 
 def test_hasattrs() -> None:
     assert hasattrs(compile("1+1", "", "eval"), code_attrs())
-
-
-def test_chain() -> None:
-    ls = list(range(1, 5))
-    for i in chain([1, 2], [3, 4]):
-        assert i == ls.pop(0)
 
 
 def test_get_nonlocals() -> None:
@@ -229,26 +233,3 @@ def test_is_running() -> None:
     ## map + filter ##
     test(map(lambda x: x, [1, 2, 3]))
     test(filter(lambda x: x, [1, 2, 3]))
-
-
-if __name__ == "__main__":
-    # TODO can remove, simply run pytest .
-    ## is_cli is tested in test_cli_findsource ##
-    test_cli_findsource()
-    test_skip()
-    test_empty_generator()
-    test_code_attrs()
-    test_attr_cmp()
-    with warnings.catch_warnings():
-        ## raises a runtime warning because we didn't use the coroutine i.e. in an event loop ##
-        warnings.simplefilter("ignore")
-        test_getcode()
-        test_getframe()
-    test_hasattrs()
-    test_chain()
-    test_get_nonlocals()
-    test_try_set()
-    test_get_globals()
-    test_similar_opcode()
-    test_code_cmp()
-    test_is_running()

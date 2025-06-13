@@ -2,21 +2,18 @@
 ### cleaning/extracting/adjusting source code ###
 #################################################
 
-## needed to access c level memory for the builtin iterators ##
-from functools import partial, wraps
+from functools import partial
 from inspect import currentframe, findsource, getsource, signature
 from itertools import chain
 from sys import version_info
-from types import CodeType  # , FrameType ## lineno_adjust
-from types import CellType, FrameType, FunctionType, GeneratorType
-from typing import Any, Callable, Iterable, Iterator
+from types import CodeType, CellType, FunctionType, GeneratorType# , FrameType ## lineno_adjust
+from typing import Any, Iterable
 
 ## to ensure gcopy.custom_generator.Generator can be used in exec for sign ##
 from gcopy.track import get_indent, track_adjust
 from gcopy.utils import (
     attr_cmp,
     cli_findsource,
-    code_attrs,
     code_cmp,
     empty_generator,
     get_nonlocals,
@@ -1530,14 +1527,15 @@ def extract_source_from_comparison(
         try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
             temp_source = source[col_offset:end_col_offset]
+            temp_code = compile(temp_source, "<Don't track>", mode) ## very important, because track_iter otherwise will interfere with the comparison ##
             try:
-                genexpr = executor(temp_source, globals, locals)
+                genexpr = executor(temp_code, globals, locals)
             except NameError as e:
                 if not extracing_genexpr:
                     raise e
                 ## NameError since genexpr's first iterator is stored as .0 ##
                 name = e.args[0].split("'")[1]
-                genexpr = executor(temp_source, globals, locals | {name: locals[".0"]})
+                genexpr = executor(temp_code, globals, locals | {name: locals[".0"]})
             try:
                 temp_code = getcode(genexpr)
                 if temp_code.co_name != code_obj.co_name:
@@ -1897,7 +1895,11 @@ def sign(
     closure: tuple[CellType] = None,
 ) -> FunctionType:
     """signs a function with the signature of another function"""
+    annotations = FUNC2.__annotations__
+    # temporarily remove the annotations from the signature to avoid scope issues
+    FUNC2.__annotations__ = {}
     _signature = format(signature(FUNC2))
+    FUNC2.__annotations__ = annotations
     if boundmethod:
         _signature = "(self, " + _signature[1:]
     _signature = FUNC2.__name__ + _signature + ":"
@@ -1908,6 +1910,7 @@ def sign(
     temp = locals()[FUNC2.__name__]
     temp.__source__ = source
     temp.__doc__ = FUNC2.__doc__
+    temp.__annotations__ = annotations
     return temp
 
 
@@ -1943,8 +1946,10 @@ def custom_adjustment(self: object, line: str, number_of_indents: int = 0) -> li
     result = yield_adjust(temp_line, indent)
     if temp_line.startswith("yield from "):
         lineno = self.lineno
-        ## lineno + 1 since this is not a loop ##
-        self.jump_positions += [[lineno + 1, lineno + len(result)]]
+        self.lineno += len(result) - 1
+        ## lineno + 1 it starts after this line ##
+        ## and lineno + len(result) - 1 to include the full loops block subtract the current line ##
+        self.jump_positions += [[lineno + 1, self.lineno]]
     if result is not None:
         return result
     ## loops ##
@@ -2212,7 +2217,7 @@ def clean_source_lines(gen: object, running: bool = False) -> None:
 
     1. fixes any indentation issues (when ';' is used) and skips empty lines
     2. split on "\n", ";", and ":"
-    3. join up the line continuations i.e. "\ ... " will be skipped
+    3. join up the line continuations i.e. "\\ ... " will be skipped
 
     additionally, custom_adjustment will be called on each line formation as well
 

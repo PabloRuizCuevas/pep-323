@@ -5,10 +5,13 @@ import builtins  # # for consistency (it switches between a module and a dict) #
 from inspect import currentframe, getframeinfo, getsourcelines
 from types import FrameType, FunctionType
 
-## for the monkey patching ##
+## imports used for the monkey patching ##
 from typing import Any, Iterable, Iterator
-
 from gcopy.utils import Wrapper, get_history_item, getcode, is_cli
+
+## used for python versions prior to PEP 667 in order to update the f_locals properly ##
+from sys import version_info
+import ctypes
 
 
 def get_indent(line: str) -> int:
@@ -42,18 +45,10 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
     When tracking generator expressions it uses the current
     bytecode instruction index instead
     """
+    ## i.e. in case we're checking if it's the same code object in source_processing.extract_source_from_comparison ##
+    if frame.f_code.co_filename == "<Don't track>":
+        return obj
     f_locals = frame.f_locals
-    ## in case we're checking if it's the same code object in source_processing.extract_source_from_comparison ##
-    try:
-        code = frame.f_back.f_code
-        if (
-            code.co_name == "extract_source_from_comparison"
-            and code.co_filename.split("\\")[-1] == "source_processing.py"
-        ):
-            return obj
-    except:
-        pass
-
     if ".internals" not in f_locals:
         f_locals[".internals"] = {}
     if frame.f_code.co_name == "<genexpr>":
@@ -172,7 +167,11 @@ class atrack(Wrapper):
 
 
 def wrapper_proxy(FUNC: FunctionType) -> FunctionType:
-    """Proxy for type checking when using the tracked iterators"""
+    """
+    Proxy for type checking when using the tracked iterators
+    
+    e.g. modifies for arg1 in isinstance(arg1, arg2)
+    """
 
     def wrapper(obj, class_or_tuple: type | tuple) -> bool:
         if type(class_or_tuple) in (track, atrack):
@@ -191,32 +190,53 @@ def get_builtin_iterators() -> dict:
     return dct
 
 
+## Note: Can't change syntactical initiations e.g. (,), [], {}, and {...:...} ## include the type checker patches as well ##
+patches = {name: track(obj) for name, obj in get_builtin_iterators().items()} | {FUNC.__name__: wrapper_proxy(FUNC) for FUNC in (isinstance, issubclass)}
+
 def patch_iterators(scope: dict = None) -> None:
     """
     Sets all builtin iterators in the current scope to their tracked versions
 
     Note: make sure to patch iterators before using them else Iterator.running
     will be incorrect; this is also true for saving the iterator as well.
+
+    Examples of how to use:
+
+    ## globally ##
+    patch_iterators()
+    
+    ## only for the functions scope ##
+    @patch_iterators
+    def test():
+        ...
+    
+    ## only for the classes scope ##
+    class test:
+        patch_iterators()
     """
+    frame = None
     if scope is None:
-        scope = currentframe().f_back.f_locals
+        frame = currentframe()
+        scope = frame.f_back.f_locals
+    elif isinstance(scope, FunctionType):
+        return FunctionType(scope.__code__, scope.__globals__ | patches, scope.__name__, scope.__defaults__, scope.__closure__)
     if not isinstance(scope, dict):
         raise TypeError("expected type 'dict' but recieved '%s'" % type(scope).__name__)
-    ## Note: Can't change syntactical initiations e.g. (,), [], {}, and {...:...} ##
-    for name, obj in get_builtin_iterators().items():
-        scope[name] = track(obj)
-    for FUNC in ("isinstance", "issubclass"):
-        scope[FUNC] = wrapper_proxy(getattr(builtins, FUNC))
+    scope.update(patches)
+    if frame and version_info < (3, 11):
+        ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(frame), ctypes.c_int(0))
 
 
 def unpatch_iterators(scope: dict = None) -> None:
     """Assumes all iterators are patched and deletes them from the scope"""
+    frame = None
     if scope is None:
-        scope = currentframe().f_back.f_locals
+        frame = currentframe()
+        scope = frame.f_back.f_locals
     if not isinstance(scope, dict):
         raise TypeError("expected dict, got %s" % type(scope).__name__)
     ## Note: Can't change syntactical initiations e.g. (,), [], {}, and {...:...} ##
-    for name in get_builtin_iterators():
-        del scope[name]
-    for FUNC in ("isinstance", "issubclass"):
-        del scope[FUNC]
+    for name in patches.keys():
+        scope.pop(name, None)
+    if frame and version_info < (3, 11):
+        ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(frame), ctypes.c_int(1))

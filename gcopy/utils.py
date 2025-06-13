@@ -108,13 +108,6 @@ def hasattrs(self: Any, attrs: Iterable[str]) -> bool:
     return True
 
 
-def chain(*iterators: tuple[Iterable]) -> GeneratorType:
-    """appends iterators together to yield from one after the other"""
-    for iterator in iterators:
-        for value in iterator:
-            yield value
-
-
 def get_nonlocals(FUNC: FunctionType) -> dict:
     """Gets the nonlocals or closure variables of a function"""
     cells = getattr(FUNC, "__closure__", None)
@@ -245,6 +238,9 @@ class Wrapper:
     Note: type checking will fail. Therefore, you may consider monkey patching
     i.e. isinstance and issubclass if necessary.
 
+    The reason why it should fail is because we're only using it by the instance
+    and not the type. If we wanted it by the type then we should create a metaclass.
+
     Also, the intended use case doesn't support i.e. binary operations or type
     casting therefore it's not support by this wrapper. The wrapper is only as
     storage for instance based members (data and methods)
@@ -336,7 +332,7 @@ def is_running(iter: Iterable) -> bool:
     index = get_iter_index(iter)
     return index > 0 or index < -1
 
-
+## used in get_iter_index for an instance based check since no such type is in .py stdlib (I think) ##
 memory_iterator = type(iter(memoryview(bytearray())))
 
 
