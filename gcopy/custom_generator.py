@@ -337,12 +337,13 @@ class BaseGenerator:
                             "initialized": False,
                         }
                     )
-                    self.__name__ = self._internals["code"].co_name
+                    self.__name__ = FUNC.__code__.co_name
                     self.__defaults__ = FUNC.__defaults__
                     ## since it's uninitialized we can bind the signature to __call__ ##
                     ## and overwrite the __call__ signature + other metadata with the functions ##
+                    ## Note: globals() is used as the scope to access functions within this module ##
                     self.__call__ = sign(Generator__call__, FUNC, globals(), True)
-                    if FUNC.__code__.co_name == "<lambda>":
+                    if self.__name__ == "<lambda>":
                         clean_lambda(self, FUNC)
                     else:
                         self._internals["source"] = dedent(getsource(FUNC))
@@ -374,6 +375,7 @@ class BaseGenerator:
             }
             if ".internals" not in f_locals:
                 f_locals[".internals"] = internals
+            ## i.e. if using track for implicit iterators it will create a .internals variable to store the trackers ##
             else:
                 f_locals[".internals"].update(internals)
 
@@ -462,17 +464,17 @@ class BaseGenerator:
             self._close()
             raise e
         ## adjust the current state ##
-        temp = get_indent(self._internals["state"][0])
         if exception:
-            if self._internals["state"][0][temp:].startswith("try:"):
+            indent = get_indent(self._internals["state"][0])
+            if self._internals["state"][0][indent:].startswith("try:"):
                 self._internals["state"] = [
                     self._internals["state"][0],
-                    " " * (temp + 4) + "raise " + exception,
+                    " " * (indent + 4) + "raise " + exception,
                 ] + self._internals["state"][1:]
                 index_0 = self._internals["linetable"][0]
                 self._internals["linetable"] = [index_0, index_0] + self._internals["linetable"][1:]
             else:
-                self._internals["state"] = [" " * temp + "raise " + exception] + self._internals["state"]
+                self._internals["state"] = [" " * indent + "raise " + exception] + self._internals["state"]
                 ## -1 so that on +1 (on _update) it will be correct ##
                 self._internals["linetable"] = [self._internals["linetable"][0] - 1] + self._internals["linetable"]
         ## initialize the internal locals ##
@@ -520,10 +522,8 @@ class BaseGenerator:
 
         f_locals = _frame.f_locals
         ## remove variables that interfere with pickling ##
-        if ".internals" in f_locals:
-            f_locals[".internals"].pop(".send", None)
-            f_locals[".internals"].pop(".frame", None)
-            f_locals[".internals"].pop(".self", None)
+        for attr in (".send", ".frame", ".self"):
+            f_locals[".internals"].pop(attr, None)
 
         if ".yieldfrom" in _frame.f_locals[".internals"]:
             self._internals["yieldfrom"] = _frame.f_locals[".internals"][".yieldfrom"]
@@ -599,15 +599,14 @@ class BaseGenerator:
                 dct[key] = FUNC(value)
         dct = {"_internals": dct}
         for attr in ("__name__", "__defaults__"):
-            dct[attr] = getattr(self, attr, None)
+            if hasattr(self, attr):
+                dct[attr] = getattr(self, attr, None)
         return dct
 
     def __setstate__(self, state: dict) -> None:
         """
         Unpickles the generator then sets up the api and the state
         """
-        self.__name__ = state.pop("__name__", None)
-        self.__defaults__ = state.pop("__defaults__", None)
         Pickler.__setstate__(self, state)
         ## setup the state api + generator ##
         prefix = self._internals["prefix"]

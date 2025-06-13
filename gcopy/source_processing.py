@@ -1527,14 +1527,15 @@ def extract_source_from_comparison(
         try:  ## we need to make it a try-except in case of potential syntax errors towards the end of the line/s ##
             ## eval should be safe here assuming we have correctly extracted the expression - we can't use compile because it gives a different result ##
             temp_source = source[col_offset:end_col_offset]
+            temp_code = compile(temp_source, "<Don't track>", mode) ## very important, because track_iter otherwise will interfere with the comparison ##
             try:
-                genexpr = executor(temp_source, globals, locals)
+                genexpr = executor(temp_code, globals, locals)
             except NameError as e:
                 if not extracing_genexpr:
                     raise e
                 ## NameError since genexpr's first iterator is stored as .0 ##
                 name = e.args[0].split("'")[1]
-                genexpr = executor(temp_source, globals, locals | {name: locals[".0"]})
+                genexpr = executor(temp_code, globals, locals | {name: locals[".0"]})
             try:
                 temp_code = getcode(genexpr)
                 if temp_code.co_name != code_obj.co_name:

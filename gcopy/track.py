@@ -9,6 +9,10 @@ from types import FrameType, FunctionType
 from typing import Any, Iterable, Iterator
 from gcopy.utils import Wrapper, get_history_item, getcode, is_cli
 
+## used for python versions prior to PEP 667 in order to update the f_locals properly ##
+from sys import version_info
+import ctypes
+
 
 def get_indent(line: str) -> int:
     """Gets the number of spaces used in an indentation"""
@@ -41,18 +45,10 @@ def track_iter(obj: Iterator | Iterable, frame: FrameType) -> Iterator | Iterabl
     When tracking generator expressions it uses the current
     bytecode instruction index instead
     """
+    ## i.e. in case we're checking if it's the same code object in source_processing.extract_source_from_comparison ##
+    if frame.f_code.co_filename == "<Don't track>":
+        return obj
     f_locals = frame.f_locals
-    ## in case we're checking if it's the same code object in source_processing.extract_source_from_comparison ##
-    try:
-        code = frame.f_back.f_code
-        if (
-            code.co_name == "extract_source_from_comparison"
-            and code.co_filename.split("\\")[-1] == "source_processing.py"
-        ):
-            return obj
-    except:
-        pass
-
     if ".internals" not in f_locals:
         f_locals[".internals"] = {}
     if frame.f_code.co_name == "<genexpr>":
@@ -218,21 +214,29 @@ def patch_iterators(scope: dict = None) -> None:
     class test:
         patch_iterators()
     """
+    frame = None
     if scope is None:
-        scope = currentframe().f_back.f_locals
+        frame = currentframe()
+        scope = frame.f_back.f_locals
     elif isinstance(scope, FunctionType):
         return FunctionType(scope.__code__, scope.__globals__ | patches, scope.__name__, scope.__defaults__, scope.__closure__)
     if not isinstance(scope, dict):
         raise TypeError("expected type 'dict' but recieved '%s'" % type(scope).__name__)
     scope.update(patches)
+    if frame and version_info < (3, 11):
+        ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(frame), ctypes.c_int(0))
 
 
 def unpatch_iterators(scope: dict = None) -> None:
     """Assumes all iterators are patched and deletes them from the scope"""
+    frame = None
     if scope is None:
-        scope = currentframe().f_back.f_locals
+        frame = currentframe()
+        scope = frame.f_back.f_locals
     if not isinstance(scope, dict):
         raise TypeError("expected dict, got %s" % type(scope).__name__)
     ## Note: Can't change syntactical initiations e.g. (,), [], {}, and {...:...} ##
     for name in patches.keys():
         scope.pop(name, None)
+    if frame and version_info < (3, 11):
+        ctypes.pythonapi.PyFrame_LocalsToFast(ctypes.py_object(frame), ctypes.c_int(1))
